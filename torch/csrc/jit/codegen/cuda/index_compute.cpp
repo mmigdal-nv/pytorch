@@ -1231,7 +1231,8 @@ indexMapFromTV(
         // Similarly for local memory tensors, zero replacement can be
         // only done when there's a matching domain with the same
         // parallel type
-        (loop->iter_domain()->isThread() && is_local && same_parallel_type)) {
+        (loop->iter_domain()->isThread() && is_local && same_parallel_type) ||
+        (loop->iter_domain()->isMma() && !as_consumer)) {
       idx = GpuLower::current()->kernel()->zeroVal();
       zero_loops.insert(loop);
     } else {

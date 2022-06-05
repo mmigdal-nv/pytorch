@@ -906,7 +906,7 @@ void validateMmaTensors(MmaOp* mma) {
             tv->domain()->domain().end(),
             [](IterDomain* id) {
               return id->isMmaSwizzled() ||
-                  (id->isBroadcast() &&
+                  ((id->isBroadcast() || id->extent()->isConstInt()) &&
                    id->getParallelType() == ParallelType::Serial);
             }),
         "All id's on the right of CA pos needs to be mma-swizzled by WarpMmaSwizzler\n",

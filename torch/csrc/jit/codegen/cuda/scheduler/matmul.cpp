@@ -159,8 +159,8 @@ void scheduleMatmul(
   b->computeAt(cc, 3);
 
   // Main Loop:
-  acr->computeAt(cc, -4);
-  bcr->computeAt(cc, -4);
+  acr->computeAt(cc, -6);
+  bcr->computeAt(cc, -6);
 
   // Add mma swizzle:
   //   TODO: this section goes to a separate matmul util,
