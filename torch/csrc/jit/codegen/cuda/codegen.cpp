@@ -2412,6 +2412,10 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     indent() << "Ampere::cpAsyncCommit();\n";
   }
 
+  void handle(const kir::AddressCompute* address_compute) final {
+    TORCH_INTERNAL_ASSERT(false, "not implemented.");
+  }
+
   void handle(const kir::GridSync* sync) final {
     // Use a custom synchronization method if enabled
     bool bidx = sync->syncDims().get(ParallelType::BIDx);

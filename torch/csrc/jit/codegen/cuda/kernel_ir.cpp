@@ -107,6 +107,13 @@ CpAsyncCommit::CpAsyncCommit(IrBuilderPasskey passkey)
       "IR type only valid for Kernel container.");
 }
 
+AddressCompute::AddressCompute(IrBuilderPasskey passkey)
+    : Expr(passkey, ExprType::AddressCompute) {
+  TORCH_INTERNAL_ASSERT(
+      passkey.ir_container_->isA<kir::Kernel>(),
+      "IR type only valid for Kernel container.");
+}
+
 InitMagicZero::InitMagicZero(IrBuilderPasskey passkey)
     : Expr(passkey, ExprType::InitMagicZero) {
   TORCH_INTERNAL_ASSERT(

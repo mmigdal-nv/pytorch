@@ -869,6 +869,11 @@ void IndexLowering::handle(const kir::CpAsyncCommit* commit) {
   pushBack(const_cast<kir::CpAsyncCommit*>(commit)); // NOLINT
 }
 
+void IndexLowering::handle(const kir::AddressCompute* wait) {
+  // TODO(kir): remove the need for const_cast
+  TORCH_INTERNAL_ASSERT(false, "not implemented");
+}
+
 void IndexLowering::generate(const std::vector<Expr*>& exprs) {
   for (auto expr : exprs) {
     OptOutConstDispatch::handle(expr);

@@ -56,6 +56,7 @@ class BlockSync;
 class GridSync;
 class CpAsyncWait;
 class CpAsyncCommit;
+class AddressCompute;
 class InitMagicZero;
 class UpdateMagicZero;
 class ForLoop;
@@ -280,6 +281,25 @@ class TORCH_CUDA_CU_API CpAsyncWait final : public Expr {
 class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
  public:
   explicit CpAsyncCommit(IrBuilderPasskey passkey);
+};
+
+class TORCH_CUDA_CU_API AddressCompute final : public Expr {
+ public:
+  enum class AddressComputeOpType { BASE_ADDRESS };
+
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      TensorView* address_tensor,
+      TensorView* data_tensor);
+
+ private:
+  // Tensor that this address compute is calculating
+  //   address for.
+  TensorView* data_tensor_ = nullptr;
+
+  // Tensor that stores pre-computed address for the
+  //  data tensor.
+  TensorView* address_tensor_ = nullptr;
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is

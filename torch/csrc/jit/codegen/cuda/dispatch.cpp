@@ -166,6 +166,9 @@ void Expr::dispatch(T handler, Expr* expr) {
     case ExprType::CpAsyncCommit:
       ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
       return;
+    case ExprType::AddressCompute:
+      ptr(handler)->handle(expr->as<kir::AddressCompute>());
+      return;
     case ExprType::InitMagicZero:
       ptr(handler)->handle(expr->as<kir::InitMagicZero>());
       return;
@@ -339,6 +342,9 @@ void Expr::constDispatch(T handler, const Expr* expr) {
       return;
     case ExprType::CpAsyncCommit:
       ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
+      return;
+    case ExprType::AddressCompute:
+      ptr(handler)->handle(expr->as<kir::AddressCompute>());
       return;
     case ExprType::InitMagicZero:
       ptr(handler)->handle(expr->as<kir::InitMagicZero>());
@@ -521,6 +527,9 @@ void Expr::mutatorDispatch(T mutator, Expr* expr) {
       return;
     case ExprType::CpAsyncCommit:
       ptr(mutator)->mutate(expr->as<kir::CpAsyncCommit>());
+      return;
+    case ExprType::AddressCompute:
+      ptr(mutator)->mutate(expr->as<kir::AddressCompute>());
       return;
     case ExprType::InitMagicZero:
       ptr(mutator)->mutate(expr->as<kir::InitMagicZero>());
@@ -769,6 +778,9 @@ void OptOutConstDispatch::handle(const kir::CpAsyncWait* stmt) {
 void OptOutConstDispatch::handle(const kir::CpAsyncCommit* stmt) {
   unhandled(stmt);
 }
+void OptOutConstDispatch::handle(const kir::AddressCompute* stmt) {
+  unhandled(stmt);
+}
 void OptOutConstDispatch::handle(const kir::InitMagicZero* stmt) {
   unhandled(stmt);
 }
@@ -911,6 +923,9 @@ void OptOutDispatch::handle(kir::CpAsyncWait* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::CpAsyncCommit* stmt) {
+    unhandled(stmt);
+}
+void OptOutDispatch::handle(kir::AddressCompute* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::InitMagicZero* stmt) {

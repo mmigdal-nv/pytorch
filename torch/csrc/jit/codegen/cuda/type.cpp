@@ -334,6 +334,8 @@ static const char* expr_type2string(ExprType t) {
       return "CpAsyncWait";
     case ExprType::CpAsyncCommit:
       return "CpAsyncCommit";
+    case ExprType::AddressCompute:
+      return "AddressCompute";
     case ExprType::InitMagicZero:
       return "InitMagicZero";
     case ExprType::UpdateMagicZero:

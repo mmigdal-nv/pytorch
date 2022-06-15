@@ -606,6 +606,11 @@ void IrPrinter::handle(const kir::CpAsyncCommit* node) {
   indent() << "CPASYNC_WAIT()\n";
 }
 
+void IrPrinter::handle(const kir::AddressCompute* node) {
+  TORCH_INTERNAL_ASSERT(false, "not implemented");
+  indent() << "AddressCompute()\n";
+}
+
 void IrPrinter::handle(const kir::GridSync* node) {
   indent() << "GRIDSYNC(" << node->syncDims().toString() << ", ";
   handle(node->syncBuffer());
