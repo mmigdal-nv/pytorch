@@ -473,6 +473,30 @@ class TORCH_CUDA_CU_API TensorView : public Val {
         is_circular_buffered_, toString(), "not circular buffered");
     return circular_buffer_stage_;
   }
+  
+  void liftReadAddress() {
+    TORCH_CHECK(
+        memory_type_ == MemoryType::Global ||
+            memory_type_ == MemoryType::Shared,
+        "cannot do address computation for local tensors");
+    lift_read_address_ = true;
+  }
+
+  void liftWriteAddress() {
+    TORCH_CHECK(
+        memory_type_ == MemoryType::Global ||
+            memory_type_ == MemoryType::Shared,
+        "cannot do address computation for local tensors");
+    lift_write_address_ = true;
+  }
+
+  bool shouldLiftReadAddress() const {
+    return lift_read_address_;
+  }
+
+  bool shouldLiftWriteAddress() const {
+    return lift_write_address_;
+  }
 
   //! Transforms the innermost iterdomains according to the given mma swizzle,
   //!  this should be used on the tvs that are either inputs/outputs of an
@@ -548,6 +572,11 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //!  This is the temporary flag for indicating that the new swizzle
   //!  implementation is used and will be removed in follow ups.
   bool has_swizzle_op_ = false;
+  
+  // Indicates if the lowering pass should try to pre-allocate
+  //   and pre-compute address for this tensor.
+  bool lift_read_address_ = false;
+  bool lift_write_address_ = false;
 };
 
 //! A simple TensorView builder

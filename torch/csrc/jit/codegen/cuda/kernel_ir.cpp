@@ -107,8 +107,15 @@ CpAsyncCommit::CpAsyncCommit(IrBuilderPasskey passkey)
       "IR type only valid for Kernel container.");
 }
 
-AddressCompute::AddressCompute(IrBuilderPasskey passkey)
-    : Expr(passkey, ExprType::AddressCompute) {
+AddressCompute::AddressCompute(
+    IrBuilderPasskey passkey,
+    AddressComputeOpType op_type,
+    TensorView* address_tensor,
+    TensorView* data_tensor)
+    : Expr(passkey, ExprType::AddressCompute),
+      op_type_(op_type),
+      address_tensor_(address_tensor),
+      data_tensor_(data_tensor) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");

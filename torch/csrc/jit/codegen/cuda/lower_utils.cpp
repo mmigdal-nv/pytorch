@@ -32,6 +32,27 @@ kir::IfThenElse* cloneIfThenElse(kir::IfThenElse* ite) {
   return IrBuilder::create<kir::IfThenElse>(ite->predicate());
 }
 
+std::pair<kir::ForLoop*, kir::ForLoop*> cloneLoopNest(
+    const std::vector<kir::ForLoop*>& loop_vec) {
+  TORCH_INTERNAL_ASSERT(
+      !loop_vec.empty(), "cloneLoopNest: empty loop vec given.");
+
+  auto loop_it = loop_vec.cbegin();
+  auto outermost_loop = cloneForLoop(*loop_it);
+  auto current_loop = outermost_loop;
+  loop_it++;
+
+  while (loop_it != loop_vec.end()) {
+    auto new_loop = cloneForLoop(*loop_it);
+    current_loop->body().push_back(new_loop);
+    current_loop = new_loop;
+    loop_it++;
+  }
+
+  // Return pair of outermost loop and innermost loop.
+  return std::make_pair(outermost_loop, current_loop);
+}
+
 } // namespace scope_utils
 
 namespace ir_utils {

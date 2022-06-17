@@ -10,6 +10,7 @@
 #include <torch/csrc/jit/codegen/cuda/lower_double_buffer.h>
 #include <torch/csrc/jit/codegen/cuda/lower_fused_reduction.h>
 #include <torch/csrc/jit/codegen/cuda/lower_index_hoist.h>
+#include <torch/csrc/jit/codegen/cuda/lower_mem_index.h>
 #include <torch/csrc/jit/codegen/cuda/lower_predicate.h>
 #include <torch/csrc/jit/codegen/cuda/lower_predicate_elimination.h>
 #include <torch/csrc/jit/codegen/cuda/lower_shift.h>
@@ -156,6 +157,14 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
     return vectorized_set_info_;
   }
 
+  auto& addressComputeInfo() {
+    return address_compute_info_;
+  }
+
+  const auto& addressComputeInfo() const {
+    return address_compute_info_;
+  }
+
   FusedReductionInfo& fusedReductionInfo() {
     return fused_reduction_info_;
   }
@@ -213,6 +222,7 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   CommonIndexMap common_index_map_;
   FusedReductionInfo fused_reduction_info_;
   SyncMap sync_map_;
+  AddressComputeInfo address_compute_info_;
   kir::KernelPerformanceProfile profile_;
 
   // Track which tensor views are inputs or outputs of a vectorized operation

@@ -289,10 +289,27 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
 
   explicit AddressCompute(
       IrBuilderPasskey passkey,
+      AddressComputeOpType op_type,
       TensorView* address_tensor,
       TensorView* data_tensor);
 
+  auto dataTv() const {
+    return data_tensor_;
+  }
+
+  auto addressTv() const {
+    return address_tensor_;
+  }
+
+  auto opType() const {
+    return op_type_;
+  }
+
  private:
+  // The type of computation this op computes,
+  //  currently only do compute address.
+  AddressComputeOpType op_type_ = AddressComputeOpType::BASE_ADDRESS;
+
   // Tensor that this address compute is calculating
   //   address for.
   TensorView* data_tensor_ = nullptr;

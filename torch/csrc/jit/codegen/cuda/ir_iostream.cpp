@@ -608,7 +608,12 @@ void IrPrinter::handle(const kir::CpAsyncCommit* node) {
 
 void IrPrinter::handle(const kir::AddressCompute* node) {
   TORCH_INTERNAL_ASSERT(false, "not implemented");
-  indent() << "AddressCompute()\n";
+  indent() << "AddressCompute("
+           << "data_tv = " << node->dataTv()->toString() << " , "
+           << "address_tv = " << node->addressTv()->toString()
+           << " , "
+           // TODO: maybe this could go to type.h
+           << "op = BASE_ADDRESS);\n";
 }
 
 void IrPrinter::handle(const kir::GridSync* node) {
