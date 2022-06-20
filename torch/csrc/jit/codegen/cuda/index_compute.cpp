@@ -1583,6 +1583,23 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
     }
   }
 
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+          producer_tv, consumer_tv);
+
+  if (maybe_address_record.has_value()) {
+    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
+    for (auto loop : loops) {
+      if (!loop->index()->isZeroInt() &&
+          GpuLower::current()->caMap()->areMapped(
+              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
+        auto address_index = generateAddressTensorIndex(
+            loops, maybe_address_record.value()->addressTensor());
+        strided_inds.push_back(address_index);
+      }
+    }
+  }
+
   return strided_inds;
 }
 
@@ -1864,6 +1881,23 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
     }
   }
 
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+          producer_tv, consumer_tv);
+
+  if (maybe_address_record.has_value()) {
+    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
+    for (auto loop : loops) {
+      if (!loop->index()->isZeroInt() &&
+          GpuLower::current()->caMap()->areMapped(
+              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
+        auto address_index = generateAddressTensorIndex(
+            loops, maybe_address_record.value()->addressTensor());
+        strided_inds.push_back(address_index);
+      }
+    }
+  }
+
   return strided_inds;
 }
 
@@ -2027,6 +2061,23 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
   TORCH_INTERNAL_ASSERT(
       strided_inds.size() == consumer_tv->getMaybeRFactorDomain().size());
 
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+          consumer_tv);
+
+  if (maybe_address_record.has_value()) {
+    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
+    for (auto loop : loops) {
+      if (!loop->index()->isZeroInt() &&
+          GpuLower::current()->caMap()->areMapped(
+              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
+        auto address_index = generateAddressTensorIndex(
+            loops, maybe_address_record.value()->addressTensor());
+        strided_inds.push_back(address_index);
+      }
+    }
+  }
+
   return strided_inds;
 }
 
@@ -2182,6 +2233,25 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
     }
   }
 
+  // Add pre computed index path:
+
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+          consumer_tv);
+
+  if (maybe_address_record.has_value()) {
+    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
+    for (auto loop : loops) {
+      if (!loop->index()->isZeroInt() &&
+          GpuLower::current()->caMap()->areMapped(
+              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
+        auto address_index = generateAddressTensorIndex(
+            loops, maybe_address_record.value()->addressTensor());
+        strided_inds.push_back(address_index);
+      }
+    }
+  }
+
   return strided_inds;
 }
 
@@ -2206,10 +2276,12 @@ std::vector<Val*> Index::getProducerStridedIndices(
   }
 
   TORCH_INTERNAL_ASSERT(
+      producer->shouldLiftReadAddress() ||
       strided_indices.size() ==
-      producer->getMaybeRFactorDomain().size() +
-          (producer->isDoubleBuffered() || producer->isCircularBuffered() ? 1
-                                                                          : 0));
+          producer->getMaybeRFactorDomain().size() +
+              (producer->isDoubleBuffered() || producer->isCircularBuffered()
+                   ? 1
+                   : 0));
 
   return strided_indices;
 }
@@ -3081,6 +3153,45 @@ RootPredicateInfo RootPredicateInfo::getFalseInfo() {
   info.stop_predicate_ = GpuLower::current()->kernel()->falseVal();
 
   return info;
+}
+
+kir::TensorIndex* Index::generateAddressTensorIndex(
+    const std::vector<kir::ForLoop*>& for_loops,
+    TensorView* address_tv) {
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeRecordForAddressTv(
+          address_tv);
+  TORCH_INTERNAL_ASSERT(maybe_address_record.has_value());
+  auto address_record = maybe_address_record.value();
+
+  auto alloc_id_it = address_record->allocationIterDomains().rbegin();
+
+  std::deque<Val*> index_deq;
+  Val* local_stride = address_tv->fusion()->oneVal();
+
+  for (auto loop_it = for_loops.rbegin(); loop_it != for_loops.rend();
+       loop_it++) {
+    auto loop = *loop_it;
+    if (alloc_id_it == address_record->allocationIterDomains().rend()) {
+      break;
+    }
+    if (GpuLower::current()->caMap()->areMapped(
+            loop->iter_domain(), *alloc_id_it, IdMappingMode::LOOP)) {
+      index_deq.push_front(
+          SimplifyingIrBuilder::mulExpr(loop->index(), local_stride));
+      local_stride =
+          SimplifyingIrBuilder::mulExpr(local_stride, (*alloc_id_it)->extent());
+      alloc_id_it++;
+    }
+  }
+
+  std::vector<Val*> index_vec{index_deq.begin(), index_deq.end()};
+
+  TORCH_INTERNAL_ASSERT(
+      alloc_id_it == address_record->allocationIterDomains().rend(),
+      "loop nest didn't cover all address allocation");
+
+  return IrBuilder::create<kir::TensorIndex>(address_tv, index_vec);
 }
 
 } // namespace cuda

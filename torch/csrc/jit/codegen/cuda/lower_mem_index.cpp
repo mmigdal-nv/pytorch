@@ -18,11 +18,11 @@ AddressRecord::AddressRecord(
     TensorView* reference_tv,
     ReadWrite direction,
     IterDomain* loop_concrete_serial_id)
-    : address_tv_(address_tv_),
+    : address_tv_(address_tv),
       data_tv_(data_tv),
       reference_tv_(reference_tv),
-      allocation_ids_(allocation_ids),
       access_direction_(direction),
+      allocation_ids_(allocation_ids),
       loop_concrete_serial_id_(loop_concrete_serial_id) {}
 
 AddressRecordKey AddressRecord::key() const {
@@ -119,6 +119,9 @@ getContigMergeFrontier(
         //  just decrement the domain it by one would be enough.
         break;
       }
+      // Didn't find a merged domain candidate, just
+      //  increment
+      domain_it++;
     }
   }
 
@@ -146,10 +149,8 @@ std::unordered_map<IterDomain*, Expr*> getIdToUseMap(TensorDomain* td) {
 
 // TODO: unify with contiguity pass
 std::unordered_set<IterDomain*> getInitialContiguousRootIdsOnReferenceTv(
-    TensorView* data_tv,
-    TensorView* reference_tv) {
-  std::unordered_set<IterDomain*> contig_ids;
-
+    const TensorView* data_tv,
+    const TensorView* reference_tv) {
   std::pair<std::vector<IterDomain*>, std::unordered_set<IterDomain*>>
       contig_merge_front;
 
@@ -215,7 +216,7 @@ std::unordered_set<IterDomain*> getInitialContiguousRootIdsOnReferenceTv(
 }
 
 bool isSeparable(
-    TensorView* tv,
+    const TensorView* tv,
     IterDomain* id,
     const std::unordered_set<IterDomain*>& contig_merged_ids) {
   auto id_def = id->definition();
@@ -244,10 +245,10 @@ bool isSeparable(
         // Non-divisible split cannot be separated.
         return false;
       }
+    } else {
+      // TODO: build out to support swizzle
+      return false;
     }
-
-    // TODO: check swizzle conditions when merged in.
-    return false;
   }
 
   // This covers the base case where we start
@@ -256,7 +257,7 @@ bool isSeparable(
 }
 
 void validateSeparability(
-    TensorView* reference_tv,
+    const TensorView* reference_tv,
     const std::vector<IterDomain*>& alloc_ids,
     const std::unordered_set<IterDomain*>& contig_merged_ids) {
   std::unordered_set<IterDomain*> alloc_id_set{
@@ -293,18 +294,37 @@ void AddressComputeInfo::makeAddressRecord(
   // Mark the boundary iterdomain at the compute at
   //  position, where iterdomains on the left would
   //  be in shared loop.
-  auto ref_ca_id = reference_tv->axis(reference_tv->getComputeAtPosition());
+  auto ref_ca_id = data_tv->axis(data_tv->getComputeAtPosition() - 1);
+
+  if (data_tv->isFusionInput()) {
+    // Reading input tensor looks at the consumer
+    //  scheduling so use the CA of comsumer.
+    ref_ca_id = reference_tv->axis(reference_tv->getComputeAtPosition() - 1);
+  } else if (data_tv->isFusionOutput()) {
+    ref_ca_id = data_tv->axis(data_tv->getMaxProducerPosition() - 1);
+  } else if (data_tv != reference_tv) {
+    bool found_ref_ca_id = false;
+    for (auto id : reference_tv->domain()->domain()) {
+      if (GpuLower::current()->caMap()->areMapped(
+              id, ref_ca_id, IdMappingMode::LOOP)) {
+        ref_ca_id = id;
+        found_ref_ca_id = true;
+        break;
+      }
+    }
+
+    TORCH_INTERNAL_ASSERT(found_ref_ca_id);
+  }
 
   // Serial domain which the cached indexing will
   //  be lifted out of.
   // TODO: some extra work to support
-  //  global scope.
+  //  lifting all the way to global scope.
   IterDomain* serial_id = nullptr;
 
   // compute id's to cache index on:
-  for (auto ref_id_it = reference_tv->domain()->domain().rbegin();
-       ref_id_it != reference_tv->domain()->domain().rend();
-       ref_id_it++) {
+  auto ref_id_it = reference_tv->domain()->domain().rbegin();
+  while (ref_id_it != reference_tv->domain()->domain().rend()) {
     auto ref_id = *ref_id_it;
 
     if (ref_id == ref_ca_id) {
@@ -319,6 +339,7 @@ void AddressComputeInfo::makeAddressRecord(
     // Skip parallel dims as they do not
     //  contribute to register lifetime.
     if (ref_id->isParallelized()) {
+      ref_id_it++;
       continue;
     }
 
@@ -327,9 +348,11 @@ void AddressComputeInfo::makeAddressRecord(
     //  limited profitability. Might want to
     //  revisit when we see useful cases.
     if (!ref_id->extent()->isConstScalar()) {
+      serial_id = ref_id;
       break;
     }
 
+    // TODO: re-enable index re-use in shared mem.
     if (is_shared_mem_access &&
         isSeparable(reference_tv, ref_id, contig_merged_ids)) {
       // This is an optimization step that will be built out.
@@ -341,18 +364,34 @@ void AddressComputeInfo::makeAddressRecord(
       // TODO: there are exceptions to this rule of thumb
       //  and they could matter in extremely register limited
       //  scenarios. Will be built out in follow ups.
-      continue;
+      // ref_id_it++;
+      // continue;
     }
 
     // We are visiting the iterdomains from reference
     //  tv in reverse order but we want the outputs
     //  to be in original order.
     alloc_ids.push_front(ref_id);
+    ref_id_it++;
   }
+
+  while (ref_id_it != reference_tv->domain()->domain().rend() &&
+         serial_id == nullptr) {
+    auto ref_id = *ref_id_it;
+    ref_id_it++;
+    if (!ref_id->isParallelized()) {
+      serial_id = ref_id;
+    }
+  }
+
+  TORCH_INTERNAL_ASSERT(
+      serial_id != nullptr,
+      "Cannot target serial loop to lift indexing out of");
 
   std::vector<IterDomain*> alloc_ids_vec{alloc_ids.begin(), alloc_ids.end()};
 
-  validateSeparability(data_tv, alloc_ids_vec, contig_merged_ids);
+  // TODO: validate SMEM and GMEM are different, build them out.
+  // validateSeparability(data_tv, alloc_ids_vec, contig_merged_ids);
 
   // Create address record:
   auto address_tv = makeAddressTv(alloc_ids_vec, !is_shared_mem_access);
@@ -382,12 +421,13 @@ void AddressComputeInfo::makeAddressRecord(
   address_tv_to_address_record_[address_tv] = new_record_ptr.get();
 
   // Add address lift record
-  index_lift_record_.insert({new_record_ptr->key(), std::move(new_record_ptr)});
+  index_lift_record_.insert(
+      std::make_pair(new_record_ptr->key(), std::move(new_record_ptr)));
 }
 
 c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedAddress(
-    TensorView* data_tv,
-    TensorView* reference_tv) {
+    const TensorView* data_tv,
+    const TensorView* reference_tv) {
   // Use data tv as the reference if
   //  reference is missing.
   if (reference_tv == nullptr) {
@@ -415,7 +455,7 @@ TensorView* AddressComputeInfo::makeAddressTv(
 }
 
 c10::optional<AddressRecord*> AddressComputeInfo::getMaybeRecordForAddressTv(
-    TensorView* tv) {
+    const TensorView* tv) {
   auto record_it = address_tv_to_address_record_.find(tv);
   if (record_it == address_tv_to_address_record_.end()) {
     return c10::nullopt;
@@ -465,11 +505,19 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
       kir::ForLoop* loop,
       const std::vector<AddressComputeInsertionInfo>& insertion_infos) {
     for (auto& insertion_info : insertion_infos) {
+      std::vector<Val*> alloc_shape;
+      std::transform(
+          insertion_info.address_compute_record->allocationIterDomains()
+              .begin(),
+          insertion_info.address_compute_record->allocationIterDomains().end(),
+          std::back_inserter(alloc_shape),
+          [](IterDomain* id) { return id->extent(); });
+
       // allocate address tensor:
       auto alloc = IrBuilder::create<kir::Allocate>(
           insertion_info.address_compute_record->addressTensor(),
           MemoryType::Local,
-          insertion_info.address_compute_record->allocationIterDomains());
+          alloc_shape);
       registerInsertBefore(loop, alloc);
 
       // clone loop nest:
@@ -495,6 +543,25 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
         false, "this pass cannot yet run after ite insertion");
   }
 
+  //! Create an replica of the original loop except that
+  //!  the extent and index are zeroed.
+  kir::ForLoop* createZeroedLoop(kir::ForLoop* original_loop) {
+    return IrBuilder::create<kir::ForLoop>(
+        original_loop->iter_domain(),
+        // index
+        GpuLower::current()->kernel()->zeroVal(),
+        // Start
+        GpuLower::current()->kernel()->zeroVal(),
+        // Stop
+        GpuLower::current()->kernel()->oneVal(),
+        // Step
+        GpuLower::current()->kernel()->oneVal(),
+        false,
+        nullptr,
+        original_loop->isUnrollRequired(),
+        original_loop->doubleBufferLoopStage());
+  }
+
   std::vector<kir::ForLoop*> createAddressComputeLoop(
       AddressRecord* address_record) {
     // Find the loop in the current loop nest that maps the concrete serial loop
@@ -513,24 +580,29 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
 
     // make an empty outmost for loop:
     auto original_serial_loop = *serial_loop_it;
-    auto cloned_serial_loop = IrBuilder::create<kir::ForLoop>(
-        original_serial_loop->iter_domain(),
-        // index
-        GpuLower::current()->kernel()->zeroVal(),
-        // Start
-        GpuLower::current()->kernel()->zeroVal(),
-        // Stop
-        GpuLower::current()->kernel()->oneVal(),
-        false,
-        nullptr,
-        original_serial_loop->isUnrollRequired());
+    serial_loop_it++;
+    auto cloned_serial_loop = createZeroedLoop(original_serial_loop);
 
     std::vector<kir::ForLoop*> loop_vector;
     loop_vector.push_back(cloned_serial_loop);
 
-    // Copy the rest of the loop nest.
-    loop_vector.insert(
-        loop_vector.end(), std::next(serial_loop_it), for_loops_.end());
+    while (serial_loop_it != for_loops_.end()) {
+      auto loop = *serial_loop_it;
+      serial_loop_it++;
+      if (std::any_of(
+              address_record->allocationIterDomains().begin(),
+              address_record->allocationIterDomains().end(),
+              [loop](IterDomain* allocated_id) {
+                return GpuLower::current()->caMap()->areMapped(
+                    allocated_id, loop->iter_domain(), IdMappingMode::LOOP);
+              })) {
+        loop_vector.push_back(loop);
+      } else {
+        // Only materialize the loops that correspond to
+        //  allocated dimensions of address tensor.
+        loop_vector.push_back(createZeroedLoop(loop));
+      }
+    }
 
     return loop_vector;
   }
@@ -609,7 +681,10 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
 
 } // namespace
 
-} // namespace
+// TODO: add insert address compute pass
+std::vector<Expr*> preComputeLiftedAddress(const std::vector<Expr*>& exprs) {
+  return MemoryAddressComputeInserter::insert(exprs);
+}
 
 } // namespace cuda
 } // namespace fuser

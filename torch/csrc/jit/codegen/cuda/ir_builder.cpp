@@ -365,6 +365,26 @@ Val* SimplifyingIrBuilder::mulExpr(Val* lhs, Val* rhs) {
   }
 }
 
+Val* SimplifyingIrBuilder::divExpr(Val* lhs, Val* rhs) {
+  if (lhs != nullptr && rhs != nullptr) {
+    if (lhs->isZeroInt()) {
+      return lhs->kernel()->zeroVal();
+    }
+  }
+
+  return IrBuilder::divExpr(lhs, rhs);
+}
+
+Val* SimplifyingIrBuilder::modExpr(Val* lhs, Val* rhs) {
+  if (lhs != nullptr && rhs != nullptr) {
+    if (lhs->isZeroInt()) {
+      return lhs->kernel()->zeroVal();
+    }
+  }
+
+  return IrBuilder::modExpr(lhs, rhs);
+}
+
 Val* SimplifyingIrBuilder::andExpr(Val* lhs, Val* rhs) {
   TORCH_INTERNAL_ASSERT(!(lhs == nullptr && rhs == nullptr));
 

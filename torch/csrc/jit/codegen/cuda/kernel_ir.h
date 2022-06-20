@@ -290,8 +290,8 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
   explicit AddressCompute(
       IrBuilderPasskey passkey,
       AddressComputeOpType op_type,
-      TensorView* address_tensor,
-      TensorView* data_tensor);
+      Val* address_tensor,
+      Val* data_tensor);
 
   auto dataTv() const {
     return data_tensor_;
@@ -312,11 +312,11 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
 
   // Tensor that this address compute is calculating
   //   address for.
-  TensorView* data_tensor_ = nullptr;
+  Val* data_tensor_ = nullptr;
 
   // Tensor that stores pre-computed address for the
   //  data tensor.
-  TensorView* address_tensor_ = nullptr;
+  Val* address_tensor_ = nullptr;
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is

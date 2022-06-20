@@ -869,9 +869,32 @@ void IndexLowering::handle(const kir::CpAsyncCommit* commit) {
   pushBack(const_cast<kir::CpAsyncCommit*>(commit)); // NOLINT
 }
 
-void IndexLowering::handle(const kir::AddressCompute* wait) {
+void IndexLowering::handle(const kir::AddressCompute* address_compute) {
+  // Logic for base address computation
+  auto address_tv = address_compute->addressTv();
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeRecordForAddressTv(
+          address_tv->as<TensorView>());
+  TORCH_INTERNAL_ASSERT(maybe_address_record.has_value());
+  auto address_record = maybe_address_record.value();
+
+  Val* lowered_data_index = nullptr;
+
+  if (address_record->isRead()) {
+    lowered_data_index = lowerSrcIndex(
+        address_record->dataTensor(), address_record->indexReferenceTensor());
+  } else {
+    lowered_data_index = lowerDstIndex(address_record->dataTensor());
+  }
+
+  pushBack(IrBuilder::create<kir::AddressCompute>(
+      kir::AddressCompute::AddressComputeOpType::BASE_ADDRESS,
+      Index::generateAddressTensorIndex(
+          for_loops_, address_tv->as<TensorView>()),
+      lowered_data_index));
+
   // TODO(kir): remove the need for const_cast
-  TORCH_INTERNAL_ASSERT(false, "not implemented");
+  // TORCH_INTERNAL_ASSERT(false, "not implemented");
 }
 
 void IndexLowering::generate(const std::vector<Expr*>& exprs) {

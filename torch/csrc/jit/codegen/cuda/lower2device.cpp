@@ -314,6 +314,9 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   doubleBufferInfo().build(fusion_);
 
   compute_at_map_->allocateIndexVariables();
+
+  addressComputeInfo().build(fusion_);
+
   // Run our passes keeping the lowered expressions and forwarding
   // them
 
@@ -341,7 +344,11 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   // Insert SyncThreads at end of for-loop to avoid WAR race condition
   const auto exprs_war_sync = insertWarThreadSynchronization(exprs_reuse_mem);
 
-  const auto exprs_double_buffered = DoubleBufferPass::run(exprs_war_sync);
+  const auto exprs_with_precompute_address =
+      preComputeLiftedAddress(exprs_war_sync);
+
+  const auto exprs_double_buffered =
+      DoubleBufferPass::run(exprs_with_precompute_address);
 
   // This pass inserts predicates as well as branches in the code. Up until now
   // the code is explicitly single shot for loop based. Need to be careful in

@@ -368,6 +368,12 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   std::string varName(const Val* val) {
+    // Var name of a tensor index should
+    //  be the same as the tv it's indexing.
+    if (auto ti = dynamic_cast<const kir::TensorIndex*>(val)) {
+      return varName(ti->view());
+    }
+
     std::stringstream name;
     if (val->isA<TensorView>()) {
       name << "T";
@@ -2413,7 +2419,12 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void handle(const kir::AddressCompute* address_compute) final {
-    TORCH_INTERNAL_ASSERT(false, "not implemented.");
+    indent() << "// Address tensor for indexing "
+             << varName(address_compute->dataTv()) << "\n";
+    indent() << gen(address_compute->addressTv()) << " = "
+             << genTensorIndex(
+                    address_compute->dataTv()->as<kir::TensorIndex>())
+             << ";\n";
   }
 
   void handle(const kir::GridSync* sync) final {

@@ -64,7 +64,7 @@ TensorIndex::TensorIndex(
       std::all_of(
           indices.begin(),
           indices.end(),
-          [](Val* v) { return v->dtype() == DataType::Int; }),
+          [](Val* v) { return isIntegralType(v->dtype()); }),
       "Cannot index with a value other than an int.");
   indices_.erase(
       std::remove_if(
@@ -109,13 +109,13 @@ CpAsyncCommit::CpAsyncCommit(IrBuilderPasskey passkey)
 
 AddressCompute::AddressCompute(
     IrBuilderPasskey passkey,
-    AddressComputeOpType op_type,
-    TensorView* address_tensor,
-    TensorView* data_tensor)
+    AddressCompute::AddressComputeOpType op_type,
+    Val* address_tensor,
+    Val* data_tensor)
     : Expr(passkey, ExprType::AddressCompute),
       op_type_(op_type),
-      address_tensor_(address_tensor),
-      data_tensor_(data_tensor) {
+      data_tensor_(data_tensor),
+      address_tensor_(address_tensor) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");

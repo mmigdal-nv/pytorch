@@ -923,7 +923,7 @@ void OptOutDispatch::handle(kir::CpAsyncWait* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::CpAsyncCommit* stmt) {
-    unhandled(stmt);
+  unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::AddressCompute* stmt) {
   unhandled(stmt);

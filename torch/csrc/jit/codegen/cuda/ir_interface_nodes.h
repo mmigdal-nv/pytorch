@@ -473,7 +473,7 @@ class TORCH_CUDA_CU_API TensorView : public Val {
         is_circular_buffered_, toString(), "not circular buffered");
     return circular_buffer_stage_;
   }
-  
+
   void liftReadAddress() {
     TORCH_CHECK(
         memory_type_ == MemoryType::Global ||
@@ -572,7 +572,7 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //!  This is the temporary flag for indicating that the new swizzle
   //!  implementation is used and will be removed in follow ups.
   bool has_swizzle_op_ = false;
-  
+
   // Indicates if the lowering pass should try to pre-allocate
   //   and pre-compute address for this tensor.
   bool lift_read_address_ = false;

@@ -25696,6 +25696,59 @@ TEST_F(NVFuserTest, FusionSizeDependentData_CUDA) {
       executor_cache.fusion(), cg_outputs, {a}, {a + 123}, __LINE__, __FILE__);
 }
 
+TEST_F(NVFuserTest, FusionSimpleMemHoisting_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  TensorView* tv0 = makeContigTensor(2);
+
+  fusion.addInput(tv0);
+
+  auto tv1 = set(tv0);
+  auto tv2 = set(tv1);
+  auto tv3 = set(tv2);
+
+  // Register your outputs
+  fusion.addOutput(tv3);
+
+  auto schedule_tv = [](TensorView* tv) {
+    //[M, N]
+    tv->split(-2, 4);
+    //[Mo, Mi8, N]
+    tv->split(-1, 16);
+    //[Mo,Mi8, No, Ni32]
+    tv->split(-1, 2);
+    //[Mo,Mi8,No, Ni16, Nii2]
+    tv->reorder({{1, 2}, {2, 1}});
+    tv->merge(2);
+    //[Mo, No, Mi8Ni16, Nii2]
+  };
+
+  schedule_tv(tv1);
+  schedule_tv(tv2);
+  schedule_tv(tv3);
+
+  tv0->computeAt(tv3, 2);
+
+  tv3->axis(0)->parallelize(ParallelType::TIDy);
+  tv2->setMemoryType(MemoryType::Shared);
+
+  tv2->liftWriteAddress();
+  tv2->liftReadAddress();
+  tv0->liftReadAddress();
+  tv3->liftWriteAddress();
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({32, 32}, options);
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0});
+  auto outputs = fe.runFusion({t0});
+
+  testValidate(&fusion, outputs, {t0}, {t0}, __LINE__, __FILE__);
+}
+
 } // namespace jit
 } // namespace torch
 #endif // #if defined(USE_CUDA)

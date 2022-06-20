@@ -75,6 +75,91 @@ std::unordered_map<IterDomain*, IterDomain*> invertOneToOneMap(
   return inverted;
 }
 
+std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
+    AddressRecord* address_record,
+    const std::vector<kir::ForLoop*> loops) {
+  // Find the serial loop to lift over:
+  kir::ForLoop* serial_loop = nullptr;
+  auto loop_it = loops.begin();
+
+  while (loop_it != loops.end() && serial_loop == nullptr) {
+    auto loop = *loop_it;
+    loop_it++;
+    if (GpuLower::current()->caMap()->areMapped(
+            address_record->getConcreteSerialLoopId(),
+            loop->iter_domain(),
+            IdMappingMode::LOOP)) {
+      serial_loop = loop;
+      break;
+    }
+  }
+
+  TORCH_INTERNAL_ASSERT(serial_loop != nullptr);
+
+  // WAR : Check if this is calculating address tv or using address tv
+  //  should tag this on loop attribute
+  bool is_address_tv_calculation = serial_loop->index()->isZeroInt();
+
+  std::unordered_set<IterDomain*> zero_ids;
+
+  for (auto outer_loop_it = loops.begin(); outer_loop_it != loop_it;
+       outer_loop_it++) {
+    auto outer_loop = *outer_loop_it;
+    auto concrete_loop_id = GpuLower::current()->caMap()->getConcreteMappedID(
+        outer_loop->iter_domain(), IdMappingMode::LOOP);
+
+    if (is_address_tv_calculation &&
+        !outer_loop->iter_domain()->isParallelized()) {
+      // Do not lift outer serial domains
+      zero_ids.insert(concrete_loop_id);
+    }
+
+    if (!is_address_tv_calculation &&
+        outer_loop->iter_domain()->isParallelized()) {
+      // Lift all parallel domains
+      zero_ids.insert(concrete_loop_id);
+    }
+  }
+
+  std::unordered_set<IterDomain*> concrete_allocated_address_ids{
+      address_record->allocationIterDomains().begin(),
+      address_record->allocationIterDomains().end()};
+
+  // We only modify loops on the right of the serial loop
+  //  for the moment.
+  while (loop_it != loops.end()) {
+    auto loop_id = (*loop_it)->iter_domain();
+    // TODO: revisit unswitch: as initial step not supporting
+    //  unswitch and will be asserted in validation pass.
+    auto concrete_loop_id = GpuLower::current()->caMap()->getConcreteMappedID(
+        loop_id, IdMappingMode::LOOP);
+
+    if (!loop_id->isThread()) {
+      bool is_allocated_in_address_tv =
+          concrete_allocated_address_ids.count(concrete_loop_id);
+
+      // In address calculation step:
+      //   realize all the serial loops that are allocated in the
+      // address record.
+      //
+      // In actual indexing step:
+      //   zero all the serial loop id's that are not allocated
+      // in the address record step.
+      if (is_address_tv_calculation != is_allocated_in_address_tv) {
+        zero_ids.insert(concrete_loop_id);
+      }
+    } else if (!is_address_tv_calculation) {
+      // All thread dimensions should be lifted out of the
+      //  serial loop.
+      zero_ids.insert(concrete_loop_id);
+    }
+
+    loop_it++;
+  }
+
+  return zero_ids;
+}
+
 //! A struct to keep track of necessary parameters used in
 //!  configuring index compute pass.
 //! These parameters are needed to propagate the indexing from the leaf nodes of
@@ -103,8 +188,15 @@ struct IndexingParameters {
 // Initial loop index map for global producer or consumer case.
 IndexingParameters getGlobalIndexParameters(
     const LoopIndexing& loop_indexing,
-    bool index_producer = false) {
+    bool index_producer = false,
+    c10::optional<AddressRecord*> maybe_address_record = c10::nullopt) {
   IndexingParameters index_parameters;
+
+  std::unordered_set<IterDomain*> lifted_loop_domain;
+  if (maybe_address_record.has_value()) {
+    lifted_loop_domain = getZeroIdSetsForAddressCompute(
+        maybe_address_record.value(), loop_indexing.loops());
+  }
 
   auto& loops = loop_indexing.loops();
   auto& loop_domain = loop_indexing.loopDomains();
@@ -113,7 +205,15 @@ IndexingParameters getGlobalIndexParameters(
   for (auto loop_idx : c10::irange(loops.size())) {
     auto loop = loops[loop_idx];
     auto index_domain = ir_utils::caMapExactConcreteId(loop_domain[loop_idx]);
-    if (loop->isTrivial()) {
+    auto concrete_loop_domain =
+        GpuLower::current()->caMap()->getConcreteMappedID(
+            loop->iter_domain(), IdMappingMode::LOOP);
+
+    if (lifted_loop_domain.count(concrete_loop_domain)) {
+      // Zero the corresponding index value if the index contribution from this
+      //  loop has be pre-computed.
+      loop_index_map[index_domain] = GpuLower::current()->kernel()->zeroVal();
+    } else if (loop->isTrivial()) {
       // This is useful information in the case of
       //  MisalignedVectorize and double buffer epilog, etc.
       loop_index_map[index_domain] = loop->start();
@@ -170,7 +270,8 @@ IndexingParameters getNonGlobalInitialIndexParameters(
     const TensorView* consumer_tv,
     bool index_producer = false,
     const TensorView* producer_tv = nullptr,
-    std::unordered_map<IterDomain*, IterDomain*> p2c_map = {}) {
+    std::unordered_map<IterDomain*, IterDomain*> p2c_map = {},
+    c10::optional<AddressRecord*> maybe_address_record = c10::nullopt) {
   IndexingParameters index_parameters;
   const auto& loops = loop_indexing.loops();
   const auto& loop_domains = loop_indexing.loopDomains();
@@ -212,17 +313,32 @@ IndexingParameters getNonGlobalInitialIndexParameters(
       loops.size() <= loop_domains.size(),
       "Loop domain didn't replay all loops");
 
+  std::unordered_set<IterDomain*> lifted_loop_domain;
+  if (maybe_address_record.has_value()) {
+    lifted_loop_domain = getZeroIdSetsForAddressCompute(
+        maybe_address_record.value(), loop_indexing.loops());
+  }
+
   for (auto loop_idx : c10::irange(loops.size())) {
     auto loop = loops[loop_idx];
     auto loop_domain = loop_domains[loop_idx];
 
-    auto concrete_loop_domain = ir_utils::caMapExactConcreteId(loop_domain);
+    auto concrete_loop_index_domain =
+        ir_utils::caMapExactConcreteId(loop_domain);
+    auto concrete_loop_domain =
+        GpuLower::current()->caMap()->getConcreteMappedID(
+            loop->iter_domain(), IdMappingMode::LOOP);
 
-    index_parameters.initial_concrete_id_index[concrete_loop_domain] =
-        loop_to_ind_map.at(loop);
+    if (lifted_loop_domain.count(concrete_loop_domain)) {
+      index_parameters.initial_concrete_id_index[concrete_loop_index_domain] =
+          GpuLower::current()->kernel()->zeroVal();
+    } else {
+      index_parameters.initial_concrete_id_index[concrete_loop_index_domain] =
+          loop_to_ind_map.at(loop);
+    }
 
     if (zero_loops.count(loop)) {
-      index_parameters.zero_domains.insert(concrete_loop_domain);
+      index_parameters.zero_domains.insert(concrete_loop_index_domain);
     }
   }
 
@@ -781,11 +897,23 @@ IndexFromIdGraph getTensorIndexFromIdGraph(
     p2c_map = invertOneToOneMap(c2p_map);
   }
 
+  // Check for any requested memory address lifting from
+  //  the scheduler.
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+          index_producer ? producer_tv : consumer_tv, consumer_tv);
+
   if (is_global) {
-    index_parameters = getGlobalIndexParameters(loop_indexing, index_producer);
+    index_parameters = getGlobalIndexParameters(
+        loop_indexing, index_producer, maybe_address_record);
   } else {
     index_parameters = getNonGlobalInitialIndexParameters(
-        loop_indexing, consumer_tv, index_producer, producer_tv, p2c_map);
+        loop_indexing,
+        consumer_tv,
+        index_producer,
+        producer_tv,
+        p2c_map,
+        maybe_address_record);
   }
 
   IndexCompute indexing(

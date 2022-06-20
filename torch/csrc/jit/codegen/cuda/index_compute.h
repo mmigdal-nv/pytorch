@@ -377,6 +377,10 @@ class Index {
       const std::vector<kir::ForLoop*>& loops,
       kir::ForLoop* unswitch_or_vec_loop,
       bool padding_predicate);
+
+  static kir::TensorIndex* generateAddressTensorIndex(
+      const std::vector<kir::ForLoop*>& for_loops,
+      TensorView* address_tv);
 };
 
 // Used for local and shared index mapping. Returns a map from loops

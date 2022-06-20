@@ -90,8 +90,12 @@ struct AddressRecordKey {
   const TensorView* reference_tv = nullptr;
   const TensorView* data_tv = nullptr;
 
-  AddressRecordKey(TensorView* reference_tv_, TensorView* data_tv_)
+  AddressRecordKey(const TensorView* reference_tv_, const TensorView* data_tv_)
       : reference_tv(reference_tv_), data_tv(data_tv_) {}
+
+  bool operator==(const AddressRecordKey& other) const {
+    return reference_tv == other.reference_tv && data_tv == other.data_tv;
+  }
 };
 
 struct AddressRecordKeyHash {
@@ -107,10 +111,11 @@ class AddressComputeInfo {
   void build(Fusion* fusion);
 
   c10::optional<AddressRecord*> getMaybeLiftedAddress(
-      TensorView* data_tv,
-      TensorView* reference_tv = nullptr);
+      const TensorView* data_tv,
+      const TensorView* reference_tv = nullptr);
 
-  c10::optional<AddressRecord*> getMaybeRecordForAddressTv(TensorView* tv);
+  c10::optional<AddressRecord*> getMaybeRecordForAddressTv(
+      const TensorView* tv);
 
  private:
   // Utility to help allocate space for saving pre-computed address.
@@ -130,8 +135,11 @@ class AddressComputeInfo {
 
   //! Short cut from the address tensorview to
   //!  the address record information.
-  std::unordered_map<TensorView*, AddressRecord*> address_tv_to_address_record_;
+  std::unordered_map<const TensorView*, AddressRecord*>
+      address_tv_to_address_record_;
 };
+
+std::vector<Expr*> preComputeLiftedAddress(const std::vector<Expr*>& exprs);
 
 } // namespace cuda
 } // namespace fuser

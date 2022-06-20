@@ -35,7 +35,7 @@ kir::IfThenElse* cloneIfThenElse(kir::IfThenElse* ite);
 //!  the outermost and innermost cloned loops.
 //! TODO: should construct the iterdomain ordering
 //!  in iterdomain graph and ensure that the given
-//!  loop nest never validates the global partial ordering.
+//!  loop nest never violates the global partial ordering.
 std::pair<kir::ForLoop*, kir::ForLoop*> makeLoopNest(
     const std::vector<kir::ForLoop*>& loop_vec);
 
