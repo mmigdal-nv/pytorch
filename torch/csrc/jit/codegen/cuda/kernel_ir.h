@@ -429,6 +429,8 @@ struct LoopTransformInfo {
   DoubleBufferLoopStage double_buffer_loop_stage =
       DoubleBufferLoopStage::NotApplicable;
 
+  PredicatePeelStage predicate_peel_stage = PredicatePeelStage::NoApplicable;
+
   //! Tracks if this for loop is for base index calculation for
   //!  lifted memory address.
   bool is_base_index_loop = false;
@@ -442,6 +444,12 @@ struct LoopTransformInfo {
   //! Setter API
   LoopTransformInfo& baseIndexLoop() {
     is_base_index_loop = true;
+    return *this;
+  }
+
+  //! Setter API
+  LoopTransformInfo& predicatePeelStage(PredicatePeelStage stage) {
+    predicate_peel_stage = stage;
     return *this;
   }
 };

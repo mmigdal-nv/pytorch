@@ -334,6 +334,12 @@ enum class DoubleBufferLoopStage {
   LowerProlog
 };
 
+enum class PredicatePeelStage {
+  NoApplicable,
+  Prolog,
+  Main
+} predicate_peel_stage;
+
 //! Supported swizzle types,
 //!  corresponds to swizzles functions on the runtime cuda
 //!  naming it swizzle_2d to reserve the options to have a swizzle_1d.
