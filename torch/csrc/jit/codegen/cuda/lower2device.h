@@ -13,6 +13,7 @@
 #include <torch/csrc/jit/codegen/cuda/lower_mem_index.h>
 #include <torch/csrc/jit/codegen/cuda/lower_predicate.h>
 #include <torch/csrc/jit/codegen/cuda/lower_predicate_elimination.h>
+#include <torch/csrc/jit/codegen/cuda/lower_predicate_peeling.h>
 #include <torch/csrc/jit/codegen/cuda/lower_shift.h>
 #include <torch/csrc/jit/codegen/cuda/lower_sync_information.h>
 #include <torch/csrc/jit/codegen/cuda/lower_thread_predicate.h>
@@ -177,6 +178,14 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
     return profile_;
   }
 
+  auto& predicatePeelingInfo() {
+    return predicate_peeling_info_;
+  }
+
+  const auto& predicatePeelingInfo() const {
+    return predicate_peeling_info_;
+  }
+
   // This is an interface to propagate information after expression
   //  replacement on the kernel IR. E.g.:
   //    for ...
@@ -223,6 +232,7 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   FusedReductionInfo fused_reduction_info_;
   SyncMap sync_map_;
   AddressComputeInfo address_compute_info_;
+  PredicatePeelingInfo predicate_peeling_info_;
   kir::KernelPerformanceProfile profile_;
 
   // Track which tensor views are inputs or outputs of a vectorized operation

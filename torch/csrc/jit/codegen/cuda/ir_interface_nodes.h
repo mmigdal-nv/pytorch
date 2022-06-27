@@ -532,6 +532,12 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   friend TORCH_CUDA_CU_API void groupReductions(
       const std::vector<TensorView*>&);
 
+  void peelPredicatedLoop(int axis_id);
+
+  const auto& peeledSerialId() const {
+    return peeled_serial_id_;
+  }
+
  protected:
   void setDomain(TensorDomain* td) {
     domain_ = td;
@@ -570,6 +576,7 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //! Indicates the circular buffering stage depth if applicable.
   unsigned int circular_buffer_stage_ = 0;
 
+  std::vector<IterDomain*> peeled_serial_id_;
   // special handling for CPU based zero-dim tensors (i.e. CPU Tensors that only
   // have one value). This is only used if on an input value, otherwise ignored.
   // This is important as special handling because these "scalars" should be

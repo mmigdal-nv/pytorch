@@ -11,6 +11,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/lower_double_buffer.h>
+#include <torch/csrc/jit/codegen/cuda/lower_predicate_peeling.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/mma_utils.h>
 
 // Cleanup
@@ -220,6 +221,9 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
       skew_double_buffer_loop_(src->skew_double_buffer_loop_) {
   for (const auto id : src->axesToSwizzle()) {
     axes_to_swizzle_.push_back(ir_cloner->clone(id));
+  }
+  for (const auto id : src->peeled_serial_id_) {
+    peeled_serial_id_.push_back(ir_cloner->clone(id));
   }
 }
 
@@ -1180,6 +1184,13 @@ void TensorView::applyMmaSwizzle(MmaOptions options) {
       TORCH_INTERNAL_ASSERT(false, "unknown operand flag");
       break;
   }
+}
+
+void TensorView::peelPredicatedLoop(int axis_id) {
+  auto id = axis(axis_id);
+  TORCH_CHECK(
+      PredicatePeeling::supportedPeelingLoop(id), "unsupported loop peeling");
+  peeled_serial_id_.push_back(id);
 }
 
 TensorViewBuilder& TensorViewBuilder::ndims(size_t ndims) {

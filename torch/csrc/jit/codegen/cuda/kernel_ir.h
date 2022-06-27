@@ -82,6 +82,8 @@ class TORCH_CUDA_CU_API Predicate final : public Val {
 
   explicit Predicate(IrBuilderPasskey passkey, Bool* value);
 
+  explicit Predicate(IrBuilderPasskey passkey, const Predicate* other);
+
   PredicateType predicate_type() const {
     return ptype_;
   }

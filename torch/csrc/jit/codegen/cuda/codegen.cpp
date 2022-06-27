@@ -2289,7 +2289,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     }
 
     indent() << "for(nvfuser_index_t " << gen_index;
-    if (loop->iter_domain()->isParallelized()) {
+
+    // TODO: need to revisit this one,
+    //  a predicate peeled loop would be guaranteed not to be
+    //  a degenerate loop. So the comments on the else block
+    //  should not apply here.
+    if (loop->iter_domain()->isParallelized() ||
+        loop->loopTransformInfo().predicate_peel_stage ==
+            PredicatePeelStage::Main) {
       code_ << " = " << gen_start << "; ";
     } else {
       // Do not start at  the start of the ID when not parallelized. Instead,

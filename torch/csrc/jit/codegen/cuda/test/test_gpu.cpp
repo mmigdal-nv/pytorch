@@ -22999,6 +22999,45 @@ TEST_F(NVFuserTest, FusionCpAsyncPredicate_CUDA) {
   testValidate(&fusion, cg_outputs, {t0}, {ref}, __LINE__, __FILE__);
 }
 
+// Simple test case for predicate peeling use pattern
+TEST_F(NVFuserTest, FusionPredicatePeeling_CUDA) {
+  // requires ampere+ GPU
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  // Using vectorization so need to keep n multiple of 4.
+  int m = 33, n = 48;
+
+  TensorView* tv0 = makeContigTensor(2);
+
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = set(tv1);
+  fusion.addOutput(tv2);
+
+  tv2->split(0, 16);
+
+  tv0->computeAt(tv2, 1);
+  tv1->computeAt(tv2, -1);
+
+  tv2->axis(1)->parallelize(ParallelType::TIDx);
+  tv2->axis(2)->parallelize(ParallelType::TIDy);
+  tv2->peelPredicatedLoop(0);
+
+  fusion.printMath();
+  fusion.printKernel();
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  at::Tensor t0 = at::randn({m, n}, options);
+
+  FusionExecutor fe;
+
+  fe.compileFusion(&fusion, {t0});
+  auto cg_outputs = fe.runFusion({t0});
+
+  testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
+}
+
 // Test predicate removal on reg-to-reg expressions
 TEST_F(NVFuserTest, FusionPredRemovalCheck_CUDA) {
   Fusion fusion;

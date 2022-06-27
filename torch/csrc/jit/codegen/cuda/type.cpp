@@ -1199,9 +1199,12 @@ TORCH_CUDA_CU_API std::ostream& operator<<(
     default:
       TORCH_INTERNAL_ASSERT(false, "unknown double buffer stage");
   }
+  return os;
 }
 
-std::ostream& operator<<(std::ostream& os, PredicatePeelStage peel_stage) {
+std::ostream& operator<<(
+    std::ostream& os,
+    const PredicatePeelStage& peel_stage) {
   switch (peel_stage) {
     case PredicatePeelStage::NoApplicable:
       break;

@@ -778,7 +778,7 @@ void IndexLowering::handle(const LoadStoreOp* ldst) {
   pushBack(IrBuilder::create<LoadStoreOp>(ldst->opType(), out, in));
   GpuLower::current()->propagateExprInfo(ldst, back());
   if (ldst->predicate()) {
-    back()->setPredicate(ldst->predicate());
+    back()->setPredicate(IrBuilder::create<kir::Predicate>(ldst->predicate()));
   }
 }
 

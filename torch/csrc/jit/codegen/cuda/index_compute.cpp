@@ -1602,6 +1602,16 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
     if (root_ind->isZeroInt()) {
       continue;
     } else {
+      if (auto tile_entry =
+              gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
+                  loops, root_dom[i])) {
+        if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog) {
+          root_ind = SimplifyingIrBuilder::subExpr(
+              root_ind,
+              PredicatePeeling::getSplitTileMainOffset(
+                  root_dom[i], tile_entry.value().inner_factor));
+        }
+      }
       auto strided_ind = SimplifyingIrBuilder::mulExpr(root_ind, strides[i]);
       if (i == root_dom.size() - 1 && vectorize_shift != nullptr) {
         strided_inds[i] =
@@ -2090,6 +2100,16 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
     if (root_ind->isZeroInt()) {
       continue;
     } else {
+      if (auto tile_entry =
+              gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
+                  loops, root_dom[i])) {
+        if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog) {
+          root_ind = SimplifyingIrBuilder::subExpr(
+              root_ind,
+              PredicatePeeling::getSplitTileMainOffset(
+                  root_dom[i], tile_entry.value().inner_factor));
+        }
+      }
       auto strided_ind = SimplifyingIrBuilder::mulExpr(root_ind, strides[i]);
       if (i == root_dom.size() - 1 && vectorize_shift != nullptr) {
         strided_inds[i] =
@@ -3167,10 +3187,18 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
       info.start_predicate_ = start_pred;
     }
 
+    auto maybe_tiled_entry =
+        gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
+            loops, contig_id);
+
+    bool has_peeled_prolog = maybe_tiled_entry.has_value() &&
+        maybe_tiled_entry.value().peel_stage == PredicatePeelStage::Prolog;
+
     // Build predicates for stop positions as:
     //   stop_index + stop_offset < IterDomain::extent
     auto stop_offset = info.stop_offset_;
-    if (canOmitStopPredicate(stop_index, stop_offset, contig_id)) {
+    if (canOmitStopPredicate(stop_index, stop_offset, contig_id) &&
+        !has_peeled_prolog) {
       info.stop_predicate_ = GpuLower::current()->kernel()->trueVal();
     } else {
       auto offsetted_stop_index =
@@ -3178,6 +3206,34 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
       auto stop_pred = SimplifyingIrBuilder::ltExpr(
                            offsetted_stop_index, contig_id->extent())
                            ->as<Bool>();
+      auto maybe_tiled_entry =
+          gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
+              loops, contig_id);
+
+      if (maybe_tiled_entry.has_value()) {
+        auto tile_entry = maybe_tiled_entry.value();
+        if (tile_entry.peel_stage == PredicatePeelStage::Prolog) {
+          stop_pred = SimplifyingIrBuilder::ltExpr(
+                          offsetted_stop_index,
+                          PredicatePeeling::getSplitTileOffset(
+                              contig_id, tile_entry.inner_factor))
+                          ->as<Bool>();
+        } else if (
+            tile_entry.for_loop->doubleBufferLoopStage() ==
+            DoubleBufferLoopStage::Main) {
+          auto db_index = SimplifyingIrBuilder::addExpr(
+              tile_entry.for_loop->index(),
+              IrBuilder::create<Int>(
+                  gpu_lower->doubleBufferInfo().getStageDepthFor(
+                      tile_entry.for_loop->iter_domain()) -
+                  1));
+          stop_pred = SimplifyingIrBuilder::ltExpr(
+                          db_index, tile_entry.for_loop->stop())
+                          ->as<Bool>();
+        } else {
+          stop_pred = gpu_lower->kernel()->trueVal();
+        }
+      }
       info.stop_predicate_ = stop_pred;
     }
 

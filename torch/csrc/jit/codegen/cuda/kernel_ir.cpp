@@ -50,6 +50,19 @@ Predicate::Predicate(IrBuilderPasskey passkey, Bool* value)
   TORCH_INTERNAL_ASSERT(value != nullptr);
 }
 
+Predicate::Predicate(IrBuilderPasskey passkey, const Predicate* other)
+    : Val(passkey, ValType::Predicate, DataType::Bool),
+      ptype_(other->ptype_),
+      expr_(other->expr_),
+      thread_pred_(other->thread_pred_),
+      unrolled_loop_(other->unrolled_loop_) {
+  TORCH_INTERNAL_ASSERT(
+      passkey.ir_container_->isA<kir::Kernel>(),
+      "IR type only valid for Kernel container.");
+  TORCH_INTERNAL_ASSERT(
+      other->value_ == nullptr, "No support yet for predicate deep copy");
+}
+
 TensorIndex::TensorIndex(
     IrBuilderPasskey passkey,
     const TensorView* view,

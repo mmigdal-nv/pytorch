@@ -13,15 +13,25 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+// Stage, Factor pair:
+struct PeeledTileEntry {
+  PredicatePeelStage peel_stage = PredicatePeelStage::NoApplicable;
+  Val* inner_factor = nullptr;
+  kir::ForLoop* for_loop = nullptr;
+};
+
 class PredicatePeelingInfo {
  public:
-  bool shouldPeelLoop(kir::ForLoop* forloop);
+  bool shouldPeelLoop(kir::ForLoop* forloop) const;
 
-  void markLoopPeeled(kir::ForLoop* forloop);
+  void build(Fusion* fusion);
+
+  c10::optional<PeeledTileEntry> getMaybePeeledTileEntry(
+      const std::vector<kir::ForLoop*>& loops,
+      IterDomain* root_id);
 
  private:
- private:
-  std::unordered_set<IterDomain*> concrete_loops_to_peel_;
+  std::unordered_set<IterDomain*> concrete_id_of_peeled_loops_;
 };
 
 namespace PredicatePeeling {
@@ -31,6 +41,10 @@ namespace PredicatePeeling {
 bool supportedPeelingLoop(IterDomain* id);
 
 std::vector<Expr*> peelPredicatedLoop(const std::vector<Expr*> exprs);
+
+Val* getSplitTileOffset(IterDomain* id, Val* tile_factor);
+
+Val* getSplitTileMainOffset(IterDomain* id, Val* tile_factor);
 
 } // namespace PredicatePeeling
 

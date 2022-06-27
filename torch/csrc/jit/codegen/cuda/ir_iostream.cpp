@@ -627,6 +627,9 @@ void IrPrinter::handle(const kir::ForLoop* node) {
   handle(node->index());
   os_ << " in ";
   handle(node->iter_domain());
+  os_ << ", start = " << node->start();
+  os_ << ", stop = " << node->stop();
+  os_ << ", step = " << node->step();
   os_ << ":\n";
   handleScope(node->body());
 }
