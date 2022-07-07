@@ -431,6 +431,11 @@ bool ForLoop::isTrivial() const {
     return true;
   }
 
+  if (isInterleaveUnit()) {
+    // Index is important in interleave unit.
+    return false;
+  }
+
   // Extent-1 loop: for (int i = 0; i < 1; ++i) {
   if (start()->isZeroInt() && stop()->isOneInt() && step()->isOneInt()) {
     return true;

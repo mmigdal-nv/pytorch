@@ -10,6 +10,7 @@
 #include <torch/csrc/jit/codegen/cuda/lower_double_buffer.h>
 #include <torch/csrc/jit/codegen/cuda/lower_fused_reduction.h>
 #include <torch/csrc/jit/codegen/cuda/lower_index_hoist.h>
+#include <torch/csrc/jit/codegen/cuda/lower_interleaved_loop.h>
 #include <torch/csrc/jit/codegen/cuda/lower_mem_index.h>
 #include <torch/csrc/jit/codegen/cuda/lower_predicate.h>
 #include <torch/csrc/jit/codegen/cuda/lower_predicate_elimination.h>
@@ -174,6 +175,14 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
     return sync_map_;
   }
 
+  auto& interleavedLoopInfo() {
+    return interleave_info_;
+  }
+
+  const auto& interleavedLoopInfo() const {
+    return interleave_info_;
+  }
+
   kir::KernelPerformanceProfile& profile() {
     return profile_;
   }
@@ -234,6 +243,7 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   AddressComputeInfo address_compute_info_;
   PredicatePeelingInfo predicate_peeling_info_;
   kir::KernelPerformanceProfile profile_;
+  InterleaveLoopInfo interleave_info_;
 
   // Track which tensor views are inputs or outputs of a vectorized operation
   // and their maximum vectorized access size

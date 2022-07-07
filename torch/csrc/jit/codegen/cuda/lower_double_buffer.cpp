@@ -17,7 +17,7 @@ unsigned int getDoubleBufferAxisPosition(const TensorView* tv) {
   // which defines the loop where prefetching is applied. Therefore,
   // the CA position must be larger than 0.
 
-  TORCH_INTERNAL_ASSERT(tv->getComputeAtPosition() > 0);
+  TORCH_INTERNAL_ASSERT(tv->getComputeAtPosition() > 0, tv->toString());
 
   // Unroll must not exist outside of double-buffer axis
   auto first_unroll_it = std::find_if(

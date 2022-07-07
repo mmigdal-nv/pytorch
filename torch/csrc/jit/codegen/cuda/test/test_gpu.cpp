@@ -25838,6 +25838,44 @@ TEST_F(NVFuserTest, FusionSimpleMemHoisting_CUDA) {
   testValidate(&fusion, outputs, {t0}, {t0}, __LINE__, __FILE__);
 }
 
+// Initial test case for interleaving unrolled loops
+TEST_F(NVFuserTest, FusionSimpleInterleaving1_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  // [M,K]
+  auto tv0 = makeContigTensor(1);
+
+  fusion.addInput(tv0);
+
+  auto tv1 = set(tv0);
+  auto tv2 = set(tv1);
+  auto tv3 = set(tv2);
+
+  fusion.addOutput(tv3);
+
+  tv3->split(0, 4);
+  tv3->split(0, 8);
+  tv3->reorder({{1, 2}, {2, 1}});
+  tv0->computeAt(tv3, 1);
+  tv2->computeAt(tv3, 2);
+
+  tv1->doubleBuffer();
+  tv2->doubleBuffer();
+
+  tv3->interleave(0);
+
+  at::manual_seed(0);
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  auto t0 = at::randn({256}, options);
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0});
+  auto cg_outputs = fe.runFusion({t0});
+
+  testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
+}
+
 } // namespace jit
 } // namespace torch
 #endif // #if defined(USE_CUDA)

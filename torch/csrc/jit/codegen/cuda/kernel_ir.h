@@ -450,6 +450,9 @@ struct LoopTransformInfo {
   //!  lifted memory address.
   bool is_base_index_loop = false;
 
+  //! Tracks if this for loop is a unit from an interleaved set of loops.
+  bool is_interleave_unit = false;
+
   //! Setter API
   LoopTransformInfo& doubleBufferStage(DoubleBufferLoopStage stage) {
     double_buffer_loop_stage = stage;
@@ -465,6 +468,12 @@ struct LoopTransformInfo {
   //! Setter API
   LoopTransformInfo& predicatePeelStage(PredicatePeelStage stage) {
     predicate_peel_stage = stage;
+    return *this;
+  }
+
+  //! Setter API
+  LoopTransformInfo& interLeaveUnit() {
+    is_interleave_unit = true;
     return *this;
   }
 };
@@ -563,6 +572,10 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
   //!  base index for lifted memory address.
   bool isBaseIndexLoop() const {
     return loop_transform_info_.is_base_index_loop;
+  }
+
+  bool isInterleaveUnit() const {
+    return loop_transform_info_.is_interleave_unit;
   }
 
  private:

@@ -508,6 +508,16 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     return skew_double_buffer_loop_;
   }
 
+  void interleave(int axis) {
+    // TODO: move to tensorview.cpp
+    //  and add upfront validation.
+    maybe_interleaved_axis_ = axis;
+  }
+
+  auto getMaybeInterleavedAxis() const {
+    return maybe_interleaved_axis_;
+  }
+
   //! Transforms the innermost iterdomains according to the given mma swizzle,
   //!  this should be used on the tvs that are either inputs/outputs of an
   //!  MmaOp, or any tv's that are involved in prolog/epilog fusions and need to
@@ -598,6 +608,9 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //! Indicates if the prolog of the double buffer loop of double
   //!  buffer tensor will be lifted out of the main loop.
   bool skew_double_buffer_loop_ = false;
+
+  // Loop where the next level of unrolled loops are interleaved.
+  c10::optional<int> maybe_interleaved_axis_;
 };
 
 //! A simple TensorView builder

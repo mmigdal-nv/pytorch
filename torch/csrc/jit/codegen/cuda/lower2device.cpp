@@ -14,6 +14,7 @@
 #include <torch/csrc/jit/codegen/cuda/lower_index.h>
 #include <torch/csrc/jit/codegen/cuda/lower_insert_syncs.h>
 #include <torch/csrc/jit/codegen/cuda/lower_instrument.h>
+#include <torch/csrc/jit/codegen/cuda/lower_interleaved_loop.h>
 #include <torch/csrc/jit/codegen/cuda/lower_loops.h>
 #include <torch/csrc/jit/codegen/cuda/lower_magic_zero.h>
 #include <torch/csrc/jit/codegen/cuda/lower_misaligned_vectorization.h>
@@ -314,6 +315,8 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
 
   doubleBufferInfo().build(fusion_);
 
+  interleavedLoopInfo().build(fusion_);
+
   compute_at_map_->allocateIndexVariables();
 
   addressComputeInfo().build(fusion_);
@@ -355,12 +358,15 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   const auto predicate_peeled =
       PredicatePeeling::peelPredicatedLoop(exprs_double_buffered);
 
+  const auto exprs_interleaved =
+      interLeaveDoubleBufferUnrolledLoops(predicate_peeled);
+
   // This pass inserts predicates as well as branches in the code. Up until now
   // the code is explicitly single shot for loop based. Need to be careful in
   // later passes when doing any kind of insertions in loop nest structure as
   // insertions could be on if then or else instead of directly on a for loop.
   const auto exprs_unrolled_loops =
-      UnrollPass::runPass(fusion_, predicate_peeled);
+      UnrollPass::runPass(fusion_, exprs_interleaved);
 
   const auto exprs_unrolled_mv_loops =
       processMisalignedVectorization(exprs_unrolled_loops);

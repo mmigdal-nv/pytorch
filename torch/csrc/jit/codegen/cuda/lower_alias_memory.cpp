@@ -646,6 +646,12 @@ class BufferUseDefInfo {
           maybe_alloc_info.value()->can_use_inner_alias = false;
         }
 
+        if (input_tv->isDoubleBuffered()) {
+          // Do not inline re-use double buffered tensors,
+          //  the whole allocated space is valid throughout.
+          maybe_alloc_info.value()->can_use_inner_alias = false;
+        }
+
         auto outer_loop_info =
             ascendLoopNestToSameLevelAs(maybe_alloc_info.value());
 
