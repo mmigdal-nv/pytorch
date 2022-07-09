@@ -503,10 +503,23 @@ BasicAllocInfo getAllocInformation(
 
     // Allocation of a double buffered tensor is placed outside its
     // double buffer axis.
-    if ((tv->isDoubleBuffered() || tv->isCircularBuffered()) &&
-        tv->axis(info.alloc_pos) ==
-            gpu_lower->doubleBufferInfo().getDoubleBufferAxis(tv)) {
-      outer_alloc_found = true;
+    if (tv->isDoubleBuffered() || tv->isCircularBuffered()) {
+      auto double_buffer_alloc_axis =
+          gpu_lower->doubleBufferInfo().getDoubleBufferAxis(tv);
+      if (tv->shouldSkewDoubleBuffer()) {
+        auto concrete_outer_alloc_axis =
+            gpu_lower->doubleBufferInfo().nestLiftingMap().at(
+                gpu_lower->caMap()->getConcreteMappedID(
+                    double_buffer_alloc_axis, IdMappingMode::LOOP));
+        if (gpu_lower->caMap()->areMapped(
+                concrete_outer_alloc_axis,
+                tv->axis(info.alloc_pos),
+                IdMappingMode::LOOP)) {
+          outer_alloc_found = true;
+        }
+      } else if (tv->axis(info.alloc_pos) == double_buffer_alloc_axis) {
+        outer_alloc_found = true;
+      }
     }
 
     auto local_id = tv->axis(info.alloc_pos);

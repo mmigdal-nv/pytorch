@@ -1199,7 +1199,13 @@ indexMapFromTV(
       idx = loop->start();
     }
 
-    if (loop == double_buffer_loop) {
+    bool is_split_prolog =
+        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::UpperProlog ||
+        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::LowerProlog;
+    // The two conditions should never be true at the same time,
+    //  since the second condition implies that the double buffer
+    //  loop is within the current loop.
+    if (loop == double_buffer_loop && !is_split_prolog) {
       auto stage_depth =
           GpuLower::current()->doubleBufferInfo().getStageDepthFor(
               loop->iter_domain());
@@ -1892,12 +1898,29 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
       // TODO: add loop attribute to note it is not
       //  in an address calculation loop:
       if (!db_loop->isBaseIndexLoop()) {
-        auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
-            db_loop->iter_domain());
         auto loop_index =
             db_loop->isTrivial() ? db_loop->start() : db_loop->index();
+
+        auto consumer_db_loop =
+            gpu_lower->doubleBufferInfo().getDoubleBufferLoop(
+                consumer_tv, loops);
+
+        if (consumer_db_loop != nullptr) {
+          if (gpu_lower->doubleBufferInfo().isLowerPrologWithin(
+                  consumer_db_loop->iter_domain(), db_loop->iter_domain())) {
+            if (consumer_db_loop->doubleBufferLoopStage() ==
+                DoubleBufferLoopStage::LowerProlog) {
+              loop_index = SimplifyingIrBuilder::addExpr(
+                  loop_index, gpu_lower->kernel()->oneVal());
+            }
+          }
+        }
+
+        auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
+            db_loop->iter_domain());
         auto db_switch_index = SimplifyingIrBuilder::modExpr(
             loop_index, SimplifyingIrBuilder::create<Int>(stage_depth));
+
         auto original_alloc_size =
             gpu_lower->doubleBufferInfo().getOriginalAllocSize(producer_tv);
         auto db_strided_index =
@@ -2220,7 +2243,11 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
           db_loop->iter_domain());
       bool is_circular_buffer_loop = stage_depth > 2;
       bool is_prolog =
-          db_loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Prolog;
+          db_loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Prolog ||
+          db_loop->doubleBufferLoopStage() ==
+              DoubleBufferLoopStage::UpperProlog ||
+          db_loop->doubleBufferLoopStage() ==
+              DoubleBufferLoopStage::LowerProlog;
 
       Val* db_switch_index = nullptr;
 
@@ -2286,13 +2313,18 @@ std::vector<Val*> Index::getProducerStridedIndices(
         getNonGlobalProducerStridedIndices(producer, consumer, loops);
   }
 
+  // TODO: this check is becoming not very precise.
+  //  Could probably write a dedicated validation for the index.
   TORCH_INTERNAL_ASSERT(
       producer->shouldLiftReadAddress() ||
-      strided_indices.size() ==
-          producer->getMaybeRFactorDomain().size() +
-              (producer->isDoubleBuffered() || producer->isCircularBuffered()
-                   ? 1
-                   : 0));
+          strided_indices.size() == producer->getMaybeRFactorDomain().size() ||
+          strided_indices.size() ==
+              producer->getMaybeRFactorDomain().size() + 1,
+      " ",
+      strided_indices.size(),
+      " ",
+      producer->getMaybeRFactorDomain().size(),
+      producer->toString());
 
   return strided_indices;
 }

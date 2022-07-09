@@ -325,7 +325,14 @@ enum class LoadStoreOpType { LdMatrix, LdMatrixTranspose, CpAsync };
 
 // Used to label what part of the double buffered iterdomain
 //  a for loop is materializing.
-enum class DoubleBufferLoopStage { NotApplicable, Prolog, Main, Epilog };
+enum class DoubleBufferLoopStage {
+  NotApplicable,
+  Prolog,
+  Main,
+  Epilog,
+  UpperProlog,
+  LowerProlog
+};
 
 //! Supported swizzle types,
 //!  corresponds to swizzles functions on the runtime cuda

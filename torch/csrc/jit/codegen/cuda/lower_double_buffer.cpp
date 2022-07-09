@@ -95,7 +95,7 @@ void validateDoubleBufferedTensor(const TensorView* tv) {
   TORCH_INTERNAL_ASSERT(
       (p_mem_type == MemoryType::Global &&
        (c_mem_type == MemoryType::Shared || c_mem_type == MemoryType::Local)) ||
-          (p_mem_type == MemoryType::Shared && c_mem_type == MemoryType::Local),
+          (c_mem_type == MemoryType::Local),
       "Invalid tensor to double-buffer: ",
       tv->toString(),
       ". Producer memory type: ",
@@ -552,6 +552,227 @@ class DoubleBufferInserter : private kir::ExprMutator {
   kir::ForLoop* processed_loop_ = nullptr;
 };
 
+// Apply double buffering transformations
+class SkewDoubleBufferLoop : private kir::ExprMutator {
+ public:
+  // When there exist multiple double buffer loops, apply
+  // transformations to inner-most loops first. A single ExprMutator
+  // pass can only process one loop.
+  static std::vector<Expr*> run(const std::vector<Expr*>& exprs) {
+    auto skewed_exprs = exprs;
+    auto& double_buffer_info = GpuLower::current()->doubleBufferInfo();
+
+    // TODO: enable shared double buffer loop
+    std::unordered_set<IterDomain*> lifted;
+    for (auto& loop_nest_entry : double_buffer_info.nestLiftingMap()) {
+      if(lifted.insert(loop_nest_entry.first).second){
+        SkewDoubleBufferLoop skew_loop(
+          skewed_exprs, loop_nest_entry.first, loop_nest_entry.second);
+        skewed_exprs = skew_loop.exprs_;
+      }
+    }
+    return skewed_exprs;
+  }
+
+ private:
+  SkewDoubleBufferLoop(
+      const std::vector<Expr*>& exprs,
+      IterDomain* concrete_double_buffer_loop_id,
+      IterDomain* concrete_outer_main_loop_id)
+      : concrete_double_buffer_loop_id_(concrete_double_buffer_loop_id),
+        concrete_outer_main_loop_id_(concrete_outer_main_loop_id) {
+    traverseAndInsert(exprs);
+  }
+
+  using kir::ExprMutator::handle;
+
+  void splitProlog(kir::ForLoop* loop) {
+    // Create upper prolog
+    auto upper_prolog = makeWrapedUpperProlog(loop);
+
+    // Upper prolog needs to be lifted out of
+    //  the outer main loop.
+    registerInsertBefore(
+        outer_main_loop_, upper_prolog, outer_main_loop_scope_);
+
+    // Create lower prolog
+    auto lower_prolog = makeLowerProlog(loop);
+
+    // Lower prolog goes to the end of outer main loop
+    TORCH_INTERNAL_ASSERT(!outer_main_loop_->body().empty());
+    registerInsertAfter(
+        outer_main_loop_->body().exprs().back(),
+        lower_prolog,
+        &outer_main_loop_->body());
+
+    // Remove the original prolog
+    registerRemove(loop);
+  }
+
+  kir::ForLoop* getClonedPrologLoopNest(
+      kir::ForLoop* original_prolog,
+      kir::ForLoop* cloned_prolog) {
+    // clone the loop nest all the way to the original prolog
+    std::vector<kir::ForLoop*> loop_nest_to_clone;
+    bool outer_main_loop_found = false;
+    for (auto loop : for_loops_) {
+      if (loop == original_prolog) {
+        // Don't need to make copy beyond
+        //  the prolog nest level.
+        break;
+      }
+      if (outer_main_loop_found) {
+        loop_nest_to_clone.push_back(loop);
+      }
+      outer_main_loop_found = outer_main_loop_found || loop == outer_main_loop_;
+    }
+
+    TORCH_INTERNAL_ASSERT(
+        outer_main_loop_found, "cannot find outer main loop on the loop nest");
+
+    kir::ForLoop *outer_loop = cloned_prolog, *inner_loop = cloned_prolog;
+
+    if (!loop_nest_to_clone.empty()) {
+      std::tie(outer_loop, inner_loop) = makeLoopNest(loop_nest_to_clone);
+      inner_loop->body().push_back(cloned_prolog);
+    }
+
+    // Put actual expressions inside original prolog
+    //  into the upper prolog.
+    for (auto expr : original_prolog->body().exprs()) {
+      cloned_prolog->body().push_back(cloneMaybeLoopNest(expr));
+    }
+
+    return outer_loop;
+  }
+
+  kir::ForLoop* makeWrapedUpperProlog(kir::ForLoop* original_prolog) {
+    // Peel iteration 0 of outer main loop.
+    auto cloned_main_loop = IrBuilder::create<kir::ForLoop>(
+        outer_main_loop_->iter_domain(),
+        GpuLower::current()->kernel()->zeroVal(),
+        GpuLower::current()->kernel()->zeroVal(),
+        GpuLower::current()->kernel()->oneVal(),
+        GpuLower::current()->kernel()->oneVal(),
+        false,
+        nullptr,
+        outer_main_loop_->isUnrollRequired(),
+        DoubleBufferLoopStage::NotApplicable);
+
+    auto upper_prolog_loop = IrBuilder::create<kir::ForLoop>(
+        original_prolog->iter_domain(),
+        original_prolog->index(),
+        original_prolog->start(),
+        original_prolog->stop(),
+        original_prolog->step(),
+        false,
+        nullptr,
+        original_prolog->isUnrollRequired(),
+        DoubleBufferLoopStage::UpperProlog);
+
+    auto outer_loop =
+        getClonedPrologLoopNest(original_prolog, upper_prolog_loop);
+
+    // Put the cloned loop nest into the cloned main loop
+    //  and insert the main loop.
+    cloned_main_loop->body().push_back(outer_loop);
+
+    return cloned_main_loop;
+  }
+
+  kir::ForLoop* makeLowerProlog(kir::ForLoop* original_prolog) {
+    auto lower_prolog_loop = IrBuilder::create<kir::ForLoop>(
+        original_prolog->iter_domain(),
+        original_prolog->index(),
+        original_prolog->start(),
+        original_prolog->stop(),
+        original_prolog->step(),
+        false,
+        nullptr,
+        original_prolog->isUnrollRequired(),
+        DoubleBufferLoopStage::LowerProlog);
+
+    return getClonedPrologLoopNest(original_prolog, lower_prolog_loop);
+  }
+
+  void handle(kir::ForLoop* loop) final {
+    bool is_lifted_prolog = GpuLower::current()->caMap()->areMapped(
+                                loop->iter_domain(),
+                                concrete_double_buffer_loop_id_,
+                                IdMappingMode::LOOP) &&
+        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Prolog &&
+        within_outer_main_loop_;
+
+    bool is_main_loop =
+        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::NotApplicable ||
+        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Main;
+    bool is_outer_main_loop = is_main_loop &&
+        GpuLower::current()->caMap()->areMapped(
+            loop->iter_domain(),
+            concrete_outer_main_loop_id_,
+            IdMappingMode::LOOP);
+
+    if (is_lifted_prolog) {
+      splitProlog(loop);
+      return;
+    }
+
+    if (is_outer_main_loop) {
+      within_outer_main_loop_ = true;
+      outer_main_loop_ = loop;
+      outer_main_loop_scope_ = scope_.empty() ? nullptr : scope_.back();
+    }
+
+    kir::ExprMutator::handle(loop);
+
+    if (is_outer_main_loop) {
+      within_outer_main_loop_ = false;
+    }
+  }
+
+  Expr* cloneMaybeLoopNest(Expr* expr) {
+    auto loop = dynamic_cast<kir::ForLoop*>(expr);
+    if (loop == nullptr) {
+      return expr;
+    }
+
+    auto cloned_loop = IrBuilder::create<kir::ForLoop>(loop);
+    for (auto expr : loop->body().exprs()) {
+      cloned_loop->body().push_back(cloneMaybeLoopNest(expr));
+    }
+    return cloned_loop;
+  }
+
+  // Returns <Outermost, Innermost>
+  std::pair<kir::ForLoop*, kir::ForLoop*> makeLoopNest(
+      std::vector<kir::ForLoop*> original_loop_nest) {
+    TORCH_INTERNAL_ASSERT(
+        !original_loop_nest.empty(), "cannot copy empty loop nest");
+    kir::ForLoop *outermost = nullptr, *innermost = nullptr;
+    for (auto loop : original_loop_nest) {
+      auto cloned_loop = IrBuilder::create<kir::ForLoop>(loop);
+      if (outermost == nullptr) {
+        outermost = cloned_loop;
+      }
+      if (innermost != nullptr) {
+        innermost->body().push_back(cloned_loop);
+      }
+      innermost = cloned_loop;
+    }
+    return std::make_pair(outermost, innermost);
+  }
+
+ private:
+  // Running State
+  kir::ForLoop* outer_main_loop_ = nullptr;
+  kir::Scope* outer_main_loop_scope_ = nullptr;
+  bool within_outer_main_loop_ = false;
+
+  // Interface parameter
+  IterDomain* concrete_double_buffer_loop_id_;
+  IterDomain* concrete_outer_main_loop_id_;
+};
+
 } // namespace
 
 void DoubleBufferInfo::build(Fusion* fusion) {
@@ -568,6 +789,71 @@ void DoubleBufferInfo::build(Fusion* fusion) {
         GpuLower::current()->caMap()->getConcreteMappedID(
             double_buffer_axis, IdMappingMode::LOOP));
   }
+
+  // Add a second pass to keep track of lifted
+  //  double buffer loop nest
+  for (auto& info : map_) {
+    buildSkewInfo(info.first, info.second);
+  }
+}
+
+void DoubleBufferInfo::buildSkewInfo(
+    const TensorView* tv,
+    const TvInfo& tv_info) {
+  if (tv->shouldSkewDoubleBuffer()) {
+    IterDomain* outer_loop_id = nullptr;
+    bool double_buffer_axis_found = false;
+    for (auto id_it = tv->domain()->domain().rbegin();
+         id_it != tv->domain()->domain().rend();
+         id_it++) {
+      // The outer loop to lift prolog out of would
+      //  be the first serial loop on the left of
+      //  the double buffer loop
+      if (double_buffer_axis_found &&
+          (*id_it)->getParallelType() == ParallelType::Serial) {
+        outer_loop_id = *id_it;
+        break;
+      }
+
+      // Mark double buffer axis found
+      if (GpuLower::current()->caMap()->areMapped(
+              *id_it, tv_info.double_buffer_axis, IdMappingMode::LOOP)) {
+        double_buffer_axis_found = true;
+      }
+    }
+
+    TORCH_INTERNAL_ASSERT(
+        outer_loop_id != nullptr,
+        "cannot lift double buffered tensor ",
+        tv->toString(),
+        "double buffer loop ",
+        tv_info.double_buffer_axis->toString());
+
+    auto concrete_outer_loop_id =
+        GpuLower::current()->caMap()->getConcreteMappedID(
+            outer_loop_id, IdMappingMode::LOOP);
+    auto concrete_double_buffer_axis =
+        GpuLower::current()->caMap()->getConcreteMappedID(
+            tv_info.double_buffer_axis, IdMappingMode::LOOP);
+
+    concrete_skewed_double_buffer_loop_map_.insert(
+        std::make_pair(concrete_double_buffer_axis, concrete_outer_loop_id));
+  }
+}
+
+bool DoubleBufferInfo::isLowerPrologWithin(
+    IterDomain* double_buffer_id,
+    IterDomain* outer_id) {
+  auto concrete_double_buffer_id =
+      GpuLower::current()->caMap()->getConcreteMappedID(
+          double_buffer_id, IdMappingMode::LOOP);
+  auto lift_id_it =
+      concrete_skewed_double_buffer_loop_map_.find(concrete_double_buffer_id);
+  if (lift_id_it == concrete_skewed_double_buffer_loop_map_.end()) {
+    return false;
+  }
+  return GpuLower::current()->caMap()->areMapped(
+      lift_id_it->second, outer_id, IdMappingMode::LOOP);
 }
 
 bool DoubleBufferInfo::isDoubleBufferedIterDomain(IterDomain* id) {
@@ -692,7 +978,9 @@ Val* DoubleBufferInfo::getOriginalAllocSize(const TensorView* tv) {
 
 std::vector<Expr*> DoubleBufferPass::run(const std::vector<Expr*>& exprs) {
   auto insertion_info = DoubleBufferLoopNestInspector::run(exprs);
-  return DoubleBufferInserter::run(exprs, insertion_info);
+  const auto double_buffer_inserted =
+      DoubleBufferInserter::run(exprs, insertion_info);
+  return SkewDoubleBufferLoop::run(double_buffer_inserted);
 }
 
 } // namespace cuda

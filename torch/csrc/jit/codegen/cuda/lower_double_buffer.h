@@ -215,8 +215,15 @@ class TORCH_CUDA_CU_API DoubleBufferInfo {
   //!  the number of stages will be 2 in the case of double buffer loop.
   unsigned int getStageDepthFor(IterDomain* circular_buffered_id);
 
+  const auto& nestLiftingMap() const {
+    return concrete_skewed_double_buffer_loop_map_;
+  }
+
+  bool isLowerPrologWithin(IterDomain* db_loop, IterDomain* outer_loop);
+
  private:
   TvInfo& getTvInfo(const TensorView* tv);
+  void buildSkewInfo(const TensorView* tv, const TvInfo& tv_info);
 
   //! Set the number of circular buffer stages for the given
   //! circular_buffered_id.
@@ -241,6 +248,11 @@ class TORCH_CUDA_CU_API DoubleBufferInfo {
   //! Only one stage depth is supported, so that the loops can indeed
   //! shared with the same prolog extent and main loop offset.
   std::unordered_map<IterDomain*, unsigned int> stage_depth_;
+
+  //! Keeps track of nested lifting of double buffered loops
+  //!  mapping from inner loop to outer loop.
+  std::unordered_map<IterDomain*, IterDomain*>
+      concrete_skewed_double_buffer_loop_map_;
 };
 
 } // namespace cuda

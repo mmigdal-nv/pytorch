@@ -216,7 +216,8 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
       cpu_scalar_(src->cpu_scalar_),
       has_swizzle_op_(src->has_swizzle_op_),
       lift_read_address_(src->lift_read_address_),
-      lift_write_address_(src->lift_write_address_) {
+      lift_write_address_(src->lift_write_address_),
+      skew_double_buffer_loop_(src->skew_double_buffer_loop_) {
   for (const auto id : src->axesToSwizzle()) {
     axes_to_swizzle_.push_back(ir_cloner->clone(id));
   }

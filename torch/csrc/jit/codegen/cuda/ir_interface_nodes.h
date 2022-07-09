@@ -498,6 +498,16 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     return lift_write_address_;
   }
 
+  void skewDoubleBuffer() {
+    TORCH_INTERNAL_ASSERT(
+        is_double_buffered_, "can only skew double buffered tensor");
+    skew_double_buffer_loop_ = true;
+  }
+
+  bool shouldSkewDoubleBuffer() const {
+    return skew_double_buffer_loop_;
+  }
+
   //! Transforms the innermost iterdomains according to the given mma swizzle,
   //!  this should be used on the tvs that are either inputs/outputs of an
   //!  MmaOp, or any tv's that are involved in prolog/epilog fusions and need to
@@ -577,6 +587,10 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //   and pre-compute address for this tensor.
   bool lift_read_address_ = false;
   bool lift_write_address_ = false;
+
+  //! Indicates if the prolog of the double buffer loop of double
+  //!  buffer tensor will be lifted out of the main loop.
+  bool skew_double_buffer_loop_ = false;
 };
 
 //! A simple TensorView builder
