@@ -19,6 +19,10 @@ struct GemmTile {
   GemmTile operator/(const GemmTile& other) {
     return GemmTile(m / other.m, n / other.n, k / other.k);
   }
+
+  std::vector<int> toVector() {
+    return {m, n, k};
+  }
 };
 
 //! Utility data structure for recording gemm tiles

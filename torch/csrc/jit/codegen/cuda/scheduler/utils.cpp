@@ -1640,6 +1640,166 @@ void scheduleContiguousVectorLoad(
   tv->axis(-4)->parallelize(ParallelType::TIDz);
 }
 
+void makeTile(TensorView* tv, std::vector<int> tile_sizes) {
+  TORCH_CHECK(
+      tv->domain()->domain().size() >= tile_sizes.size(),
+      "Tensor dimension less than tile dimension!");
+
+  // Number of inner dimensions we are tiling.
+  const auto tile_dimension_size = tile_sizes.size();
+
+  // Split the inner dimensions:
+  for (auto idx : c10::irange(tile_dimension_size)) {
+    // Using negative indexing to accomodate potential batching
+    //  dimensions on the further left. Eg.:
+    //  0, 1, 2   ->         -3,-2,-1
+    // [M, N, K]  -> [B0, B1, M, N, K]
+    tv->split(idx - tile_dimension_size, tile_sizes.at(idx));
+  }
+
+  // The transformation happened should look like:
+  //   Before               After
+  // [..., M, N, K] -> [..., Mo, Mi, No, Ni, Ko, Ki]
+
+  // Re-order the tiles so that all the outer tiles are
+  //  on the left of all the inner tiles
+  std::unordered_map<int, int> reorder_map;
+
+  // Number of tiled inner dimensions after we split.
+  const auto split_tile_dimension_size = 2 * tile_dimension_size;
+  for (auto idx : c10::irange(split_tile_dimension_size)) {
+    // We want to reorder as follows:
+    //           Before
+    //
+    // [..., Mo, Mi, No, Ni, Ko, Ki] ->
+    //                 After
+    //      vvv group0 vvv  vvv group1 vvv
+    // [..., Mo, No, Ko,     Mi, Ni, Ki]
+
+    // The index offset within group of current
+    //  iterdomain, with grouping specified above.
+    auto index_within_group = idx / 2;
+
+    // The index of the group the current id belongs
+    //  to, as specified above.
+    auto group_index = idx % 2;
+
+    // Calculate the actual index after reordering
+    auto index_after_reorder =
+        group_index * tile_dimension_size + index_within_group;
+
+    // Add pair {idx_before, idx_after} to re-order map.
+    reorder_map.insert(std::make_pair(
+        idx - split_tile_dimension_size,
+        index_after_reorder - split_tile_dimension_size));
+  }
+
+  // Apply the re-order map to tensor
+  tv->reorder(reorder_map);
+}
+
+namespace {
+
+c10::optional<IterDomain*> getMaybeRootIfInnermostTiled(
+    IterDomain* id,
+    const std::unordered_set<IterDomain*>& maybe_rfactor_id_set) {
+  // Root id defaults to an "innermost id".
+  while (id->definition() && !maybe_rfactor_id_set.count(id)) {
+    if (auto split = dynamic_cast<Split*>(id->definition())) {
+      if (id == split->inner()) {
+        id = split->in();
+        continue;
+      }
+    }
+    // Didn't pass the inner most check, return empty.
+    return c10::nullopt;
+  }
+
+  return id;
+}
+
+} // namespace
+
+TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv) {
+  auto ndims = tv->nDims();
+
+  // Keep track of the left most position where we will
+  //  be reordering the axes.
+  auto leftmost_pos = ndims;
+
+  // Pull the root id's of the given tv.
+  std::unordered_set<IterDomain*> maybe_rfactor_id_set{
+      tv->getMaybeRFactorDomain().begin(), tv->getMaybeRFactorDomain().end()};
+
+  // Keep track of leaf positions that is either a reduction
+  //  or a broadcast.
+  // Note: Currently don't really see a case where this function
+  //  should be called on a reduction output tv, but adding them
+  //  here for completeness.
+  std::deque<int> broadcast_or_reduction_pos;
+
+  // Map the root id's to their innermost concrete id's
+  //  on the leaf.
+  std::unordered_map<IterDomain*, int> root_id_to_leaf_pos;
+
+  // Move backward on tv's leaf domain;
+  for (auto i = ndims - 1; i >= 0; i--) {
+    auto leaf_id = tv->axis(i);
+    if (leaf_id->isBroadcast() || leaf_id->isReduction()) {
+      // Register this reduction or broadcast axis
+      //  to reorder.
+      broadcast_or_reduction_pos.push_front(i);
+      leftmost_pos = i;
+      continue;
+    }
+    auto maybe_root =
+        getMaybeRootIfInnermostTiled(leaf_id, maybe_rfactor_id_set);
+
+    if (maybe_root.has_value()) {
+      // Found an innermost id, add them to the
+      //  axes to reorder.
+      TORCH_INTERNAL_ASSERT(
+          root_id_to_leaf_pos.insert(std::make_pair(maybe_root.value(), i))
+              .second,
+          "Multiple \"innermost\" id seen for root id :",
+          maybe_root.value()->toString(),
+          " on ",
+          tv->toString(),
+          " very likely an invariant is broken.");
+      leftmost_pos = i;
+    } else {
+      break;
+    }
+  }
+
+  // Calculate the ordering:
+
+  // pointer to the current target postion after
+  //  repordering
+  int current_pos = leftmost_pos;
+  std::unordered_map<int, int> reorder_map;
+
+  // first place all the broadcast and reduction on the left:
+  for (auto original_broadcast_or_reduction_pos : broadcast_or_reduction_pos) {
+    reorder_map[original_broadcast_or_reduction_pos] = current_pos++;
+  }
+
+  // Next put all the innermost leaf id's
+  for (auto root_id : tv->getMaybeRFactorDomain()) {
+    auto leaf_id_pos_it = root_id_to_leaf_pos.find(root_id);
+    if (leaf_id_pos_it != root_id_to_leaf_pos.end()) {
+      reorder_map[leaf_id_pos_it->second] = current_pos++;
+    }
+  }
+
+  // Validate that we have processed all inner ids or broadcast/reduction
+  //  ids we have registered.
+  TORCH_INTERNAL_ASSERT(current_pos == ndims, "Inconsistent ordering logic");
+
+  // Apply the new order:
+  tv->reorder(reorder_map);
+}
+
 } // namespace matmul_utils
 
 // Grab all values and expressions used to make the merged_domain and remove
