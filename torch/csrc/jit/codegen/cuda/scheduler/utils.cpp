@@ -194,8 +194,11 @@ void parallelizeAllLike(
   auto ca_map = ComputeAtMap(FusionGuard::getCurFusion());
 
   for (auto id : reference_tv->domain()->domain()) {
-    ca_map.getConcreteMappedID(id, IdMappingMode::PERMISSIVE)
-        ->parallelize(id->getParallelType());
+    if (!id->isMma()) {
+      // Generally don't want to propagate mma type to any other tensor.
+      ca_map.getConcreteMappedID(id, IdMappingMode::PERMISSIVE)
+          ->parallelize(id->getParallelType());
+    }
     if (id->hasPaddingToMultipleOfWarp()) {
       ca_map.getConcreteMappedID(id, IdMappingMode::PERMISSIVE)
           ->padToMultipleOfWarp(id->getMaybeSizeAfterPadding());
@@ -209,6 +212,7 @@ void parallelizeAllLike(
     for (const auto i : c10::irange(tv->domain()->domain().size())) {
       auto ca_id =
           ca_map.getConcreteMappedID(tv->axis(i), IdMappingMode::PERMISSIVE);
+
       tv->axis(i)->parallelize(ca_id->getParallelType());
       if (ca_id->hasPaddingToMultipleOfWarp()) {
         tv->axis(i)->padToMultipleOfWarp(ca_id->getMaybeSizeAfterPadding());
