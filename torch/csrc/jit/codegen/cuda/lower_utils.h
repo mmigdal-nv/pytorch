@@ -267,6 +267,10 @@ struct TORCH_CUDA_CU_API IterDomainDependencySorter {
   const std::unique_ptr<ComputeAtMap>& compute_at_map_;
 };
 
+//! Returns true if the expression has a variant that takes a predicate
+//!  as an inline argument.
+bool supportInlinePredicate(Expr* expr);
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

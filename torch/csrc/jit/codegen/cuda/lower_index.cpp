@@ -750,6 +750,9 @@ void IndexLowering::handle(const LoadStoreOp* ldst) {
   const auto out = lowerDstIndex(ldst->out());
   pushBack(IrBuilder::create<LoadStoreOp>(ldst->opType(), out, in));
   GpuLower::current()->propagateExprInfo(ldst, back());
+  if (ldst->predicate()) {
+    back()->setPredicate(ldst->predicate());
+  }
 }
 
 void IndexLowering::handle(const MmaOp* mma) {

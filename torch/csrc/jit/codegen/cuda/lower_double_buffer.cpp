@@ -271,7 +271,13 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
          is_double_buffer_load_expr) ||
         (loop_type_ == DoubleBufferLoopStage::Epilog &&
          !is_double_buffer_load_expr)) {
-      cloned_scopes_.back()->push_back(expr);
+      if (supportInlinePredicate(expr) && expr->isA<LoadStoreOp>()) {
+        auto ldst = expr->as<LoadStoreOp>();
+        cloned_scopes_.back()->push_back(IrBuilder::create<LoadStoreOp>(
+            ldst->opType(), ldst->out(), ldst->in()));
+      } else {
+        cloned_scopes_.back()->push_back(expr);
+      }
     }
   }
 
