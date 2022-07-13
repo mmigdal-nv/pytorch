@@ -8,8 +8,9 @@ namespace fuser {
 namespace cuda {
 
 namespace {
-// Move the broadcast axes to the left on the inner 3 dimensions
-// e.g. [... I0, B, I1] -> [... B, I0, I1]
+// Move the broadcast axes to the left on the specified number of inner
+// dimensions e.g.  (when number_of_inner_pos == 3):
+//      [... I0, B, I1] -> [... B, I0, I1]
 //  should probably be only used to order innermost mnk axes.
 void moveInnerBroadcastLeft(TensorView* tv, int number_of_inner_pos = 3) {
   TORCH_INTERNAL_ASSERT(tv->nDims() >= number_of_inner_pos);
