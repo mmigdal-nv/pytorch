@@ -171,19 +171,22 @@ void scheduleMatmul(
     moveInnerBroadcastLeft(bb);
     ab->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
     bb->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
+
+    // Propagate mma input swizzle up the DAG
+    //  to all the tensors before mma op and after shared mem read.
+    scheduler_utils::matmul_utils::transformPropagateWithin(
+        ab, -1, {acw}, {}, true);
+    scheduler_utils::matmul_utils::transformPropagateWithin(
+        bb, -1, {bcw}, {}, true);
   } else {
+    // TODO:
+    //  Need to build out this to support balanced prolog fusion on Volta.
     acr->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
     bcr->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
   }
 
   cc->applyMmaSwizzle(
       mma_builder.operand(MmaOptions::Operand::Accumulator).build());
-
-  // Propagate mma input swizzle up the DAG
-  scheduler_utils::matmul_utils::transformPropagateWithin(
-      ab, -1, {acw}, {}, true);
-  scheduler_utils::matmul_utils::transformPropagateWithin(
-      bb, -1, {bcw}, {}, true);
 
   // Set memory type:
   acw->setMemoryType(MemoryType::Shared);
