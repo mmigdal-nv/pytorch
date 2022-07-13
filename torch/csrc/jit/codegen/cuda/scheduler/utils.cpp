@@ -194,10 +194,12 @@ void parallelizeAllLike(
   auto ca_map = ComputeAtMap(FusionGuard::getCurFusion());
 
   for (auto id : reference_tv->domain()->domain()) {
-    if (!id->isMma()) {
+    auto concrete_id =
+        ca_map.getConcreteMappedID(id, IdMappingMode::PERMISSIVE);
+
+    if (!id->isMma() && !concrete_id->isMma()) {
       // Generally don't want to propagate mma type to any other tensor.
-      ca_map.getConcreteMappedID(id, IdMappingMode::PERMISSIVE)
-          ->parallelize(id->getParallelType());
+      concrete_id->parallelize(id->getParallelType());
     }
     if (id->hasPaddingToMultipleOfWarp()) {
       ca_map.getConcreteMappedID(id, IdMappingMode::PERMISSIVE)
@@ -213,7 +215,10 @@ void parallelizeAllLike(
       auto ca_id =
           ca_map.getConcreteMappedID(tv->axis(i), IdMappingMode::PERMISSIVE);
 
-      tv->axis(i)->parallelize(ca_id->getParallelType());
+      if (!tv->axis(i)->isMma() && !ca_id->isMma()) {
+        tv->axis(i)->parallelize(ca_id->getParallelType());
+      }
+
       if (ca_id->hasPaddingToMultipleOfWarp()) {
         tv->axis(i)->padToMultipleOfWarp(ca_id->getMaybeSizeAfterPadding());
       }
@@ -1798,6 +1803,105 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv) {
 
   // Apply the new order:
   tv->reorder(reorder_map);
+}
+
+struct MatmulSelector : public MaxInfoSpanningTree::Selector {
+ public:
+  explicit MatmulSelector(std::unordered_set<TensorView*> selected_tvs)
+      : selected_tvs_(selected_tvs) {}
+
+  explicit MatmulSelector() : propagate_all_(true) {}
+
+  bool allowC2P(TensorView* from, TensorView* to) final {
+    return propagate_all_ || selected_tvs_.count(to);
+  }
+  bool allowP2C(TensorView* from, TensorView* to) final {
+    return propagate_all_ || selected_tvs_.count(to);
+  }
+  bool allowSibling(TensorView* from, TensorView* to) final {
+    return propagate_all_ || selected_tvs_.count(to);
+  }
+
+ private:
+  std::unordered_set<TensorView*> selected_tvs_;
+  bool propagate_all_ = false;
+};
+
+void transformPropagateFrom(
+    TensorView* from_tv,
+    int pos,
+    std::unordered_set<TensorView*> included_tvs,
+    bool propagate_parallel_type) {
+  MatmulSelector selector(included_tvs);
+  TransformPropagator propagator(from_tv, pos);
+  MaxRootDomainInfoSpanningTree(from_tv, &selector).traverse(&propagator);
+
+  if (propagate_parallel_type) {
+    scheduler_utils::parallelizeAllLike(
+        from_tv, {included_tvs.begin(), included_tvs.end()});
+  }
+}
+
+void transformPropagateToAllFrom(TensorView* from_tv, int pos) {
+  MatmulSelector selector;
+  TransformPropagator propagator(from_tv, pos);
+  MaxRootDomainInfoSpanningTree(from_tv, &selector).traverse(&propagator);
+}
+
+namespace {
+
+std::unordered_set<TensorView*> getPropagationPathTvs(
+    TensorView* tv,
+    std::vector<TensorView*> boundary,
+    bool include_boundary = false,
+    bool propagate_up = false) {
+  std::vector<Val*> values_on_path;
+  std::unordered_set<Val*> boundary_set{boundary.begin(), boundary.end()};
+
+  if (propagate_up) {
+    values_on_path = DependencyCheck::getAllValsBetween(boundary_set, {tv});
+  } else {
+    values_on_path = DependencyCheck::getAllValsBetween(
+        {tv}, {boundary.begin(), boundary.end()});
+  }
+
+  std::unordered_set<TensorView*> propagate_path;
+  for (auto path_tv : ir_utils::filterByType<TensorView>(values_on_path)) {
+    if (include_boundary || !boundary_set.count(path_tv)) {
+      propagate_path.insert(path_tv);
+    }
+  }
+
+  return propagate_path;
+}
+
+} // namespace
+
+void transformPropagateWithin(
+    TensorView* from_tv,
+    int pos,
+    std::vector<TensorView*> upper_boundary,
+    std::vector<TensorView*> lower_boundary,
+    bool propagate_parallel_type,
+    bool include_boundaries) {
+  // Generate tv selection for the propagation
+  std::unordered_set<TensorView*> selected_tvs;
+
+  // Insert upward paths to include.
+  if (!upper_boundary.empty()) {
+    auto up_tvs = getPropagationPathTvs(
+        from_tv, upper_boundary, include_boundaries, true);
+    selected_tvs.insert(up_tvs.begin(), up_tvs.end());
+  }
+
+  // Insert downward paths to include.
+  if (!lower_boundary.empty()) {
+    auto up_tvs = getPropagationPathTvs(
+        from_tv, lower_boundary, include_boundaries, false);
+    selected_tvs.insert(up_tvs.begin(), up_tvs.end());
+  }
+
+  transformPropagateFrom(from_tv, pos, selected_tvs, propagate_parallel_type);
 }
 
 } // namespace matmul_utils

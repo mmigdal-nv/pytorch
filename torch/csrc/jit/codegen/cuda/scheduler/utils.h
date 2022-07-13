@@ -330,6 +330,44 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv);
 //!  not a root id.
 TORCH_CUDA_CU_API void canonicalizeMmaTvOrdering(TensorView* tv);
 
+//! Propagate current transformations on from_tv to all tensorviews
+//!  within boundary.
+//! \param from_tv: target tv to replay transformations from.
+//! \param pos: position of target tv to replay to.
+//! \param upper_boundary:
+//!    boundary on the producer side where the propagation will stop.
+//!    an empty boundary means the propagator will **not** propagate
+//!    upward the DAG.
+//! \param lower_boundary: target tv to replay transformations from.
+//!    boundary on the consumer side where the propagation will stop.
+//!    an empty boundary means the propagator will **not** propagate
+//!    downward the DAG.
+//! \param propagate_parallel_type: Indicates if the propagator will
+//!    also replay parallel types on the matched iterdomains on the
+//!    replayed tensordomain.
+//! \param include_boundaries: Indicates if the tv's on the boundary
+//!    will be replayed.
+TORCH_CUDA_CU_API void transformPropagateWithin(
+    TensorView* from_tv,
+    int pos,
+    std::vector<TensorView*> upper_boundary,
+    std::vector<TensorView*> lower_boundary,
+    bool propagate_parallel_type = false,
+    bool include_boundaries = false);
+
+//! Propagate current transformations on from_tv to all tensorviews selected
+//! with include_tvs.
+TORCH_CUDA_CU_API void transformPropagateFrom(
+    TensorView* from_tv,
+    int pos,
+    std::unordered_set<TensorView*> included_tvs,
+    bool propagate_parallel_type = false);
+
+//! Propagate current transformations on from_tv to all graphs
+TORCH_CUDA_CU_API void transformPropagateToAllFrom(
+    TensorView* from_tv,
+    int pos);
+
 } // namespace matmul_utils
 
 } // namespace scheduler_utils

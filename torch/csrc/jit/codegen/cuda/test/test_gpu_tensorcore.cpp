@@ -25,6 +25,7 @@
 #include <torch/csrc/jit/codegen/cuda/ops/all_ops.h>
 #include <torch/csrc/jit/codegen/cuda/root_domain_map.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/all_schedulers.h>
+#include <torch/csrc/jit/codegen/cuda/scheduler/matmul.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/reduction_utils.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/utils.h>
 #include <torch/csrc/jit/codegen/cuda/test/test_gpu_validator.h>
@@ -117,49 +118,6 @@ bool cudaArchGuardShouldSkip(int required_major, int required_minor) {
   } else {                                                                   \
     COMPILE_FUSION;                                                          \
   }
-
-struct MatmulSelector : public MaxInfoSpanningTree::Selector {
- public:
-  explicit MatmulSelector(std::unordered_set<TensorView*> selected_tvs)
-      : selected_tvs_(selected_tvs) {}
-
-  explicit MatmulSelector() : propagate_all_(true) {}
-
-  bool allowC2P(TensorView* from, TensorView* to) final {
-    return propagate_all_ || selected_tvs_.count(to);
-  }
-  bool allowP2C(TensorView* from, TensorView* to) final {
-    return propagate_all_ || selected_tvs_.count(to);
-  }
-  bool allowSibling(TensorView* from, TensorView* to) final {
-    return propagate_all_ || selected_tvs_.count(to);
-  }
-
- private:
-  std::unordered_set<TensorView*> selected_tvs_;
-  bool propagate_all_ = false;
-};
-
-void transformPropagateFrom(
-    TensorView* from_tv,
-    int pos,
-    std::unordered_set<TensorView*> included_tvs,
-    bool propagate_parallel_type = false) {
-  MatmulSelector selector(included_tvs);
-  TransformPropagator propagator(from_tv, pos);
-  MaxRootDomainInfoSpanningTree(from_tv, &selector).traverse(&propagator);
-
-  if (propagate_parallel_type) {
-    scheduler_utils::parallelizeAllLike(
-        from_tv, {included_tvs.begin(), included_tvs.end()});
-  }
-}
-
-void transformPropagateToAllFrom(TensorView* from_tv, int pos) {
-  MatmulSelector selector;
-  TransformPropagator propagator(from_tv, pos);
-  MaxRootDomainInfoSpanningTree(from_tv, &selector).traverse(&propagator);
-}
 
 } // namespace
 
@@ -1212,100 +1170,8 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTN_CUDA) {
       MmaBuilder(MmaOptions::MacroType::Ampere_16_8_16, gemm_tile)
           .layout(MmaOptions::MmaInputLayout::TN);
 
-  mma_builder.configureMma(tv2);
-
-  auto tv0r = tv0->cacheAfter();
-  auto tv1r = tv1->cacheAfter();
-  auto tv0cw = tv0r->cacheAfter();
-  auto tv0cr =
-      tv0cw->cacheAfter(mma_builder.operand(MmaOptions::Operand::A).ldMatrix());
-  auto tv1cw = tv1r->cacheAfter();
-  auto tv1cr =
-      tv1cw->cacheAfter(mma_builder.operand(MmaOptions::Operand::B).ldMatrix());
-  auto tv2c = tv2->cacheBefore();
-  mma_builder.accumulatorTv(tv2c);
-
-  // Make a CTA tile
-  // ------------------------------------------------------------------
-  // [M,N]
-  // [M,N,K]
-  tv2c->split(-3, gemm_tile.cta_tile.m);
-  tv2c->split(-2, gemm_tile.cta_tile.n);
-  tv2c->split(-1, gemm_tile.cta_tile.k);
-
-  // [Mo, Mi, No, Ni, Ko, Ki]
-  tv2c->reorder({{-5, -3}, {-4, -5}, {-3, -2}, {-2, -4}});
-
-  // [Mo, No, Ko, Mi, Ni, Ki]
-
-  // Propagate tiling globally
-  transformPropagateToAllFrom(tv2c, -1);
-
-  // Schedule warp tile
-  scheduler_utils::matmul_utils::scheduleWarpTileWithReduction(tv2c, gemm_tile);
-
-  // Propagate warp tile to main loop and epilog/output tvs
-  transformPropagateFrom(tv2c, -1, {tv2, tv0cr, tv1cr, tv0b, tv1b});
-
-  // Schedule prolog:
-  // [... M, K]
-  tv0cw->merge(-2);
-  scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      tv0cw, gemm_tile, 8);
-
-  // [... N,K]
-  tv1cw->merge(-2);
-  scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      tv1cw, gemm_tile, 8);
-
-  // Propagate prolog tensors
-  transformPropagateFrom(tv0cw, -1, {tv0r}, true);
-  transformPropagateFrom(tv1cw, -1, {tv1r}, true);
-
-  // Set computeAt:
-
-  // CTA tile:
-  tv0->computeAt(tv2, 2);
-  tv1->computeAt(tv2, 2);
-
-  // Prolog:
-  tv0->computeAt(tv2c, 3);
-  tv1->computeAt(tv2c, 3);
-
-  // Main Loop:
-  tv0cr->computeAt(tv2c, -4);
-  tv1cr->computeAt(tv2c, -4);
-
-  // Add mma swizzle:
-  // [M,N,K] -> [N,M,K]
-  tv0b->reorder({{-3, -2}, {-2, -3}});
-  tv0b->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
-  tv1b->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
-  tv2c->applyMmaSwizzle(
-      mma_builder.operand(MmaOptions::Operand::Accumulator).build());
-
-  // Propagate swizzle to mainloop and epilog tvs
-  transformPropagateFrom(tv0b, -1, {tv0cr}, true);
-  transformPropagateFrom(tv1b, -1, {tv1cr}, true);
-
-  // Set memory type:
-  tv0cw->setMemoryType(MemoryType::Shared);
-  tv1cw->setMemoryType(MemoryType::Shared);
-
-  // Set parallelization: (TODO: is there parallelization propagator?)
-
-  // Vectorize smem loads:
-  tv0cr->axis(-1)->parallelize(ParallelType::Vectorize);
-  tv1cr->axis(-1)->parallelize(ParallelType::Vectorize);
-
-  //  0   1  2  3    4   5  6  7  8  9  10
-  // [Mo No Ko Mwo  Nwo Kw Mw Nw (Mi Ni Ki)]
-  tv2c->axis(0)->parallelize(ParallelType::BIDx);
-  tv2c->axis(1)->parallelize(ParallelType::BIDy);
-  tv2c->axis(3)->parallelize(ParallelType::TIDz);
-  tv2c->axis(4)->parallelize(ParallelType::TIDy);
-
-  transformPropagateFrom(tv2c, -1, {tv2}, true);
+  // Call scheduler
+  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
 
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
   auto t0 = at::randn({M, K}, options);
