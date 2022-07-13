@@ -59,22 +59,51 @@ void scheduleMatmul(
   // Setup register and shared memory stages:
   //   TODO: this section goes to a separate matmul util,
   //   and needs more configurability.
-  auto ar = a->cacheAfter();
-  auto br = b->cacheAfter();
-  auto acw = ar->cacheAfter();
-  auto acr =
-      acw->cacheAfter(mma_builder.operand(MmaOptions::Operand::A).ldMatrix());
-  auto bcw = br->cacheAfter();
-  auto bcr =
-      bcw->cacheAfter(mma_builder.operand(MmaOptions::Operand::B).ldMatrix());
+
+  // Setup accumulator register.
   auto cc = c->cacheBefore();
   mma_builder.accumulatorTv(cc);
 
-  // Option can only be pulled from this stage, so had to add the temporary
-  //  assertion here.
+  // Get the input to the mma op.
+  auto mma = dynamic_cast<MmaOp*>(cc->definition());
+  TORCH_INTERNAL_ASSERT(mma != nullptr);
+  auto ab = mma->inA()->as<TensorView>();
+  auto bb = mma->inB()->as<TensorView>();
+
+  // Get exact configurations from mma builder.
   auto mma_options = mma_builder.build();
-  // The load schedule for volta is different, will enable in a follow up.
-  TORCH_CHECK(isTuring(mma_options.macro) || isAmpere(mma_options.macro));
+
+  // Staging register for global memory load
+  auto ar = a->cacheAfter();
+  auto br = b->cacheAfter();
+
+  // TODO:
+  //  Significant build out needed here
+  //   for more flexibility and data type support.
+  // Shared memory
+  TensorView* acw = nullptr;
+  TensorView* bcw = nullptr;
+  // Shared memory read
+  TensorView* acr = nullptr;
+  TensorView* bcr = nullptr;
+
+  if (isVolta(mma_options.macro)) {
+    acw = ab->cacheAfter();
+    bcw = bb->cacheAfter();
+    // Cache again to be able to vectorize.
+    acw = acw->cacheAfter();
+    bcw = bcw->cacheAfter();
+
+    acr = acw->cacheAfter();
+    bcr = bcw->cacheAfter();
+  } else {
+    acw = ar->cacheAfter();
+    bcw = br->cacheAfter();
+    acr =
+        acw->cacheAfter(mma_builder.operand(MmaOptions::Operand::A).ldMatrix());
+    bcr =
+        bcw->cacheAfter(mma_builder.operand(MmaOptions::Operand::B).ldMatrix());
+  }
 
   // Make a CTA tile
   // ------------------------------------------------------------------
@@ -101,13 +130,13 @@ void scheduleMatmul(
   // [... M, K]
   acw->merge(-2);
   scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      acw, gemm_tile, 8);
+      acw, gemm_tile, 8, false);
 
   // [... N, K]
   scheduler_utils::matmul_utils::orderTiledConcreteIdAsRoot(bcw);
   bcw->merge(-2);
   scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      bcw, gemm_tile, 8);
+      bcw, gemm_tile, 8, false);
 
   // Propagate prolog tensors
   //  propagate up the DAG, and propagate parallel type.
@@ -136,16 +165,15 @@ void scheduleMatmul(
   //   TODO: this section goes to a separate matmul util,
   //   and needs more configurability.
   // ------------------------------------------------------------------
-  auto mma = dynamic_cast<MmaOp*>(cc->definition());
-  TORCH_INTERNAL_ASSERT(mma != nullptr);
-  auto ab = mma->inA()->as<TensorView>();
-  auto bb = mma->inB()->as<TensorView>();
-
-  moveInnerBroadcastLeft(ab);
-  ab->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
-
-  moveInnerBroadcastLeft(bb);
-  bb->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
+  if (isTuring(mma_options.macro) || isAmpere(mma_options.macro)) {
+    moveInnerBroadcastLeft(ab);
+    moveInnerBroadcastLeft(bb);
+    ab->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
+    bb->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
+  } else {
+    acr->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
+    bcr->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
+  }
 
   cc->applyMmaSwizzle(
       mma_builder.operand(MmaOptions::Operand::Accumulator).build());
@@ -165,7 +193,10 @@ void scheduleMatmul(
   //   and needs more configurability.
   // ------------------------------------------------------------------
 
-  // Vectorize smem loads:
+  // Vectorize smem stores/loads:
+  acw->axis(-1)->parallelize(ParallelType::Vectorize);
+  bcw->axis(-1)->parallelize(ParallelType::Vectorize);
+
   acr->axis(-1)->parallelize(ParallelType::Vectorize);
   bcr->axis(-1)->parallelize(ParallelType::Vectorize);
 

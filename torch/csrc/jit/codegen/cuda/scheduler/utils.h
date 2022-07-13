@@ -290,7 +290,8 @@ namespace matmul_utils {
 TORCH_CUDA_CU_API void scheduleContiguousVectorLoad(
     TensorView* tv,
     MatMulTileOptions tile,
-    int vector_word);
+    int vector_word,
+    bool vectorize = true);
 
 //! Schedule utility for mma output in matmul main loop:
 //!  Realize the hierarchical tiling based on the given tiling options.

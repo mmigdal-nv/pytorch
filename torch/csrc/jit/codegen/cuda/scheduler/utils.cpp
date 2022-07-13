@@ -1616,7 +1616,8 @@ void scheduleWarpTileWithNoReduction(TensorView* tv, MatMulTileOptions tile) {
 void scheduleContiguousVectorLoad(
     TensorView* tv,
     MatMulTileOptions tile,
-    int vector_word) {
+    int vector_word,
+    bool vectorize) {
   auto warp_dims = tile.cta_tile / tile.warp_tile;
   int num_of_thread = warp_dims.m * warp_dims.n * warp_dims.k * 32;
 
@@ -1639,7 +1640,10 @@ void scheduleContiguousVectorLoad(
     tv->split(-3, warp_dims.k);
   }
 
-  tv->axis(-1)->parallelize(ParallelType::Vectorize);
+  if (vectorize) {
+    tv->axis(-1)->parallelize(ParallelType::Vectorize);
+  }
+
   tv->axis(-2)->parallelize(ParallelType::TIDx);
   tv->axis(-3)->parallelize(ParallelType::TIDy);
   tv->axis(-4)->parallelize(ParallelType::TIDz);
