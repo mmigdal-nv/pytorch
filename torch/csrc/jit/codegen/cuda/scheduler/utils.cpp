@@ -216,6 +216,7 @@ void parallelizeAllLike(
           ca_map.getConcreteMappedID(tv->axis(i), IdMappingMode::PERMISSIVE);
 
       if (!tv->axis(i)->isMma() && !ca_id->isMma()) {
+        // No propagation should apply when either id is MMA.
         tv->axis(i)->parallelize(ca_id->getParallelType());
       }
 
@@ -1900,9 +1901,9 @@ void transformPropagateWithin(
 
   // Insert downward paths to include.
   if (!lower_boundary.empty()) {
-    auto up_tvs = getPropagationPathTvs(
+    auto down_tvs = getPropagationPathTvs(
         from_tv, lower_boundary, include_boundaries, false);
-    selected_tvs.insert(up_tvs.begin(), up_tvs.end());
+    selected_tvs.insert(down_tvs.begin(), down_tvs.end());
   }
 
   transformPropagateFrom(from_tv, pos, selected_tvs, propagate_parallel_type);
