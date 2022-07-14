@@ -384,7 +384,9 @@ TEST_F(NVFuserTest, FusionVoltaMatMulTT_CUDA) {
   auto mma_builder = MmaBuilder(MmaOptions::MacroType::Volta_16_16_4, gemm_tile)
                          .layout(MmaOptions::MmaInputLayout::TT);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   at::manual_seed(0);
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
@@ -432,7 +434,9 @@ TEST_F(NVFuserTest, FusionVoltaMatMulTN_CUDA) {
   auto mma_builder = MmaBuilder(MmaOptions::MacroType::Volta_16_16_4, gemm_tile)
                          .layout(MmaOptions::MmaInputLayout::TN);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   at::manual_seed(0);
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
@@ -481,7 +485,9 @@ TEST_F(NVFuserTest, FusionVoltaMatMulNT_CUDA) {
 
   mma_builder.configureMma(tv2);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   at::manual_seed(0);
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
@@ -759,7 +765,9 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTN_CUDA) {
           .layout(MmaOptions::MmaInputLayout::TN);
 
   // Call scheduler
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
   auto t0 = at::randn({M, K}, options);
@@ -811,7 +819,9 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTT_CUDA) {
       MmaBuilder(MmaOptions::MacroType::Ampere_16_8_16, gemm_tile)
           .layout(MmaOptions::MmaInputLayout::TT);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
   auto t0 = at::randn({M, K}, options);
@@ -861,7 +871,9 @@ TEST_F(NVFuserTest, FusionAmpereMatmulNT_CUDA) {
       MmaBuilder(MmaOptions::MacroType::Ampere_16_8_16, gemm_tile)
           .layout(MmaOptions::MmaInputLayout::NT);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
   auto t0 = at::randn({K, M}, options);
@@ -1796,7 +1808,9 @@ TEST_F(NVFuserTest, FusionTuringMatmulTN_CUDA) {
 
   mma_builder.configureMma(tv2);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
   auto t0 = at::randn({M, K}, options);
@@ -1847,7 +1861,9 @@ TEST_F(NVFuserTest, FusionTuringMatmulTT_CUDA) {
 
   mma_builder.configureMma(tv2);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
   auto t0 = at::randn({M, K}, options);
@@ -1894,7 +1910,9 @@ TEST_F(NVFuserTest, FusionTuringMatmulNT_CUDA) {
       MmaBuilder(MmaOptions::MacroType::Turing_16_8_16, gemm_tile)
           .layout(MmaOptions::MmaInputLayout::NT);
 
-  scheduleMatmul(tv2, tv0, tv1, mma_builder, gemm_tile);
+  MatmulParam params(mma_builder);
+  params.tile_sizes = gemm_tile;
+  scheduleMatmul(tv2, tv0, tv1, params);
 
   auto options = at::TensorOptions().dtype(at::kHalf).device(at::kCUDA, 0);
   auto t0 = at::randn({K, M}, options);

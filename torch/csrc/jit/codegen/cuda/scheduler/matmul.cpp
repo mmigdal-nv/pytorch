@@ -46,8 +46,11 @@ void scheduleMatmul(
     TensorView* c,
     TensorView* a,
     TensorView* b,
-    MmaBuilder& mma_builder,
-    MatMulTileOptions& gemm_tile) {
+    MatmulParam& params) {
+  // Unpack from params.
+  auto& mma_builder = params.mma_builder;
+  auto& gemm_tile = params.tile_sizes;
+
   // Currently only support a, b, c as fusion inputs/outputs
   //  aka. no prolog and epilog fusion yet.
   TORCH_CHECK(
@@ -214,6 +217,16 @@ void scheduleMatmul(
   // Propagate mma output swizzle and parallelization down the DAG
   scheduler_utils::matmul_utils::transformPropagateWithin(
       cc, -1, {}, {c}, true, true);
+
+  if (params.double_buffer_options.double_buffer_smem_write) {
+    acw->doubleBuffer();
+    bcw->doubleBuffer();
+  }
+
+  if (params.double_buffer_options.double_buffer_smem_read) {
+    acr->doubleBuffer();
+    bcr->doubleBuffer();
+  }
 }
 
 } // namespace cuda
