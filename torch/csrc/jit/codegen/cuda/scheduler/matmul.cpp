@@ -88,6 +88,13 @@ void scheduleMatmul(
   TensorView* acr = nullptr;
   TensorView* bcr = nullptr;
 
+  // Different paths because Volta swizzle needs to
+  //  involve the broadcast dimensions that are concretized
+  //  at mma, while Ampere ones should be done before
+  //  the broadcast op to be able to use cp.async.
+  // TODO:
+  // Also a few additional parameters should be introduced
+  // to control this stage of scheduling.
   if (isVolta(mma_options.macro)) {
     acw = ab->cacheAfter();
     bcw = bb->cacheAfter();
