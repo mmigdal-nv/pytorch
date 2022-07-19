@@ -114,13 +114,13 @@ void scheduleMatmul(
 
   // [Mo, No, Ko, Mi, Ni, Ki]
   // Propagate tiling globally
-  scheduler_utils::matmul_utils::transformPropagateToAllFrom(cc, -1);
+  scheduler_utils::transformPropagateToAllFrom(cc, -1);
 
   // Schedule warp tile
   scheduler_utils::matmul_utils::scheduleWarpTileWithReduction(cc, gemm_tile);
 
   // Propagate warp tile to main loop and epilog/output tvs
-  scheduler_utils::matmul_utils::transformPropagateWithin(
+  scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(
       cc, -1, {acw, bcw}, {c});
 
   // Schedule prolog:
@@ -141,10 +141,18 @@ void scheduleMatmul(
 
   // Propagate prolog tensors
   //  propagate up the DAG, and propagate parallel type.
-  scheduler_utils::matmul_utils::transformPropagateWithin(
-      acw, -1, {a}, {}, true);
-  scheduler_utils::matmul_utils::transformPropagateWithin(
-      bcw, -1, {b}, {}, true);
+  scheduler_utils::BoundedDirectionalTransformPropagator::backward(
+      acw,
+      -1,
+      {a},
+      scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+          .propagateParallelType());
+  scheduler_utils::BoundedDirectionalTransformPropagator::backward(
+      bcw,
+      -1,
+      {b},
+      scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+          .propagateParallelType());
 
   // Set computeAt, setup the loop nesting structure on the kernel.
   //   TODO: this section goes to a separate matmul util,
@@ -174,10 +182,18 @@ void scheduleMatmul(
 
     // Propagate mma input swizzle up the DAG
     //  to all the tensors before mma op and after shared mem read.
-    scheduler_utils::matmul_utils::transformPropagateWithin(
-        ab, -1, {acw}, {}, true);
-    scheduler_utils::matmul_utils::transformPropagateWithin(
-        bb, -1, {bcw}, {}, true);
+    scheduler_utils::BoundedDirectionalTransformPropagator::backward(
+        ab,
+        -1,
+        {acw},
+        scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+            .propagateParallelType());
+    scheduler_utils::BoundedDirectionalTransformPropagator::backward(
+        bb,
+        -1,
+        {bcw},
+        scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+            .propagateParallelType());
   } else {
     // TODO:
     //  Need to build out this to support balanced prolog fusion on Volta.
@@ -212,8 +228,13 @@ void scheduleMatmul(
   cc->axis(4)->parallelize(ParallelType::TIDy);
 
   // Propagate mma output swizzle and parallelization down the DAG
-  scheduler_utils::matmul_utils::transformPropagateWithin(
-      cc, -1, {}, {c}, true, true);
+  scheduler_utils::BoundedDirectionalTransformPropagator::forward(
+      cc,
+      -1,
+      {c},
+      scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+          .propagateParallelType()
+          .propagateToBoundary());
 }
 
 } // namespace cuda

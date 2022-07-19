@@ -1810,106 +1810,174 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv) {
   tv->reorder(reorder_map);
 }
 
-struct MatmulSelector : public MaxInfoSpanningTree::Selector {
+} // namespace matmul_utils
+
+//! Propagate current transformations on from_tv to all graphs
+TORCH_CUDA_CU_API void transformPropagateToAllFrom(
+    TensorView* from_tv,
+    int pos) {
+  TransformPropagator propagator(from_tv, pos);
+  MaxRootDomainInfoSpanningTree(from_tv, nullptr).traverse(&propagator);
+}
+
+struct BoundedDirectionalTransformPropagator::BoundedSelector
+    : public MaxInfoSpanningTree::Selector {
  public:
-  explicit MatmulSelector(std::unordered_set<TensorView*> selected_tvs)
+  explicit BoundedSelector(std::unordered_set<TensorView*> selected_tvs)
       : selected_tvs_(selected_tvs) {}
 
-  explicit MatmulSelector() : propagate_all_(true) {}
-
   bool allowC2P(TensorView* from, TensorView* to) final {
-    return propagate_all_ || selected_tvs_.count(to);
+    return selected_tvs_.count(to);
   }
   bool allowP2C(TensorView* from, TensorView* to) final {
-    return propagate_all_ || selected_tvs_.count(to);
+    return selected_tvs_.count(to);
   }
   bool allowSibling(TensorView* from, TensorView* to) final {
-    return propagate_all_ || selected_tvs_.count(to);
+    return selected_tvs_.count(to);
   }
 
  private:
   std::unordered_set<TensorView*> selected_tvs_;
-  bool propagate_all_ = false;
 };
 
-void transformPropagateFrom(
+namespace {
+
+//! Utility enum to signify which direction
+//! BoundedDirectionalTransformPropagator
+//!  passes will propagate the transforms.
+enum class PropagateDirection { Backward = 0, Forward };
+
+//! Utility function to generate the set of tensorviews to propagate
+//!  transform to by BoundedDirectionalTransformPropagator.
+std::unordered_set<TensorView*> getDirectionalPropagatePathSet(
+    TensorView* from_tv,
+    std::vector<TensorView*> boundary_tvs,
+    BoundedDirectionalTransformPropagator::Options options,
+    PropagateDirection direction) {
+  // Prepare to collect all candidate tensorviews
+  //  within the specified boundary.
+  std::vector<Val*> propagate_candidate;
+
+  // Collect boundary tvs in a set.
+  std::unordered_set<TensorView*> boundary_tv_set(
+      boundary_tvs.begin(), boundary_tvs.end());
+
+  if (direction == PropagateDirection::Forward) {
+    // In the case of forward propagation, collect all tvs
+    //  that are consumers of `from_tv` and producers of
+    //  boundary tvs.
+    propagate_candidate = DependencyCheck::getAllValsBetween(
+        {from_tv}, {boundary_tvs.begin(), boundary_tvs.end()});
+  } else {
+    // In the case of backward propagation, collect all tvs
+    //  that are producers of `from_tv` and consumers of
+    //  boundary tvs.
+    propagate_candidate = DependencyCheck::getAllValsBetween(
+        {boundary_tvs.begin(), boundary_tvs.end()}, {from_tv});
+  }
+
+  // Prepare to filter out un-wanted tensorviews according
+  //  to the option parameters.
+  std::unordered_set<TensorView*> propagate_path_set;
+  for (auto path_tv : ir_utils::filterByType<TensorView>(propagate_candidate)) {
+    if (options.transform_boundary || !boundary_tv_set.count(path_tv)) {
+      // When transform_boundary is not true, would not allow any
+      //  replay on the tensorviews specified as boundary tvs.
+      propagate_path_set.insert(path_tv);
+      continue;
+    }
+  }
+
+  return propagate_path_set;
+}
+
+} // namespace
+
+void BoundedDirectionalTransformPropagator::propagate(
     TensorView* from_tv,
     int pos,
     std::unordered_set<TensorView*> included_tvs,
-    bool propagate_parallel_type) {
-  MatmulSelector selector(included_tvs);
+    Options options) {
+  // Run transform propagation using the custom selector.
+  BoundedSelector selector(included_tvs);
   TransformPropagator propagator(from_tv, pos);
   MaxRootDomainInfoSpanningTree(from_tv, &selector).traverse(&propagator);
 
-  if (propagate_parallel_type) {
+  // Propagate parallel type if requested by option parameters.
+  if (options.propagate_parallel_type) {
     scheduler_utils::parallelizeAllLike(
         from_tv, {included_tvs.begin(), included_tvs.end()});
   }
 }
 
-void transformPropagateToAllFrom(TensorView* from_tv, int pos) {
-  MatmulSelector selector;
-  TransformPropagator propagator(from_tv, pos);
-  MaxRootDomainInfoSpanningTree(from_tv, &selector).traverse(&propagator);
-}
-
-namespace {
-
-std::unordered_set<TensorView*> getPropagationPathTvs(
-    TensorView* tv,
-    std::vector<TensorView*> boundary,
-    bool include_boundary = false,
-    bool propagate_up = false) {
-  std::vector<Val*> values_on_path;
-  std::unordered_set<Val*> boundary_set{boundary.begin(), boundary.end()};
-
-  if (propagate_up) {
-    values_on_path = DependencyCheck::getAllValsBetween(boundary_set, {tv});
-  } else {
-    values_on_path = DependencyCheck::getAllValsBetween(
-        {tv}, {boundary.begin(), boundary.end()});
-  }
-
-  std::unordered_set<TensorView*> propagate_path;
-  for (auto path_tv : ir_utils::filterByType<TensorView>(values_on_path)) {
-    if (include_boundary || !boundary_set.count(path_tv)) {
-      propagate_path.insert(path_tv);
-    }
-  }
-
-  return propagate_path;
-}
-
-} // namespace
-
-void transformPropagateWithin(
-    TensorView* from_tv,
+void BoundedDirectionalTransformPropagator::backward(
+    TensorView* from,
     int pos,
-    std::vector<TensorView*> upper_boundary,
-    std::vector<TensorView*> lower_boundary,
-    bool propagate_parallel_type,
-    bool include_boundaries) {
-  // Generate tv selection for the propagation
-  std::unordered_set<TensorView*> selected_tvs;
-
-  // Insert upward paths to include.
-  if (!upper_boundary.empty()) {
-    auto up_tvs = getPropagationPathTvs(
-        from_tv, upper_boundary, include_boundaries, true);
-    selected_tvs.insert(up_tvs.begin(), up_tvs.end());
+    std::vector<TensorView*> to,
+    c10::optional<Options> options) {
+  if (!options.has_value()) {
+    options = Options();
   }
+  TORCH_INTERNAL_ASSERT(
+      !to.empty(),
+      "Propagation needs to be bounded, so no support for empty boundary.");
 
-  // Insert downward paths to include.
-  if (!lower_boundary.empty()) {
-    auto down_tvs = getPropagationPathTvs(
-        from_tv, lower_boundary, include_boundaries, false);
-    selected_tvs.insert(down_tvs.begin(), down_tvs.end());
-  }
-
-  transformPropagateFrom(from_tv, pos, selected_tvs, propagate_parallel_type);
+  // Collect all tvs to included on the backward path as specified
+  //  by boundary and options.
+  auto included_tvs = getDirectionalPropagatePathSet(
+      from, to, *options, PropagateDirection::Backward);
+  // Actually run the propagation.
+  propagate(from, pos, included_tvs, *options);
 }
 
-} // namespace matmul_utils
+void BoundedDirectionalTransformPropagator::forward(
+    TensorView* from,
+    int pos,
+    std::vector<TensorView*> to,
+    c10::optional<Options> options) {
+  if (!options.has_value()) {
+    options = Options();
+  }
+  TORCH_INTERNAL_ASSERT(
+      !to.empty(),
+      "Propagation needs to be bounded, so no support for empty boundary.")
+
+  // Collect all tvs to included on the forward path as specified
+  //  by boundary and options.
+  auto included_tvs = getDirectionalPropagatePathSet(
+      from, to, *options, PropagateDirection::Forward);
+
+  // Actually run the propagation.
+  propagate(from, pos, included_tvs, *options);
+}
+
+void BoundedDirectionalTransformPropagator::bothWays(
+    TensorView* from,
+    int pos,
+    std::vector<TensorView*> backward_to,
+    std::vector<TensorView*> forward_to,
+    c10::optional<Options> options) {
+  if (!options.has_value()) {
+    options = Options();
+  }
+  TORCH_INTERNAL_ASSERT(
+      !backward_to.empty() && !forward_to.empty(),
+      "Propagation needs to be bounded, so no support for empty boundary.")
+
+  // Collect all tvs to included on the backward and forward path as specified
+  //  by boundary and options.
+  auto backward_included_tvs = getDirectionalPropagatePathSet(
+      from, backward_to, *options, PropagateDirection::Backward);
+  auto forward_included_tvs = getDirectionalPropagatePathSet(
+      from, forward_to, *options, PropagateDirection::Forward);
+
+  // Combined the included tvs on both paths.
+  auto included_tvs = backward_included_tvs;
+  included_tvs.insert(forward_included_tvs.begin(), forward_included_tvs.end());
+
+  // Run the propagation on the combined set of tvs.
+  propagate(from, pos, included_tvs, *options);
+}
 
 // Grab all values and expressions used to make the merged_domain and remove
 // them from the fusion
