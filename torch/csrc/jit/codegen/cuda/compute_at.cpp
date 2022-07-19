@@ -185,8 +185,7 @@ void ComputeAt::runAt(
   InlinePropagatorSelector selector(selected);
 
   InlinePropagator inline_propagator(
-      selector.selected(), consumer, consumer_position, mode);
-  MaxProducerPosUpdater updater;
+      consumer, consumer_position, mode, selector.selected());
 
   MaxRootDomainInfoSpanningTree path(consumer, consumer_position, &selector);
 
@@ -199,7 +198,6 @@ void ComputeAt::runAt(
   }
 
   path.traverse(&inline_propagator);
-  path.traverse(&updater);
 }
 
 void ComputeAt::runWith(
@@ -227,8 +225,7 @@ void ComputeAt::runWith(
   InlinePropagatorSelector selector(selected);
 
   InlinePropagator inline_propagator(
-      selector.selected(), producer, producer_position, mode);
-  MaxProducerPosUpdater updater;
+      producer, producer_position, mode, selector.selected());
 
   MaxRootDomainInfoSpanningTree path(producer, producer_position, &selector);
 
@@ -240,7 +237,6 @@ void ComputeAt::runWith(
     path.traverse(&propagator);
   }
   path.traverse(&inline_propagator);
-  path.traverse(&updater);
 }
 
 } // namespace cuda
