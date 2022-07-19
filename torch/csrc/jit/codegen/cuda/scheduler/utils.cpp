@@ -1919,7 +1919,9 @@ void BoundedDirectionalTransformPropagator::propagate(
   // Propagate parallel type if requested by option parameters.
   if (options.propagate_parallel_type) {
     scheduler_utils::parallelizeAllLike(
-        from_tv, {included_tvs.begin(), included_tvs.end()});
+        from_tv,
+        {included_tvs.begin(), included_tvs.end()},
+        allParallelTypesExcept({ParallelType::Vectorize, ParallelType::Mma}));
   }
 }
 
