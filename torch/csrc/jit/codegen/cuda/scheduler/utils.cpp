@@ -1833,26 +1833,6 @@ TORCH_CUDA_CU_API void transformPropagateToAllFrom(
   MaxRootDomainInfoSpanningTree(from_tv, nullptr).traverse(&propagator);
 }
 
-struct BoundedDirectionalTransformPropagator::BoundedSelector
-    : public MaxInfoSpanningTree::Selector {
- public:
-  explicit BoundedSelector(std::unordered_set<TensorView*> selected_tvs)
-      : selected_tvs_(selected_tvs) {}
-
-  bool allowC2P(TensorView* from, TensorView* to) final {
-    return selected_tvs_.count(to);
-  }
-  bool allowP2C(TensorView* from, TensorView* to) final {
-    return selected_tvs_.count(to);
-  }
-  bool allowSibling(TensorView* from, TensorView* to) final {
-    return selected_tvs_.count(to);
-  }
-
- private:
-  std::unordered_set<TensorView*> selected_tvs_;
-};
-
 namespace {
 
 //! Utility enum to signify which direction
@@ -1912,7 +1892,7 @@ void BoundedDirectionalTransformPropagator::propagate(
     std::unordered_set<TensorView*> included_tvs,
     Options options) {
   // Run transform propagation using the custom selector.
-  BoundedSelector selector(included_tvs);
+  BoundedPropagationSelector selector(included_tvs);
   TransformPropagator propagator(from_tv, pos);
   MaxRootDomainInfoSpanningTree(from_tv, &selector).traverse(&propagator);
 
