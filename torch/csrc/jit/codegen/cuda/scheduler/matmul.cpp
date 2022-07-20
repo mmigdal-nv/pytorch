@@ -63,7 +63,6 @@ void scheduleMatmul(
 
   // Setup accumulator register.
   auto cc = c->cacheBefore();
-  mma_builder.accumulatorTv(cc);
 
   // Get the input to the mma op.
   auto mma = dynamic_cast<MmaOp*>(cc->definition());
@@ -72,6 +71,7 @@ void scheduleMatmul(
   auto bb = mma->inB()->as<TensorView>();
 
   // Get exact configurations from mma builder.
+  mma_builder.accumulatorTv(cc);
   auto mma_options = mma_builder.build();
 
   // Staging register for global memory load
@@ -82,8 +82,8 @@ void scheduleMatmul(
   //  Significant build out needed here
   //   for more flexibility and data type support.
   // Shared memory
-  TensorView* acw = nullptr;
-  TensorView* bcw = nullptr;
+  TensorView* acw_smem = nullptr;
+  TensorView* bcw_smem = nullptr;
   // Shared memory read
   TensorView* acr = nullptr;
   TensorView* bcr = nullptr;
@@ -96,22 +96,25 @@ void scheduleMatmul(
   // Also a few additional parameters should be introduced
   // to control this stage of scheduling.
   if (isVolta(mma_options.macro)) {
-    acw = ab->cacheAfter();
-    bcw = bb->cacheAfter();
+    acw_smem = ab->cacheAfter();
+    bcw_smem = bb->cacheAfter();
     // Cache again to be able to vectorize.
-    acw = acw->cacheAfter();
-    bcw = bcw->cacheAfter();
+    acw_smem = acw_smem->cacheAfter();
+    bcw_smem = bcw_smem->cacheAfter();
 
-    acr = acw->cacheAfter();
-    bcr = bcw->cacheAfter();
+    acr = acw_smem->cacheAfter();
+    bcr = bcw_smem->cacheAfter();
   } else {
-    acw = ar->cacheAfter();
-    bcw = br->cacheAfter();
-    acr =
-        acw->cacheAfter(mma_builder.operand(MmaOptions::Operand::A).ldMatrix());
-    bcr =
-        bcw->cacheAfter(mma_builder.operand(MmaOptions::Operand::B).ldMatrix());
+    acw_smem = ar->cacheAfter();
+    bcw_smem = br->cacheAfter();
+    acr = acw_smem->cacheAfter(
+        mma_builder.operand(MmaOptions::Operand::A).ldMatrix());
+    bcr = bcw_smem->cacheAfter(
+        mma_builder.operand(MmaOptions::Operand::B).ldMatrix());
   }
+
+  // TODO: Look into this behavior...
+  mma_builder.accumulatorTv(cc);
 
   // Make a CTA tile
   // ------------------------------------------------------------------
@@ -128,34 +131,34 @@ void scheduleMatmul(
 
   // Propagate warp tile to main loop and epilog/output tvs
   scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(
-      cc, -1, {acw, bcw}, {c});
+      cc, -1, {acw_smem, bcw_smem}, {c});
 
   // Schedule prolog:
   //   TODO: this section goes to a separate matmul util,
   //   and needs more configurability.
   // ------------------------------------------------------------------
-  scheduler_utils::matmul_utils::orderTiledConcreteIdAsRoot(acw);
+  scheduler_utils::matmul_utils::orderTiledConcreteIdAsRoot(acw_smem);
   // [... M, K]
-  acw->merge(-2);
+  acw_smem->merge(-2);
   scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      acw, gemm_tile, 8, false);
+      acw_smem, gemm_tile, 8, false);
 
   // [... N, K]
-  scheduler_utils::matmul_utils::orderTiledConcreteIdAsRoot(bcw);
-  bcw->merge(-2);
+  scheduler_utils::matmul_utils::orderTiledConcreteIdAsRoot(bcw_smem);
+  bcw_smem->merge(-2);
   scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      bcw, gemm_tile, 8, false);
+      bcw_smem, gemm_tile, 8, false);
 
   // Propagate prolog tensors
   //  propagate up the DAG, and propagate parallel type.
   scheduler_utils::BoundedDirectionalTransformPropagator::backward(
-      acw,
+      acw_smem,
       -1,
       {a},
       scheduler_utils::BoundedDirectionalTransformPropagator::Options()
           .propagateParallelType());
   scheduler_utils::BoundedDirectionalTransformPropagator::backward(
-      bcw,
+      bcw_smem,
       -1,
       {b},
       scheduler_utils::BoundedDirectionalTransformPropagator::Options()
@@ -192,13 +195,13 @@ void scheduleMatmul(
     scheduler_utils::BoundedDirectionalTransformPropagator::backward(
         ab,
         -1,
-        {acw},
+        {acw_smem},
         scheduler_utils::BoundedDirectionalTransformPropagator::Options()
             .propagateParallelType());
     scheduler_utils::BoundedDirectionalTransformPropagator::backward(
         bb,
         -1,
-        {bcw},
+        {bcw_smem},
         scheduler_utils::BoundedDirectionalTransformPropagator::Options()
             .propagateParallelType());
   } else {
@@ -212,8 +215,8 @@ void scheduleMatmul(
       mma_builder.operand(MmaOptions::Operand::Accumulator).build());
 
   // Set memory type:
-  acw->setMemoryType(MemoryType::Shared);
-  bcw->setMemoryType(MemoryType::Shared);
+  acw_smem->setMemoryType(MemoryType::Shared);
+  bcw_smem->setMemoryType(MemoryType::Shared);
 
   // Set parallelization:
   //   TODO: this section goes to a separate matmul util,
@@ -221,8 +224,8 @@ void scheduleMatmul(
   // ------------------------------------------------------------------
 
   // Vectorize smem stores/loads:
-  acw->axis(-1)->parallelize(ParallelType::Vectorize);
-  bcw->axis(-1)->parallelize(ParallelType::Vectorize);
+  acw_smem->axis(-1)->parallelize(ParallelType::Vectorize);
+  bcw_smem->axis(-1)->parallelize(ParallelType::Vectorize);
 
   acr->axis(-1)->parallelize(ParallelType::Vectorize);
   bcr->axis(-1)->parallelize(ParallelType::Vectorize);
