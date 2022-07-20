@@ -915,6 +915,16 @@ void validateMmaTensors(MmaOp* mma) {
 
   validate_operand_ids(mma->inA()->as<TensorView>());
   validate_operand_ids(mma->inB()->as<TensorView>());
+
+  // Additionally validate that mma is not directly taking a double buffered
+  //  register input as the double buffer indexing is currently not compatible
+  //  with fragment iteration. Would need to require a cache stage in this case.
+  TORCH_INTERNAL_ASSERT(
+      !mma->inA()->as<TensorView>()->isDoubleBuffered(),
+      "MMA op cannot directly take double buffered register input, put a set stage before.");
+  TORCH_INTERNAL_ASSERT(
+      !mma->inB()->as<TensorView>()->isDoubleBuffered(),
+      "MMA op cannot directly take double buffered register input, put a set stage before.");
 }
 
 //! Note and TODO:
