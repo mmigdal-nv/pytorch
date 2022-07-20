@@ -2,6 +2,7 @@
 
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
+#include <torch/csrc/jit/codegen/cuda/maxinfo_propagator.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/reduction_heuristic.h>
 
 namespace torch {
@@ -50,9 +51,32 @@ size_t mergeNonReduction(
     TensorView* tv,
     const std::unordered_set<IterDomain*>& dont_merge = {});
 
+// Propagate the parallelization from the selected dimensions of the reference
+// tensor to their corresponding dimensions in all selected tensors in the DAG.
+// Position `pos` means selecting all the dimensions [0, 1, ..., pos - 1]. pos =
+// -1 means selecting all dimensions. `selected_tvs` are selected tensors in the
+// DAG. Empty `selected_tvs` means selecting all tensors in the fusion of
+// `reference_tv`. `selected_parallel_types` are the selected parallel types.
+// Empty `selected_parallel_types` means selecting all parallel types.
 TORCH_CUDA_CU_API void parallelizeAllLike(
     TensorView* reference_tv,
-    const std::vector<TensorView*>& all_tvs);
+    int64_t pos = -1,
+    std::vector<TensorView*> selected_tvs = {},
+    const std::unordered_set<ParallelType>& selected_parallel_types = {},
+    bool propagate_padding = true);
+
+TORCH_CUDA_CU_API inline void parallelizeAllLike(
+    TensorView* reference_tv,
+    std::vector<TensorView*> selected_tvs,
+    const std::unordered_set<ParallelType>& selected_parallel_types = {},
+    bool propagate_padding = true) {
+  parallelizeAllLike(
+      reference_tv,
+      -1,
+      std::move(selected_tvs),
+      selected_parallel_types,
+      propagate_padding);
+}
 
 TORCH_CUDA_CU_API void computeAtInputs(
     TensorView* consumer,
@@ -331,45 +355,139 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv);
 //!  not a root id.
 TORCH_CUDA_CU_API void canonicalizeMmaTvOrdering(TensorView* tv);
 
-//! Propagate current transformations on from_tv to all tensorviews
-//!  within boundary.
-//! \param from_tv: target tv to replay transformations from.
-//! \param pos: position of target tv to replay to.
-//! \param upper_boundary:
-//!    boundary on the producer side where the propagation will stop.
-//!    an empty boundary means the propagator will **not** propagate
-//!    upward the DAG.
-//! \param lower_boundary: target tv to replay transformations from.
-//!    boundary on the consumer side where the propagation will stop.
-//!    an empty boundary means the propagator will **not** propagate
-//!    downward the DAG.
-//! \param propagate_parallel_type: Indicates if the propagator will
-//!    also replay parallel types on the matched iterdomains on the
-//!    replayed tensordomain.
-//! \param include_boundaries: Indicates if the tv's on the boundary
-//!    will be replayed.
-TORCH_CUDA_CU_API void transformPropagateWithin(
-    TensorView* from_tv,
-    int pos,
-    std::vector<TensorView*> upper_boundary,
-    std::vector<TensorView*> lower_boundary,
-    bool propagate_parallel_type = false,
-    bool include_boundaries = false);
+} // namespace matmul_utils
 
-//! Propagate current transformations on from_tv to all tensorviews selected
-//! with include_tvs.
-TORCH_CUDA_CU_API void transformPropagateFrom(
-    TensorView* from_tv,
-    int pos,
-    std::unordered_set<TensorView*> included_tvs,
-    bool propagate_parallel_type = false);
+//! Custom selector for selecting subgraphs to build
+//!   spanning trees. The selector allows propagation
+//!   only to the given set of selected tensorviews, except
+//!   for sibiling propagation, which we should never block.
+struct BoundedPropagationSelector : public MaxInfoSpanningTree::Selector {
+ public:
+  explicit BoundedPropagationSelector(
+      std::unordered_set<TensorView*> selected_tvs)
+      : selected_tvs_(std::move(selected_tvs)) {}
 
-//! Propagate current transformations on from_tv to all graphs
+  bool allowC2P(TensorView* from, TensorView* to) final {
+    return selected_tvs_.count(to);
+  }
+  bool allowP2C(TensorView* from, TensorView* to) final {
+    return selected_tvs_.count(to);
+  }
+  bool allowSibling(TensorView* from, TensorView* to) final {
+    // Always allow sibiling propagation to avoid
+    //  un-defined behaviors on multi-output expressions.
+    return true;
+  }
+
+ private:
+  std::unordered_set<TensorView*> selected_tvs_;
+};
+
+//! Propagate current transformations on from_tv up to the given
+//!  position, to all tensorviews on the owning fusion that has
+//!  a connection with `from_tv` on the fusion graph.
 TORCH_CUDA_CU_API void transformPropagateToAllFrom(
     TensorView* from_tv,
     int pos);
 
-} // namespace matmul_utils
+//! A type of custom transform propagator that propagates iterdomain
+//!  transforms from a source tv to all tvs that are selected
+//!  using a "direction" and a "boundary".
+//!
+//! The propagation model always assumes a `from_tv`, a `direction` and a
+//! `boundary`.
+//!
+//! This propagator will only transform producers and consumers
+//! of `from_tv`, and all propagation modes **require** a boundary to be
+//! specified to signify where the propagation should stop.
+//!
+//! There are currently three modes of propagation: forward, backward and
+//! both-way, see comment on the interface functions for details.
+struct TORCH_CUDA_CU_API BoundedDirectionalTransformPropagator {
+  //! Custom option container for configuring
+  //!  the transform propagation actions.
+  //! All option values default to false unless
+  //!  the corresponding setter is called.
+  struct Options {
+    //! If true, the transform propagator will
+    //!   also propagate parallel types from
+    //!   `from_tv` to all selected tvs.
+    bool propagate_parallel_type = false;
+
+    //! If true, the specified boundary tvs
+    //!  will also be replayed as `from_tv`.
+    //!  If false, they will not be affected
+    //!  by the propagation pass.
+    bool transform_boundary = false;
+
+    //! Sets the position boundary in parallel
+    //!  type propagation, see comment on
+    //!  scheduler_utils::parallelizeAllLike.
+    //! Only used if propagate_parallel_type==true.
+    int parallel_propagation_pos = -1;
+
+    //! Setter for enabling parallel type
+    //!  propagation. see comment on the variable.
+    //!
+    //! \param up_to_pos, sets the parallel type
+    //!  propagation boundary. see comment on
+    //!  scheduler_utils::parallelizeAllLike.
+    Options propagateParallelType(int up_to_pos = -1) {
+      propagate_parallel_type = true;
+      parallel_propagation_pos = up_to_pos;
+      return *this;
+    }
+
+    //! Setter for enabling propagation to
+    //!  boundary tvs. see comment on the variable
+    Options propagateToBoundary() {
+      transform_boundary = true;
+      return *this;
+    }
+  };
+
+  //! Replay transforms from tensorview `from`
+  //!  to the tensorviews that are consumers
+  //!  of boundary tensorviews in `to` and producers of `from`.
+  static void backward(
+      TensorView* from,
+      int pos,
+      std::vector<TensorView*> to,
+      c10::optional<Options> options = c10::nullopt);
+
+  //! Replay transforms from tensorview `from`
+  //! to the tensorviews that are producers
+  //!  of boundary tensorviews in `to` and consumers of `from`.
+  static void forward(
+      TensorView* from,
+      int pos,
+      std::vector<TensorView*> to,
+      c10::optional<Options> options = c10::nullopt);
+
+  //! Replay transforms from tensorview `from`
+  //!  to all the tensorviews that are consumers
+  //!  of tensorviews in `backward_to` and producers
+  //!  of tensorviews in `forward_to` while being
+  //!  either a producer or a consumer of tensorview `from`.
+  static void bothWays(
+      TensorView* from,
+      int pos,
+      std::vector<TensorView*> backward_to,
+      std::vector<TensorView*> forward_to,
+      c10::optional<Options> options = c10::nullopt);
+
+ private:
+  //! Utility function:
+  //!  Will realize the transform propagation to the
+  //! tensorview's in `included_tvs`.
+  //!  Assumes that all tvs in included_tvs are either
+  //! a producer or a consumer of from_tv.
+  static void propagate(
+      TensorView* from_tv,
+      int pos,
+      std::unordered_set<TensorView*> included_tvs,
+      Options options);
+};
 
 } // namespace scheduler_utils
 } // namespace cuda

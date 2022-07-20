@@ -334,9 +334,10 @@ void validateMmaRootInnerMNK(
     int m,
     int n,
     int k) {
-  auto m_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::M);
-  auto n_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::N);
-  auto k_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::K);
+  auto mma = options.mmaOp();
+  auto m_dims = getMmaRootDimensions(tv, mma, MmaDimension::M);
+  auto n_dims = getMmaRootDimensions(tv, mma, MmaDimension::N);
+  auto k_dims = getMmaRootDimensions(tv, mma, MmaDimension::K);
 
   TORCH_CHECK(
       !m_dims.empty() && !n_dims.empty() && !k_dims.empty(),
@@ -363,8 +364,9 @@ void validateMmaRootInnerMNK(
 //!  swizzles to the right axes.
 //! This check will be relaxed as we build out the mma usage patterns.
 void validateMmaRootInnerMN(TensorView* tv, MmaOptions options, int m, int n) {
-  auto m_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::M);
-  auto n_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::N);
+  auto mma = options.mmaOp();
+  auto m_dims = getMmaRootDimensions(tv, mma, MmaDimension::M);
+  auto n_dims = getMmaRootDimensions(tv, mma, MmaDimension::N);
 
   TORCH_CHECK(
       !m_dims.empty() && !n_dims.empty(),
@@ -509,8 +511,9 @@ void scheduleLdMatrix(TensorView* tv, MmaOptions options) {
   if (options.operand == MmaOptions::Operand::A) {
     TORCH_INTERNAL_ASSERT(tv->nDims() >= 2);
     // validation:
-    auto m_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::M);
-    auto k_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::K);
+    auto mma = options.mmaOp();
+    auto m_dims = getMmaRootDimensions(tv, mma, MmaDimension::M);
+    auto k_dims = getMmaRootDimensions(tv, mma, MmaDimension::K);
 
     TORCH_INTERNAL_ASSERT(
         canValidateIsInnerDim(m_dims.back(), tv->axis(-2), 16),
@@ -541,8 +544,9 @@ void scheduleLdMatrix(TensorView* tv, MmaOptions options) {
 
     tv->axis(-2)->parallelize(ParallelType::TIDx);
   } else if (options.operand == MmaOptions::Operand::B) {
-    auto n_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::N);
-    auto k_dims = getMmaRootDimensions(tv, options.mma_op, MmaDimension::K);
+    auto mma = options.mmaOp();
+    auto n_dims = getMmaRootDimensions(tv, mma, MmaDimension::N);
+    auto k_dims = getMmaRootDimensions(tv, mma, MmaDimension::K);
 
     // validation:
     TORCH_INTERNAL_ASSERT(

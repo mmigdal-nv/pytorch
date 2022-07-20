@@ -1362,26 +1362,26 @@ TEST_F(NVFuserTest, FusionParser_CUDA) {
   // 2. use a fuzzy compare (ignore non-significant whitespaces for example)
   const std::string expected_kernel = R"(
 __global__ void CUDAGeneratedKernel(Tensor<float, 1> T0, Tensor<float, 1> T1, Tensor<float, 1> T3) {
-  int64_t i51;
-  i51 = (((nvfuser_index_t)blockIdx.x) * 128) + ((nvfuser_index_t)threadIdx.x);
-  if ((i51 < T0.size[0])) {
+  int64_t i50;
+  i50 = (((nvfuser_index_t)blockIdx.x) * 128) + ((nvfuser_index_t)threadIdx.x);
+  if ((i50 < T0.size[0])) {
     float T5[1];
     T5[0] = 0;
     T5[0]
-       = T1[i51];
+       = T1[i50];
     float T4[1];
     T4[0] = 0;
     T4[0]
-       = T0[i51];
-    float T6[1];
+       = T0[i50];
     float T2[1];
     T2[0]
       = T4[0]
       * T5[0];
+    float T6[1];
     T6[0]
       = T2[0]
       * T4[0];
-    T3[i51]
+    T3[i50]
        = T6[0];
   }
 }
@@ -9636,7 +9636,6 @@ TEST_F(NVFuserTest, FusionPersistentNormLocalShared_CUDA) {
 
   torch::jit::fuser::cuda::FusionExecutor fe;
   fe.compileFusion(&fusion, aten_inputs);
-  fe.runFusion(aten_inputs, {cg_static_out, cg_dynamic_out});
 
   auto properties = at::cuda::getDeviceProperties(0);
   // Require 70KB of smem to run test
@@ -9644,6 +9643,8 @@ TEST_F(NVFuserTest, FusionPersistentNormLocalShared_CUDA) {
   if (properties->sharedMemPerBlockOptin < required_smem_size) {
     GTEST_SKIP() << "not enough shared memory space on device to run test";
   }
+
+  fe.runFusion(aten_inputs, {cg_static_out, cg_dynamic_out});
 
   auto at_mu = at::mean(aten_input.to(at::kDouble), -1).unsqueeze(1);
   auto at_var = at::var(aten_input.to(at::kDouble), -1, false).unsqueeze(1);
@@ -13848,7 +13849,7 @@ TEST_F(NVFuserTest, FusionSimpleVectorizeUnroll_CUDA) {
 
   TransformPropagatorWithCheck propagator(tv3);
   MaxRootDomainInfoSpanningTree(tv3).traverse(&propagator);
-  scheduler_utils::parallelizeAllLike(tv3, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv3);
 
   tv0_cache->axis(2)->parallelize(ParallelType::Vectorize);
   tv1_cache->axis(2)->parallelize(ParallelType::Vectorize);
@@ -17151,7 +17152,7 @@ TEST_F(NVFuserTest, FusionPredicateElimination3_CUDA) {
 
   tv4->axis(0)->parallelize(ParallelType::BIDx);
   tv4->axis(1)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(tv4, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv4);
 
   GpuLower gpulw(&fusion);
 
@@ -17202,7 +17203,7 @@ TEST_F(NVFuserTest, FusionPredicateElimination4_CUDA) {
 
   tv1->axis(0)->parallelize(ParallelType::TIDy);
   tv1->axis(1)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(tv1, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv1);
 
   GpuLower gpulw(&fusion);
 
@@ -17251,7 +17252,7 @@ TEST_F(NVFuserTest, FusionPredicateElimination5_CUDA) {
   auto rtvs2 = tvs2.rFactor({1});
 
   rtvs2.avg->axis(0)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(rtvs2.avg, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(rtvs2.avg);
 
   GpuLower gpulw(&fusion);
 
@@ -18607,6 +18608,44 @@ TEST_F(NVFuserTest, FusionPointwiseBroadcast_CUDA) {
   testValidate(&fusion, outputs, aten_inputs, {aten_y}, __LINE__, __FILE__);
 }
 
+TEST_F(NVFuserTest, FusionPointwiseVectorize_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  const int size = 1024 * 64;
+
+  TensorView* x = makeContigTensor(1);
+  fusion.addInput(x);
+  auto y = sin(x);
+  fusion.addOutput(y);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  // PyTorch's CUDA caching allocator should always return aligned pointer for
+  // freshly allocated tensor
+  at::Tensor at_x = at::randn({size}, options);
+
+  schedulePointwise(&fusion, {at_x});
+
+  for (auto x_consumer : ir_utils::consumerTvsOf(x)) {
+    bool found_vec_in_input = false;
+    for (auto id : x_consumer->domain()->domain()) {
+      if (isParallelTypeVectorize(id->getParallelType())) {
+        found_vec_in_input = true;
+        break;
+      }
+    }
+    TORCH_CHECK(found_vec_in_input, "Expect input to be vectorized");
+  }
+
+  for (auto id : y->domain()->domain()) {
+    if (isParallelTypeVectorize(id->getParallelType())) {
+      return;
+    }
+  }
+  TORCH_CHECK(false, "Expect output to be vectorized");
+}
+
 TEST_F(NVFuserTest, FusionSmemAliasSerial_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
@@ -19085,9 +19124,9 @@ TEST_F(NVFuserTest, FusionChannelsLastParser_CUDA) {
   // 2. use a fuzzy compare (ignore non-significant whitespaces for example)
   const std::string expected_kernel = R"(
 __global__ void CUDAGeneratedKernel(Tensor<__half, 4> T0, Tensor<__half, 4> T2, Tensor<__half, 4> T7) {
-  int64_t i172;
-  i172 = (((nvfuser_index_t)blockIdx.x) * 128) + ((nvfuser_index_t)threadIdx.x);
-  if ((i172 < (T0.size[0] * (T0.size[1] * (T0.size[2] * T0.size[3]))))) {
+  int64_t i171;
+  i171 = (((nvfuser_index_t)blockIdx.x) * 128) + ((nvfuser_index_t)threadIdx.x);
+  if ((i171 < (T0.size[0] * (T0.size[1] * (T0.size[2] * T0.size[3]))))) {
     __half T9[1];
     T9[0] = 0;
     T9[0]
@@ -19095,8 +19134,7 @@ __global__ void CUDAGeneratedKernel(Tensor<__half, 4> T0, Tensor<__half, 4> T2, 
     __half T8[1];
     T8[0] = 0;
     T8[0]
-       = T0[i172];
-    __half T10[1];
+       = T0[i171];
     float T3[1];
     T3[0]
        = __half2float(T9[0]);
@@ -19113,9 +19151,10 @@ __global__ void CUDAGeneratedKernel(Tensor<__half, 4> T0, Tensor<__half, 4> T2, 
     float T6[1];
     T6[0]
        = relu(T5[0]);
+    __half T10[1];
     T10[0]
        = __float2half(T6[0]);
-    T7[i172]
+    T7[i171]
        = T10[0];
   }
 }
@@ -20391,7 +20430,7 @@ TEST_F(NVFuserTest, FusionDoubleBuffering1_CUDA) {
 
   tv3->axis(-2)->parallelize(ParallelType::BIDx);
   tv3->axis(-1)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(tv3, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv3);
 
   tv1->doubleBuffer();
 
@@ -20429,7 +20468,7 @@ TEST_F(NVFuserTest, FusionDoubleBuffering2_CUDA) {
 
   tv3->axis(-2)->parallelize(ParallelType::BIDx);
   tv3->axis(-1)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(tv3, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv3);
 
   tv1->doubleBuffer();
 
@@ -20478,7 +20517,7 @@ TEST_F(NVFuserTest, FusionDoubleBuffering3_CUDA) {
   tv2->doubleBuffer();
 
   tv3->axis(-1)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(tv3, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv3);
 
   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
   at::manual_seed(0);
@@ -20519,7 +20558,7 @@ TEST_F(NVFuserTest, FusionDoubleBuffering4_CUDA) {
 
   tv3->axis(-1)->parallelize(ParallelType::TIDx);
   tv3->axis(1)->parallelize(ParallelType::Unswitch);
-  scheduler_utils::parallelizeAllLike(tv3, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv3);
 
   tv2->doubleBuffer();
 
@@ -20561,7 +20600,7 @@ TEST_F(NVFuserTest, FusionDoubleBuffering5_CUDA) {
 
   tv2->axis(-1)->parallelize(ParallelType::TIDx);
   tv2->axis(1)->parallelize(ParallelType::Unswitch);
-  scheduler_utils::parallelizeAllLike(tv2, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv2);
 
   tv1->doubleBuffer();
 
@@ -20683,7 +20722,7 @@ TEST_F(NVFuserTest, FusionDoubleBuffering8_CUDA) {
   tv1->computeAt(tv4, 1);
 
   tv4->axis(-1)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(tv4, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv4);
 
   tv2->doubleBuffer();
   tv3->doubleBuffer();
@@ -20727,7 +20766,7 @@ TEST_F(NVFuserTest, FusionDoubleBuffering9_CUDA) {
   tv3->computeAt(out, -1);
 
   out->axis(-1)->parallelize(ParallelType::TIDx);
-  scheduler_utils::parallelizeAllLike(out, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(out);
 
   tv2->doubleBuffer();
   tv3->doubleBuffer();
@@ -20805,7 +20844,7 @@ TEST_F(NVFuserTest, FusionSmemBlockGemmCacheDoubleBuffer_CUDA) {
   tv5->axis(-3)->parallelize(ParallelType::TIDy);
   tv5->axis(-1)->parallelize(ParallelType::TIDx);
 
-  scheduler_utils::parallelizeAllLike(tv5, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(tv5);
 
   tv0_cache_local->doubleBuffer();
   tv1_cache_local->doubleBuffer();
@@ -21169,7 +21208,7 @@ TEST_F(NVFuserTest, FusionIssue1430_CUDA) {
 
   auto rfactor = ir_utils::rfactorHelper(tv3, {1, 4});
 
-  scheduler_utils::parallelizeAllLike(rfactor, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(rfactor);
 
   for (auto tv : ir_utils::allTvs(&fusion)) {
     if (tv != tv1 || tv != tv3) {
@@ -23201,7 +23240,7 @@ TEST_F(NVFuserTest, FusionTestReEntrantGridWelford_CUDA) {
   TransformPropagatorWithCheck propagator(reduction_tv);
   MaxRootDomainInfoSpanningTree(reduction_tv).traverse(&propagator);
   auto rfactor_tv = ir_utils::rfactorHelper(reduction_tv, {4});
-  scheduler_utils::parallelizeAllLike(rfactor_tv, ir_utils::allTvs(&fusion));
+  scheduler_utils::parallelizeAllLike(rfactor_tv);
 
   tv0->computeAt(tv_avg, 2);
   tv0->computeAt(cached_input, -2);
@@ -23294,6 +23333,226 @@ TEST_F(NVFuserTest, FusionRedundantPredSync_CUDA) {
   auto ref = t0 + t1;
 
   testValidate(&fusion, cg_outputs, {t0, t1}, {ref}, __LINE__, __FILE__);
+}
+
+// Test case for removing syncs on chain of redundant uses.
+TEST_F(NVFuserTest, FusionRedundantPredSync2_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  TensorView* tv0 = makeConcreteTensor({32});
+  TensorView* tv1 = makeConcreteTensor({32, 32});
+  fusion.addInput(tv0);
+  fusion.addInput(tv1);
+
+  auto tv2 = broadcast(tv0, {true, false});
+  auto tv3 = add(tv2, tv1);
+
+  fusion.addOutput(tv3);
+
+  auto tv0c = tv0->cacheAfter();
+
+  // Make a redundant write through smem
+  tv0c->setMemoryType(MemoryType::Shared);
+  tv2->setMemoryType(MemoryType::Shared);
+
+  tv0->computeAt(tv3, 0);
+  tv1->computeAt(tv3, 0);
+
+  tv0c->axis(0)->parallelize(ParallelType::TIDx);
+  tv2->axis(0)->parallelize(ParallelType::TIDy);
+  tv2->axis(1)->parallelize(ParallelType::TIDx);
+
+  tv3->axis(0)->parallelize(ParallelType::TIDy);
+  tv3->axis(1)->parallelize(ParallelType::TIDx);
+
+  // Utility class to make sure one block sync
+  //  is inserted by RAW pass.
+  class SyncChecker : public kir::IrVisitor {
+   public:
+    using kir::IrVisitor::handle;
+    int result() {
+      return sync_seen_;
+    }
+
+   private:
+    void handle(kir::BlockSync*) final {
+      sync_seen_++;
+    }
+
+   private:
+    int sync_seen_ = 0;
+  } checker;
+
+  GpuLower gpulw(&fusion);
+  checker.handle(gpulw.kernel()->topLevelExprs());
+  TORCH_INTERNAL_ASSERT(
+      checker.result() < 2, "More syncs were inserted than expected");
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({32}, options);
+  at::Tensor t1 = at::randn({32, 32}, options);
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0, t1});
+  auto cg_outputs = fe.runFusion({t0, t1});
+
+  auto ref = t0 + t1;
+
+  testValidate(&fusion, cg_outputs, {t0, t1}, {ref}, __LINE__, __FILE__);
+}
+
+// Test case for sync insertion after redundant predicated smem write
+//  Check that syncs are removed only when all paths are redundant.
+TEST_F(NVFuserTest, FusionRedundantPredSync3_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  TensorView* tv0 = makeConcreteTensor({32});
+  TensorView* tv1 = makeConcreteTensor({32, 32});
+  fusion.addInput(tv0);
+  fusion.addInput(tv1);
+
+  auto tv2 = broadcast(tv0, {true, false});
+  auto tv3 = set(tv2);
+  auto tv4 = add(tv3, tv1);
+  auto tv5 = add(tv2, tv1);
+
+  fusion.addOutput(tv4);
+  fusion.addOutput(tv5);
+
+  auto tv0c = tv0->cacheAfter();
+
+  // In this scheduling config,
+  //  tv0c -> tv2 -> tv3 is a redundant path for tidy
+  //  tv0c -> tv2 -> tv5 is not.
+  //  So we need a RAW sync in tv0c->tv2 to make sure
+  //  tv2 has the correct value to produce tv5.
+  tv0c->setMemoryType(MemoryType::Shared);
+  tv3->setMemoryType(MemoryType::Shared);
+
+  tv0c->axis(0)->parallelize(ParallelType::TIDx);
+  tv2->axis(0)->parallelize(ParallelType::TIDy);
+  tv2->axis(1)->parallelize(ParallelType::TIDx);
+
+  tv3->axis(0)->parallelize(ParallelType::TIDy);
+  tv3->axis(1)->parallelize(ParallelType::TIDx);
+
+  tv5->axis(0)->parallelize(ParallelType::TIDy);
+  tv5->axis(1)->parallelize(ParallelType::TIDx);
+
+  // Utility class to make sure one block sync
+  //  is inserted by RAW pass.
+  class SyncChecker : public kir::IrVisitor {
+   public:
+    using kir::IrVisitor::handle;
+    int result() {
+      return sync_seen_;
+    }
+
+   private:
+    void handle(kir::BlockSync* sync) final {
+      if (!sync->isWarHazardSync()) {
+        sync_seen_++;
+      }
+    }
+
+   private:
+    int sync_seen_ = 0;
+  } checker;
+
+  GpuLower gpulw(&fusion);
+  checker.handle(gpulw.kernel()->topLevelExprs());
+
+  // This is implicit checking. There are exactly 2 places
+  //  where RAW hazards happen: one producing tv2 and the other
+  //  producing tv3. This test case expect syncs in both of
+  //  these places so we check that 2 RAW syncs are inserted.
+  TORCH_INTERNAL_ASSERT(
+      checker.result() == 2,
+      "Exactly 2 RAW sync expected for the two shared memory transfers");
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({32}, options);
+  at::Tensor t1 = at::randn({32, 32}, options);
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0, t1});
+  auto cg_outputs = fe.runFusion({t0, t1});
+
+  auto ref = t0 + t1;
+
+  testValidate(&fusion, cg_outputs, {t0, t1}, {ref, ref}, __LINE__, __FILE__);
+}
+
+// Unit test case for detecting thread redundant usage of shared tensors.
+TEST_F(NVFuserTest, FusionRedundantUseCheck_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  TensorView* tv0 = makeConcreteTensor({32, 32});
+  fusion.addInput(tv0);
+
+  auto tv1 = set(tv0);
+  auto tv2 = set(tv1);
+  auto tv3 = set(tv2);
+  auto tv4 = set(tv3);
+
+  auto tv5 = set(tv4);
+
+  auto tv6 = set(tv4);
+  auto tv7 = set(tv6);
+
+  fusion.addOutput(tv5);
+  fusion.addOutput(tv7);
+
+  tv2->setMemoryType(MemoryType::Shared);
+  tv4->setMemoryType(MemoryType::Shared);
+
+  tv7->axis(-1)->parallelize(ParallelType::TIDx);
+
+  // Thread pred map cannot be built without an active lower
+  //  object. So would need to lower the whole fusion for
+  //  testing. However, lower also keeps an copy of the fusion
+  //  so the original pointers cannot be used to querry the
+  //  thread pred map. So have to traverse the new expr list
+  //  to find the pointers;
+  GpuLower gpulw(&fusion);
+
+  TensorView *lowered_tv2 = nullptr, *lowered_tv4 = nullptr;
+  auto used_vals = gpulw.kernel()->usedMathVals();
+
+  for (auto tv : ir_utils::filterByType<TensorView>(used_vals)) {
+    if (tv->name() == 2) {
+      lowered_tv2 = tv;
+    }
+    if (tv->name() == 4) {
+      lowered_tv4 = tv;
+    }
+  }
+
+  TORCH_INTERNAL_ASSERT(
+      lowered_tv2 != nullptr && lowered_tv4 != nullptr,
+      "tv2 or tv4 not lowered or mangled");
+
+  auto tv2_info = gpulw.threadPredMap().getPredicateInfo(lowered_tv2);
+  auto tv4_info = gpulw.threadPredMap().getPredicateInfo(lowered_tv4);
+
+  // tv2 -> tv3 -> tv4 (shared) is the only use chain for tv2,
+  //  and tv4 is redundantly written in tidx so tv2 is redundantly
+  //  consumed in tidx.
+  TORCH_INTERNAL_ASSERT(
+      tv2_info.redundant_use_types.get(ParallelType::TIDx),
+      "TV2 is redundantly used but not detected.");
+
+  // tv4->tv5 (global) is a redundant use chain, but
+  // tv4->tv6->tv7 is not, so tv4 should not be detected as
+  // a redundant used tensor in tidx.
+  TORCH_INTERNAL_ASSERT(
+      !tv4_info.redundant_use_types.get(ParallelType::TIDx),
+      "TV4 is not redundantly used but not detected.");
 }
 
 // Test a basic swizzle pattern
@@ -24423,6 +24682,91 @@ TEST_F(NVFuserTest, FusionInlineRepro1803_CUDA) {
   TORCH_CHECK(
       tvs.var_sum->getComputeAtPosition() == tvs.n->getComputeAtPosition());
   TORCH_CHECK(tvs.var_sum->getComputeAtPosition() == 1);
+}
+
+// Unit test for the transform selection logic
+TEST_F(NVFuserTest, FusionBoundedDirectionSelection1_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  TensorView* tv0 = makeContigTensor(2);
+
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = set(tv1);
+  auto tv3 = add(tv2, tv1);
+  fusion.addOutput(tv3);
+
+  tv3->split(-1, 5);
+  tv3->split(-1, 8);
+
+  scheduler_utils::BoundedDirectionalTransformPropagator::backward(
+      tv3, -1, {tv0, tv2});
+
+  // Check that the splits are replayed on tv1, even though tv2
+  //  is part of the boundary.
+  TORCH_INTERNAL_ASSERT(
+      tv2->nDims() == 4, "Propagator didn't propagate to tv2");
+}
+
+TEST_F(NVFuserTest, FusionIssueRepro1844_CUDA) {
+  auto fusion = std::make_unique<Fusion>();
+  FusionGuard fg(fusion.get());
+
+  std::vector<int64_t> shape = {2, 1, 768};
+  std::vector<int64_t> sum_to_shape = {768};
+  std::vector<int64_t> sum_to_axes = {0, 1};
+  double kProb = 0.5;
+
+  std::vector<Int*> sum_to_symb;
+  std::transform(
+      sum_to_shape.begin(),
+      sum_to_shape.end(),
+      std::back_inserter(sum_to_symb),
+      [](int s) -> Int* { return IrBuilder::create<Int>(s); });
+
+  TensorView* tv0 = makeContigConcreteTensor(shape);
+  TensorView* tv1 = makeContigConcreteTensor(shape);
+  TensorView* tv2 = makeContigConcreteTensor(shape, DataType::Bool);
+
+  fusion->addInput(tv0);
+  fusion->addInput(tv1);
+  fusion->addInput(tv2);
+
+  Double* prob = IrBuilder::create<Double>(kProb);
+  auto grad_input = dropout_backward(tv1, tv2, prob);
+  auto grad_gelu = gelu_backward(grad_input, tv0);
+  auto grad_bias = sum_to(grad_gelu, sum_to_symb);
+
+  fusion->addOutput(grad_gelu);
+  fusion->addOutput(grad_bias);
+
+  const auto options =
+      at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  const auto mask_options =
+      at::TensorOptions().dtype(at::kBool).device(at::kCUDA, 0);
+  at::manual_seed(0);
+
+  at::Tensor a = at::randn(shape, options);
+  at::Tensor b = at::randn(shape, options);
+  at::Tensor c = at::randn(shape, options);
+  auto mask = at::gt(c, 0.0f);
+  std::vector<IValue> aten_inputs = {a, b, mask};
+
+  FusionExecutorCache executor_cache(std::move(fusion));
+  auto cg_outputs = executor_cache.runFusionWithInputs(aten_inputs);
+
+  auto dinput = at::native_dropout_backward(b, mask, kProb);
+  auto dgelu = at::gelu_backward(dinput, a, "none");
+  auto dbias = dgelu.sum(sum_to_axes);
+
+  testValidate(
+      executor_cache.fusion(),
+      cg_outputs,
+      aten_inputs,
+      {dgelu, dbias},
+      __LINE__,
+      __FILE__);
 }
 
 } // namespace jit

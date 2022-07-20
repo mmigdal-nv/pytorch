@@ -1,6 +1,7 @@
 #include <torch/csrc/jit/codegen/cuda/scheduler/pointwise.h>
 
 #include <torch/csrc/jit/codegen/cuda/executor_utils.h>
+#include <torch/csrc/jit/codegen/cuda/inline_propagator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
@@ -12,6 +13,9 @@
 #include <torch/csrc/jit/codegen/cuda/utils.h>
 
 #include <ATen/cuda/CUDAContext.h>
+
+#include <algorithm>
+#include <unordered_map>
 
 namespace torch {
 namespace jit {
@@ -592,15 +596,11 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
       ir_utils::getReductionOps(fusion /*, ignore_trivial=true */).empty(),
       "This scheduler only handles pointwise ops.");
 
-  // For intermediate outputs, apply cacheFork
-  auto outs = fusion->outputs();
-  for (const auto output : outs) {
-    if (!output->uses().empty() && output->definition() != nullptr) {
-      if (output->getValType().value() == ValType::TensorView) {
-        output->as<TensorView>()->cacheFork();
-      }
-    }
-  }
+  // Cache inputs
+  auto cached_inputs = scheduler_utils::cacheInputs(fusion, true);
+
+  // Cache and fork outputs
+  auto cached_outputs = scheduler_utils::cacheAndForkOutputs(fusion, true);
 
   std::vector<TensorView*> input_tvs;
   {
@@ -636,31 +636,6 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
   TORCH_INTERNAL_ASSERT(
       reference_tv != nullptr,
       "Could not find a fully broadcasted output to reference schedule on.");
-
-  // Caches of inputs
-  std::vector<TensorView*> cached_inputs;
-
-  // Output, cacheBefore of output
-  std::vector<std::pair<TensorView*, TensorView*>> cached_outputs;
-
-  // Track what should be vectorized versus unrolled
-  std::unordered_set<TensorView*> vectorized_tensor;
-
-  // Figure out which inputs to cache for unrolling or vectorization
-  for (auto inp : input_tvs) {
-    if (inp->uses().empty() || inp->isFusionOutput()) {
-      continue;
-    }
-    cached_inputs.emplace_back(inp->cacheAfter());
-  }
-
-  // Figure out which outputs to cache for unrolling or vectorization
-  for (auto out : output_tvs) {
-    if (out->definition() == nullptr) {
-      continue;
-    }
-    cached_outputs.emplace_back(std::make_pair(out, out->cacheBefore()));
-  }
 
   auto all_tvs = ir_utils::allTvs(fusion);
 
@@ -700,6 +675,8 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
     }
   }
 
+  int64_t unswitch_pos;
+  IterDomain* vectorize_id = nullptr;
   if (params.break_point) {
     // 2D parallelization scheme
     TORCH_INTERNAL_ASSERT(rhs_i >= 0 && lhs_i >= 0);
@@ -715,10 +692,8 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
       // [outer, Unswitch | i-remainder, TIDx, Vectorization]
       reference_tv->axis(1)->parallelize(ParallelType::Unswitch);
       reference_tv->axis(3)->parallelize(ParallelType::TIDx);
-
-      // Aggressively mark with vectorized and cleanup later. That way we
-      // don't have to manually specify parallelization outside the reference.
-      reference_tv->axis(4)->parallelize(ParallelType::Vectorize);
+      // Vectorization are propagated separately
+      vectorize_id = reference_tv->axis(4);
 
       // [outer, Unswitch | i-remainder, TIDx, Vectorization]
       // To make consistent with unrolling:
@@ -733,6 +708,11 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
       reference_tv->reorder({{1, 2}});
       // [outer, i-remainder, unswitch, unroll, TIDx ]
       reference_tv->axis(2)->parallelize(ParallelType::Unswitch);
+      // Here we do not set axis(3)->parallelize(Unroll) because we do not want
+      // it to be propagated. We manually unroll by splitting the inline
+      // propagation process into two steps:
+      // step 1: inline at the unswitch position for cached inputs and outputs
+      // step 2: inline at the inner most dim for the rest of the graph
       reference_tv->axis(4)->parallelize(ParallelType::TIDx);
 
       //[outer | i-remainder, Unswitch, Unroll, TIDx]
@@ -752,8 +732,10 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
           // [i-remainder, BIDy{65535} | BIDx, TIDy | Unswitch, Unroll, TIDx]
           reference_tv->split(0, 65535);
           reference_tv->axis(1)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 5;
         } else {
           reference_tv->axis(0)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 4;
         }
       } else {
         // [BIDx | BIDy TIDy | Unswitch, Unroll, TIDx]
@@ -763,8 +745,10 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
           // [BIDx | i-remainder, BIDy{65535}, TIDy | Unswitch, Unroll, TIDx]
           reference_tv->split(1, 65535);
           reference_tv->axis(2)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 5;
         } else {
           reference_tv->axis(1)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 4;
         }
       }
     } else {
@@ -776,8 +760,10 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
           // [i-remainder, BIDy{65535} | BIDx | Unswitch, Unroll, TIDx]
           reference_tv->split(0, 65535);
           reference_tv->axis(1)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 4;
         } else {
           reference_tv->axis(0)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 3;
         }
       } else {
         // [BIDx | BIDy | Unswitch, Unroll, TIDx]
@@ -786,8 +772,10 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
           // [BIDx | i-remainder, BIDy{65535} | Unswitch, Unroll, TIDx]
           reference_tv->split(1, 65535);
           reference_tv->axis(2)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 4;
         } else {
           reference_tv->axis(1)->parallelize(ParallelType::BIDy);
+          unswitch_pos = 3;
         }
       }
     }
@@ -811,9 +799,8 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
       reference_tv->axis(0)->parallelize(ParallelType::BIDx);
       reference_tv->axis(1)->parallelize(ParallelType::TIDx);
       reference_tv->axis(2)->parallelize(ParallelType::Unswitch);
-      // Aggressively mark with vectorized and cleanup later. That way we
-      // don't have to manually specify parallelization outside the reference.
-      reference_tv->axis(3)->parallelize(ParallelType::Vectorize);
+      // Vectorization are propagated separately
+      vectorize_id = reference_tv->axis(3);
 
       //[BIDx, TIDx, Unswitch, Vectorization]
       // To make consistent with unrolling:
@@ -830,124 +817,73 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
       // [BIDx, Unswitch, Unroll, TIDx]
       reference_tv->axis(0)->parallelize(ParallelType::BIDx);
       reference_tv->axis(1)->parallelize(ParallelType::Unswitch);
+      // Here we do not set axis(2)->parallelize(Unroll) because we do not want
+      // it to be propagated. We manually unroll by splitting the inline
+      // propagation process into two steps:
+      // step 1: inline at the unswitch position for cached inputs and outputs
+      // step 2: inline at the inner most dim for the rest of the graph
       reference_tv->axis(3)->parallelize(ParallelType::TIDx);
     }
+    unswitch_pos = 2;
   }
 
   TransformPropagator propagator(reference_tv);
-  MaxRootDomainInfoSpanningTree(reference_tv).traverse(&propagator);
-  scheduler_utils::parallelizeAllLike(reference_tv, all_tvs);
+  MaxRootDomainInfoSpanningTree spanning_tree(reference_tv);
+  spanning_tree.traverse(&propagator);
+  scheduler_utils::parallelizeAllLike(reference_tv);
 
   if (params.vectorize) {
     // Grab all tensor views that should be vectorized
-    auto vectorized_tvs =
+    auto inputs_outputs =
         scheduler_utils::getInputsOutputsWithInnerDim(reference_tv, true);
-    // Going to move inputs to consumers of inputs, need a copy as we'll modify
-    // the original.
-    {
-      auto vectorized_tvs_copy = vectorized_tvs;
-      for (auto inp : vectorized_tvs_copy) {
-        if (!inp->isFusionInput()) {
-          continue;
-        }
-        vectorized_tvs.erase(
-            std::find(vectorized_tvs.begin(), vectorized_tvs.end(), inp));
-        auto consumer_tvs = ir_utils::consumerTvsOf(inp);
-        vectorized_tvs.insert(
-            vectorized_tvs.end(), consumer_tvs.begin(), consumer_tvs.end());
+    std::vector<TensorView*> vectorized_tvs;
+    bool should_vectorize_reference_tv = false;
+    for (auto tv : inputs_outputs) {
+      if (tv == reference_tv) {
+        should_vectorize_reference_tv = true;
       }
+      if (!tv->isFusionInput()) {
+        vectorized_tvs.emplace_back(tv);
+        continue;
+      }
+      // move inputs to consumers of inputs
+      auto consumer_tvs = ir_utils::consumerTvsOf(tv);
+      vectorized_tvs.insert(
+          vectorized_tvs.end(), consumer_tvs.begin(), consumer_tvs.end());
     }
-    // Clear vectorize on tensors that shouldn't have it
-    for (auto tv : all_tvs) {
-      if (std::find(vectorized_tvs.begin(), vectorized_tvs.end(), tv) ==
-          vectorized_tvs.end()) {
-        for (auto id : tv->domain()->domain()) {
-          if (id->getParallelType() == ParallelType::Vectorize) {
-            id->parallelize(ParallelType::Serial);
-          }
-        }
-      }
+    // Aggressively mark with vectorized and cleanup later. That way we
+    // don't have to manually specify parallelization outside the reference.
+    vectorize_id->parallelize(ParallelType::Vectorize);
+    scheduler_utils::parallelizeAllLike(
+        reference_tv, vectorized_tvs, {ParallelType::Vectorize});
+    if (!should_vectorize_reference_tv) {
+      vectorize_id->parallelize(ParallelType::Serial);
     }
   }
 
-  // Compute at into cached inputs
-  std::vector<TensorView*> consumers_of_cached_inputs;
-  // Cache of input, and one of its consumers
-  std::vector<std::pair<TensorView*, TensorView*>> input_cache_and_consumer;
-  {
-    // Avoid duplicate additions, so track what we add
-    std::unordered_set<TensorView*> added;
-    for (auto cached_input : cached_inputs) {
-      auto consumer_tvs = ir_utils::consumerTvsOf(cached_input);
-      TORCH_INTERNAL_ASSERT(
-          consumer_tvs.size(),
-          "Input was not succesfully filtered out for scheduling but wasn't used.");
+  // Begin by inlining at the unswitch position for the entire DAG. The cached
+  // inputs, and outputs will keep this inline position, but other tensors will
+  // get a higher position in later inline propagation. We need this separate
+  // step because we were not using ParallelType::Unroll, so we have to do
+  // unrolling manually.
+  InlinePropagator inline_unswitch(
+      reference_tv, unswitch_pos, ComputeAtMode::BestEffort);
+  spanning_tree.traverse(&inline_unswitch);
 
-      // Grab a consumer which will be used for computeAt structure of cached
-      // input into a consumer
-      input_cache_and_consumer.emplace_back(
-          std::make_pair(cached_input, consumer_tvs[0]));
-
-      // Grab all consumers which will be used for inlining computeAt for the
-      // body of the computation (excluding caching inputs/outputs)
-      for (auto consumer_tv : consumer_tvs) {
-        // Don't duplicate
-        if (added.insert(consumer_tv).second) {
-          consumers_of_cached_inputs.emplace_back(consumer_tv);
-        }
-      }
-    }
+  // Inline at the inner most position. The CA position of all tensors except
+  // inputs, cached inputs and outputs will be updated.
+  std::unordered_set<TensorView*> inner_most_tensors(
+      all_tvs.begin(), all_tvs.end());
+  for (auto cached_input : cached_inputs) {
+    inner_most_tensors.erase(cached_input);
   }
-
-  for (auto entry : input_cache_and_consumer) {
-    // Compute at inside unswitch position:
-    auto input_cache = entry.first;
-    auto input_cache_consumer = entry.second;
-
-    auto unswitch_it = std::find_if(
-        input_cache_consumer->domain()->domain().begin(),
-        input_cache_consumer->domain()->domain().end(),
-        [](IterDomain* id) {
-          return id->getParallelType() == ParallelType::Unswitch;
-        });
-    auto unswitch_pos =
-        unswitch_it == input_cache_consumer->domain()->domain().end()
-        ? -1
-        : std::distance(
-              input_cache_consumer->domain()->domain().begin(), unswitch_it) +
-            1;
-
-    input_cache->computeAt(
-        input_cache_consumer, unswitch_pos, ComputeAtMode::BestEffort);
-  }
-
-  // Producers for inlined computeAt
-  std::vector<TensorView*> compute_from = consumers_of_cached_inputs;
-
-  // Consumers for inlined computeAt
-  std::vector<TensorView*> compute_to;
-  // Compute at cached outputs
-  //[BIDx, Unswitch, Vectorization, TIDx]
   for (auto entry : cached_outputs) {
-    auto cached_output = entry.second;
-    auto output = entry.first;
-
-    auto unswitch_it = std::find_if(
-        output->domain()->domain().begin(),
-        output->domain()->domain().end(),
-        [](IterDomain* id) {
-          return id->getParallelType() == ParallelType::Unswitch;
-        });
-    auto unswitch_pos = unswitch_it == output->domain()->domain().end()
-        ? -1
-        : std::distance(output->domain()->domain().begin(), unswitch_it) + 1;
-
-    cached_output->computeAt(output, unswitch_pos, ComputeAtMode::BestEffort);
-    compute_to.push_back(cached_output);
+    auto output = entry.second;
+    inner_most_tensors.erase(output);
   }
-
-  scheduler_utils::computeAtBetween(
-      compute_from, compute_to, -1, ComputeAtMode::BestEffort);
+  InlinePropagator inline_inner_most(
+      reference_tv, -1, ComputeAtMode::BestEffort, inner_most_tensors);
+  spanning_tree.traverse(&inline_inner_most);
 }
 
 } // namespace cuda
