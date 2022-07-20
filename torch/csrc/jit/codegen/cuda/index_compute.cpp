@@ -416,37 +416,6 @@ Val* getProducerIndexWithPartialSplit(
       producer_index, SimplifyingIrBuilder::create<Int>(diff_eval.value()));
 }
 
-Val* getAllocSizeInMmaFragments(
-    Val* alloc_size_in_elements,
-    const TensorView* producer_tv,
-    const TensorView* consumer_tv) {
-  auto mma = dynamic_cast<MmaOp*>(consumer_tv->definition());
-  TORCH_INTERNAL_ASSERT(mma != nullptr, "consumer tv needs to be mma output");
-
-  bool is_a = producer_tv == mma->inA();
-  bool is_b = producer_tv == mma->inB();
-
-  TORCH_INTERNAL_ASSERT(is_a || is_b, "producer tv needs to be mma input");
-
-  int64_t fragment_size = is_a ? getInputARegisterSize(mma->options().macro)
-                               : getInputBRegisterSize(mma->options().macro);
-
-  auto fragment_size_val = SimplifyingIrBuilder::create<Int>(fragment_size);
-  // This is assuming we don't do dynamic shaped double buffering.
-  // Could extend if motivating cases are seen later. This const
-  //  value is just used for sanity check anyways.
-  auto alloc_size_const = alloc_size_in_elements->evaluateInt();
-
-  // This should never fail if the scheduler pass all the mma swizzle
-  //  checks. But still asserting here in case something goes really wrong.
-  TORCH_INTERNAL_ASSERT(
-      alloc_size_const % fragment_size == 0,
-      "Invalid double buffer allocation for mma input");
-
-  return SimplifyingIrBuilder::divExpr(
-      alloc_size_in_elements, fragment_size_val);
-}
-
 } // namespace
 
 void IndexCompute::handle(Split* split) {
@@ -1950,16 +1919,6 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
           loop_index, SimplifyingIrBuilder::create<Int>(2));
       auto original_alloc_size =
           gpu_lower->doubleBufferInfo().getOriginalAllocSize(producer_tv);
-      // Modify allocation size for mma fragments:
-      if (std::any_of(
-              consumer_tv->domain()->domain().begin(),
-              consumer_tv->domain()->domain().end(),
-              [](IterDomain* id) { return id->isMma(); })) {
-        // Double buffer switching will need to be modified since
-        //  the iteration is in units of fragment instead of numbers.
-        original_alloc_size = getAllocSizeInMmaFragments(
-            original_alloc_size, producer_tv, consumer_tv);
-      }
       auto db_strided_index =
           SimplifyingIrBuilder::mulExpr(db_switch_index, original_alloc_size);
       strided_inds.push_back(db_strided_index);
