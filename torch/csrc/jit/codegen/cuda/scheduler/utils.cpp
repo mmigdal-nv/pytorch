@@ -1840,6 +1840,50 @@ namespace {
 //!  passes will propagate the transforms.
 enum class PropagateDirection { Backward = 0, Forward };
 
+//! Returns true if the given tensorview is a fake boundary
+//!  TensorView, see Note [Fake Boundary Tensorview].
+//! This function assumes and would not check that tv is a boundary
+//!  of the select_tv set.
+bool isFakeBoundaryTensorview(
+    TensorView* tv,
+    const std::unordered_set<TensorView*>& selected_tv_set,
+    PropagateDirection direction) {
+  if (direction == PropagateDirection::Forward) {
+    // In the case of forward propagation,
+    //  a boundary tv is a fake boundary if
+    //  it has any consumer tv that's in the selected
+    //  set.
+    for (auto use : tv->fusion()->unordered_uses(tv)) {
+      for (auto out_tv : ir_utils::filterByType<TensorView>(use->outputs())) {
+        if (selected_tv_set.count(out_tv)) {
+          // Found a consumer that's in selected tv set.
+          return true;
+        }
+      }
+    }
+  } else {
+    // In the case of backward propagation,
+    //  a boundary tv is a fake boundary if it has any producer
+    //  that is within the selected set.
+    auto producer_expr = tv->definition();
+    if (producer_expr == nullptr) {
+      // Fusion inputs cannot be fake boundary.
+      return false;
+    }
+    for (auto in_tv :
+         ir_utils::filterByType<TensorView>(producer_expr->inputs())) {
+      if (selected_tv_set.count(in_tv)) {
+        // Found a producer that's in selected tv set.
+        return true;
+      }
+    }
+  }
+
+  // Didn't find any producer/consumer in the selected tv set.
+  //  The given tv is not a fake boundary tv.
+  return false;
+}
+
 //! Utility function to generate the set of tensorviews to propagate
 //!  transform to by BoundedDirectionalTransformPropagator.
 std::unordered_set<TensorView*> getDirectionalPropagatePathSet(
@@ -1869,15 +1913,57 @@ std::unordered_set<TensorView*> getDirectionalPropagatePathSet(
         {boundary_tvs.begin(), boundary_tvs.end()}, {from_tv});
   }
 
+  // Populate initial selected tensorviews in a set.
+  auto propagate_candidate_tv_view =
+      ir_utils::filterByType<TensorView>(propagate_candidate);
   // Prepare to filter out un-wanted tensorviews according
   //  to the option parameters.
-  std::unordered_set<TensorView*> propagate_path_set;
-  for (auto path_tv : ir_utils::filterByType<TensorView>(propagate_candidate)) {
-    if (options.transform_boundary || !boundary_tv_set.count(path_tv)) {
-      // When transform_boundary is not true, would not allow any
-      //  replay on the tensorviews specified as boundary tvs.
-      propagate_path_set.insert(path_tv);
-      continue;
+  std::unordered_set<TensorView*> propagate_path_set{
+      propagate_candidate_tv_view.begin(), propagate_candidate_tv_view.end()};
+
+  // Remove boundary tensorviews if we don't want to transform
+  //  tensorviews on the boundary.
+  if (!options.transform_boundary) {
+    // Additional refining step to identify "fake boundary" tensorviews.
+    //  We don't want to erase fake boundary tensorviews from the selected
+    //  set when we are erasing boundary tvs.
+    //
+    // Note [Fake Boundary Tensorview]
+    // A tensorview, tv0, is defined as fake boundary tv if
+    //  1. Tv0 is on the given boundary set.
+    //  2. There is a path from another boundary tv, Tv1 to from_tv that
+    // goes through Tv0.
+    //
+    // In this case the propagation behavior is not precisely defined.
+    // Our current decision is to treat such tensorview as non-boundary
+    //  tv to make sure the propagation paths are not blocked. E.g.:
+    //
+    //  T1 = T0
+    //  T2 = T1
+    //  T3 = T2 + T1
+    // if we propagate with from_tv = {T3}, boundary_tv = {T0, T2},
+    // transform_boundary=false
+    //
+    // Here T2 is a fake boundary and we will still transform T2 as it is
+    //  on the path between T3 and T0.
+
+    // Initialize set of fake boundary tvs.
+    std::unordered_set<TensorView*> fake_boundary_set;
+
+    // Populate the set of fake boundary tvs.
+    std::copy_if(
+        boundary_tvs.begin(),
+        boundary_tvs.end(),
+        std::inserter(fake_boundary_set, fake_boundary_set.end()),
+        [&propagate_path_set, direction](TensorView* tv) {
+          return isFakeBoundaryTensorview(tv, propagate_path_set, direction);
+        });
+
+    // Remove boundary tvs from the selected set, keeping fake boundary tvs.
+    for (auto boundary_tv : boundary_tvs) {
+      if (!fake_boundary_set.count(boundary_tv)) {
+        propagate_path_set.erase(boundary_tv);
+      }
     }
   }
 

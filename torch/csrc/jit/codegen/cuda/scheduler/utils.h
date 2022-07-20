@@ -2,6 +2,7 @@
 
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
+#include <torch/csrc/jit/codegen/cuda/maxinfo_propagator.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/reduction_heuristic.h>
 
 namespace torch {
