@@ -1870,26 +1870,19 @@ bool isFakeBoundaryTensorview(
     //  a boundary tv is a fake boundary if
     //  it has any consumer tv that's in the selected
     //  set.
-    for (auto use : tv->fusion()->unordered_uses(tv)) {
-      for (auto out_tv : ir_utils::filterByType<TensorView>(use->outputs())) {
-        if (selected_tv_set.count(out_tv)) {
-          // Found a consumer that's in selected tv set.
-          return true;
-        }
+    for (auto consumer_tv : ir_utils::consumerTvsOf(tv)) {
+      if (selected_tv_set.count(consumer_tv)) {
+        // Found a consumer that's in selected tv set.
+        return true;
       }
     }
+
   } else {
     // In the case of backward propagation,
     //  a boundary tv is a fake boundary if it has any producer
     //  that is within the selected set.
-    auto producer_expr = tv->definition();
-    if (producer_expr == nullptr) {
-      // Fusion inputs cannot be fake boundary.
-      return false;
-    }
-    for (auto in_tv :
-         ir_utils::filterByType<TensorView>(producer_expr->inputs())) {
-      if (selected_tv_set.count(in_tv)) {
+    for (auto producer_tv : ir_utils::producerTvsOf(tv)) {
+      if (selected_tv_set.count(producer_tv)) {
         // Found a producer that's in selected tv set.
         return true;
       }
