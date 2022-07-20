@@ -365,7 +365,7 @@ struct BoundedPropagationSelector : public MaxInfoSpanningTree::Selector {
  public:
   explicit BoundedPropagationSelector(
       std::unordered_set<TensorView*> selected_tvs)
-      : selected_tvs_(selected_tvs) {}
+      : selected_tvs_(std::move(selected_tvs)) {}
 
   bool allowC2P(TensorView* from, TensorView* to) final {
     return selected_tvs_.count(to);
