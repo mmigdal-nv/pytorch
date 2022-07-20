@@ -1686,7 +1686,7 @@ void makeTile(TensorView* tv, std::vector<int> tile_sizes) {
 
   // Re-order the tiles so that all the outer tiles are
   //  on the left of all the inner tiles
-  std::unordered_map<int, int> reorder_map;
+  std::unordered_map<int, int> reorder_map_old_to_new;
 
   // Number of tiled inner dimensions after we split.
   const auto split_tile_dimension_size = 2 * tile_dimension_size;
@@ -1712,13 +1712,13 @@ void makeTile(TensorView* tv, std::vector<int> tile_sizes) {
         group_index * tile_dimension_size + index_within_group;
 
     // Add pair {idx_before, idx_after} to re-order map.
-    reorder_map.insert(std::make_pair(
+    reorder_map_old_to_new.insert(std::make_pair(
         idx - split_tile_dimension_size,
         index_after_reorder - split_tile_dimension_size));
   }
 
   // Apply the re-order map to tensor
-  tv->reorder(reorder_map);
+  tv->reorder(reorder_map_old_to_new);
 }
 
 namespace {
@@ -1763,9 +1763,21 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv) {
 
   // Map the root id's to their innermost concrete id's
   //  on the leaf.
-  std::unordered_map<IterDomain*, int> root_id_to_leaf_pos;
+  std::unordered_map<IterDomain*, int> root_id_to_inner_leaf_pos;
 
-  // Move backward on tv's leaf domain;
+  // Try to re-order inner iterdomains from the innermost
+  //  position backward. This utility only tries to re-order
+  //  inner tiles on the innermost positions, like the resulting
+  //  tensor from makeTile utility.
+  // The re-ordering would first try to decide the inner iterdomains
+  //  we want to re-order. For this we start from the innermost position
+  //  and move back and collect all the iterdomains that we know
+  //  are inner tiles of some root domain or broadcast/reduction domains
+  //  that won't affect the concrete id layout.
+  // The collection process would stop whenever a iterdomain that is
+  //  neither an inner tile nor reduction/broadcast is found, and would
+  //  not re-order any iterdomain beyond that point to keep the
+  //  outer loop structure unchanged.
   for (auto i = ndims - 1; i >= 0; i--) {
     auto leaf_id = tv->axis(i);
     if (leaf_id->isBroadcast() || leaf_id->isReduction()) {
@@ -1782,7 +1794,8 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv) {
       // Found an innermost id, add them to the
       //  axes to reorder.
       TORCH_INTERNAL_ASSERT(
-          root_id_to_leaf_pos.insert(std::make_pair(maybe_root.value(), i))
+          root_id_to_inner_leaf_pos
+              .insert(std::make_pair(maybe_root.value(), i))
               .second,
           "Multiple \"innermost\" id seen for root id :",
           maybe_root.value()->toString(),
@@ -1800,18 +1813,22 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv) {
   // pointer to the current target postion after
   //  repordering
   int current_pos = leftmost_pos;
-  std::unordered_map<int, int> reorder_map;
+  std::unordered_map<int, int> reorder_map_old_to_new;
 
   // first place all the broadcast and reduction on the left:
   for (auto original_broadcast_or_reduction_pos : broadcast_or_reduction_pos) {
-    reorder_map[original_broadcast_or_reduction_pos] = current_pos++;
+    reorder_map_old_to_new[original_broadcast_or_reduction_pos] = current_pos++;
   }
 
-  // Next put all the innermost leaf id's
+  // Next put all the innermost leaf id's, we make sure that
+  //  the inner tile ordering follows the corresponding root
+  //  domain ordering by iterating on the root domain and
+  //  find their corresponding inner tile iterdomains from
+  //  the populated root_id_to_inner_leaf_pos.
   for (auto root_id : tv->getMaybeRFactorDomain()) {
-    auto leaf_id_pos_it = root_id_to_leaf_pos.find(root_id);
-    if (leaf_id_pos_it != root_id_to_leaf_pos.end()) {
-      reorder_map[leaf_id_pos_it->second] = current_pos++;
+    auto leaf_id_pos_it = root_id_to_inner_leaf_pos.find(root_id);
+    if (leaf_id_pos_it != root_id_to_inner_leaf_pos.end()) {
+      reorder_map_old_to_new[leaf_id_pos_it->second] = current_pos++;
     }
   }
 
@@ -1820,7 +1837,7 @@ TORCH_CUDA_CU_API void orderTiledConcreteIdAsRoot(TensorView* tv) {
   TORCH_INTERNAL_ASSERT(current_pos == ndims, "Inconsistent ordering logic");
 
   // Apply the new order:
-  tv->reorder(reorder_map);
+  tv->reorder(reorder_map_old_to_new);
 }
 
 } // namespace matmul_utils
