@@ -420,10 +420,21 @@ struct TORCH_CUDA_CU_API BoundedDirectionalTransformPropagator {
     //!  by the propagation pass.
     bool transform_boundary = false;
 
+    //! Sets the position boundary in parallel
+    //!  type propagation, see comment on
+    //!  scheduler_utils::parallelizeAllLike.
+    //! Only used if propagate_parallel_type==true.
+    int parallel_propagation_pos = -1;
+
     //! Setter for enabling parallel type
     //!  propagation. see comment on the variable.
-    Options propagateParallelType() {
+    //!
+    //! \param up_to_pos, sets the parallel type
+    //!  propagation boundary. see comment on
+    //!  scheduler_utils::parallelizeAllLike.
+    Options propagateParallelType(int up_to_pos = -1) {
       propagate_parallel_type = true;
+      parallel_propagation_pos = up_to_pos;
       return *this;
     }
 

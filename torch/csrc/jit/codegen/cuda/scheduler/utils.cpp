@@ -1996,6 +1996,7 @@ void BoundedDirectionalTransformPropagator::propagate(
   if (options.propagate_parallel_type) {
     scheduler_utils::parallelizeAllLike(
         from_tv,
+        options.parallel_propagation_pos,
         {included_tvs.begin(), included_tvs.end()},
         allParallelTypesExcept({ParallelType::Vectorize, ParallelType::Mma}));
   }
