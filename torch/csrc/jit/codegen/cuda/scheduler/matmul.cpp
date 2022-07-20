@@ -57,6 +57,14 @@ void scheduleMatmul(
 
   mma_builder.configureMma(c);
 
+  // TODO:
+  // Beyond this point, mma_builder really just becomes a populated
+  //  list of parameters to describes the mma swizzles that should
+  //  be annotated on the tensor domain. Conceptually the mma builder
+  //  object should be separated to 2 parts, one as scheduler utility
+  //  and the other as matmul heuristic parameters, which we are
+  //  starting to build out.
+
   // Setup register and shared memory stages:
   //   TODO: this section goes to a separate matmul util,
   //   and needs more configurability.
@@ -112,9 +120,6 @@ void scheduleMatmul(
     bcr = bcw_smem->cacheAfter(
         mma_builder.operand(MmaOptions::Operand::B).ldMatrix());
   }
-
-  // TODO: Look into this behavior...
-  mma_builder.accumulatorTv(cc);
 
   // Make a CTA tile
   // ------------------------------------------------------------------

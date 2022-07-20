@@ -99,8 +99,18 @@ struct MmaOptions {
         accumulator_stride == other.accumulator_stride;
   }
 
-  // To be inferred by mma builder interface.
-  MmaOp* mma_op = nullptr;
+  // The accumulator tensorview register supplied by the
+  //  scheduler interface. Each mma builder is responsible
+  //  for the parameters of one mma op, so the options struct
+  //  would need a pointer to keep track of which mma op it
+  //  is describing.
+  // Tracking mma expressions would not be stable as the expression
+  //  can get deleted by mutate passes.
+  TensorView* accumulator_tv = nullptr;
+
+  //! Returns the mma op that this options parameter list
+  //!  is describing. See comment on accumulator_tv.
+  MmaOp* mmaOp() const;
 };
 
 //! User interface for configuring the mma and mma related
