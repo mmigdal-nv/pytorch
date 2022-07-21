@@ -474,6 +474,10 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     }
   }
 
+  //! Returns the sum of all indices in a TensorIndex,
+  //!  or 0 if the indices vector is empty.
+  //! Used lowering generic tensor index and lowering
+  //!  mma fragment indices.
   std::string genTensorIndex(const kir::TensorIndex* ti) {
     bool first = true;
     std::stringstream index;
