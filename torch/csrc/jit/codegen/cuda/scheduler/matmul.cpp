@@ -51,6 +51,21 @@ void scheduleMatmul(
   auto& mma_builder = params.mma_builder;
   auto& gemm_tile = params.tile_sizes;
 
+  // Including current tensor naming convention for reference,
+  //  this is very temporary and will change over time and
+  //  in fact the whole body of this function will
+  //  eventually be a set of utility functions for different
+  //  sections of matmul(fusion) kernels, with
+  //  each having its own build out to do.
+  //
+  // Current naming convention:
+  //  operands assumed in global memory : a, b
+  //  registers staging global load : ar, br (short for a/b read)
+  //  shared mem cache of operands : acw_smem, bcw_smem (short for a/b
+  //  cache_write smem) registers at shared memory load output : acr, bcr (short
+  //  for a/b cache read) accumulator register: cc (short for c cache) result in
+  //  global memory: c
+
   // Currently only support a, b, c as fusion inputs/outputs
   //  aka. no prolog and epilog fusion yet.
   TORCH_CHECK(
