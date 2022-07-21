@@ -59,12 +59,23 @@ void scheduleMatmul(
   //  each having its own build out to do.
   //
   // Current naming convention:
+  //
   //  operands assumed in global memory : a, b
+  //
   //  registers staging global load : ar, br (short for a/b read)
+  //
   //  shared mem cache of operands : acw_smem, bcw_smem (short for a/b
-  //  cache_write smem) registers at shared memory load output : acr, bcr (short
-  //  for a/b cache read) accumulator register: cc (short for c cache) result in
-  //  global memory: c
+  //  cache_write smem)
+  //
+  //  registers at shared memory load output : acr, bcr (short for a/b cache
+  //  read)
+  //
+  //  register tensor input to the actual mma op: ab, bb (short for a/b
+  //  broadcasted)
+  //
+  //  accumulator register: cc (short for c cache)
+  //
+  //  result in global memory: c
 
   // Currently only support a, b, c as fusion inputs/outputs
   //  aka. no prolog and epilog fusion yet.
