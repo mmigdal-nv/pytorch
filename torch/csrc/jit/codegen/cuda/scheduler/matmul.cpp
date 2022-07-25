@@ -232,25 +232,29 @@ void scheduleMatmul(
   if (isTuring(mma_options.macro) || isAmpere(mma_options.macro)) {
     moveInnerBroadcastLeft(ab);
     moveInnerBroadcastLeft(bb);
+    ab->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
+    bb->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
+
+    // Propagate mma input swizzle up the DAG
+    //  to all the tensors before mma op and after shared mem read.
+    scheduler_utils::BoundedDirectionalTransformPropagator::backward(
+        ab,
+        -1,
+        {acw_smem},
+        scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+            .propagateParallelType());
+    scheduler_utils::BoundedDirectionalTransformPropagator::backward(
+        bb,
+        -1,
+        {bcw_smem},
+        scheduler_utils::BoundedDirectionalTransformPropagator::Options()
+            .propagateParallelType());
+  } else {
+    // TODO:
+    //  Need to build out this to support balanced prolog fusion on Volta.
+    acr->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
+    bcr->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
   }
-
-  ab->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::A).build());
-  bb->applyMmaSwizzle(mma_builder.operand(MmaOptions::Operand::B).build());
-
-  // Propagate mma input swizzle up the DAG
-  //  to all the tensors before mma op and after shared mem read.
-  scheduler_utils::BoundedDirectionalTransformPropagator::backward(
-      ab,
-      -1,
-      {acw_smem},
-      scheduler_utils::BoundedDirectionalTransformPropagator::Options()
-          .propagateParallelType());
-  scheduler_utils::BoundedDirectionalTransformPropagator::backward(
-      bb,
-      -1,
-      {bcw_smem},
-      scheduler_utils::BoundedDirectionalTransformPropagator::Options()
-          .propagateParallelType());
 
   cc->applyMmaSwizzle(
       mma_builder.operand(MmaOptions::Operand::Accumulator).build());
