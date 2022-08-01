@@ -1672,6 +1672,37 @@ TEST_F(NVFuserTest, FusionSimpleAmperePipeline_CUDA) {
   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
   at::Tensor input1 = at::randn({255}, options);
 
+  // Add check that the cp async op has an inlined predicate.
+  class InlinedCpAsyncPredChecker : public kir::IrVisitor {
+   public:
+    using kir::IrVisitor::handle;
+
+   private:
+    void handle(kir::IfThenElse* ite) final {
+      auto prev_within_ite = within_ite_;
+      within_ite_ = true;
+      kir::IrVisitor::handle(ite);
+      within_ite_ = prev_within_ite;
+    }
+
+    void handle(LoadStoreOp* ldst) final {
+      if (ldst->opType() == LoadStoreOpType::CpAsync) {
+        TORCH_INTERNAL_ASSERT(!within_ite_, "CPASYNC predicate not inlined");
+        TORCH_INTERNAL_ASSERT(
+            ldst->predicate()->hasValue() &&
+                !ldst->predicate()->value()->isConst(),
+            "CPASYNC predicate is not generated");
+      }
+    }
+
+   private:
+    bool within_ite_ = false;
+  } pred_checker;
+
+  // Check that cp async is inlined:
+  GpuLower gpulw(&fusion);
+  pred_checker.handle(gpulw.kernel()->topLevelExprs());
+
   FusionExecutor fe;
   fe.compileFusion(&fusion, {input1});
   auto cg_outputs = fe.runFusion({input1});
