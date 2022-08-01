@@ -23993,10 +23993,9 @@ TEST_F(NVFuserTest, FusionLoopSwizzleCheck1_CUDA) {
   // Swizzle inner tile of tv2
   tv2->swizzle(Swizzle2DType::ZShape, -2, -1, SwizzleMode::Loop);
 
-  // Make tv2 swizzled and half-inlined (unsupported).
+  // Make tv2 swizzled and partially-inlined (unsupported).
   tv0->computeAt(tv3, -2);
 
-  fusion.print();
   FusionExecutor fe;
   ASSERT_ANY_THROW(fe.compileFusion(&fusion));
 }
