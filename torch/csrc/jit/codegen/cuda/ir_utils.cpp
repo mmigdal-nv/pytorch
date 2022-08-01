@@ -3,6 +3,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
+#include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 
 #include <set>
 
@@ -473,25 +474,23 @@ TensorView* rfactorHelper(
     TensorView* reduction_tv,
     const std::vector<int>& axes) {
   TORCH_INTERNAL_ASSERT(reduction_tv->definition() != nullptr);
-  const bool is_welford = reduction_tv->definition()->isA<WelfordOp>();
-  if (!is_welford) {
+  const bool has_multiple_tvs = reduction_tv->definition()->inputs().size() > 1;
+  if (!has_multiple_tvs) {
     return reduction_tv->rFactor(axes);
   }
-  auto welford = reduction_tv->definition()->as<WelfordOp>();
-  auto w_avg = welford->outAvg()->as<TensorView>();
-  auto w_var = welford->outVar()->as<TensorView>();
-  auto w_n = welford->outN()->as<TensorView>();
 
-  auto rtvs =
-      reduction_tv->rFactor(axes, std::vector<TensorView*>{w_avg, w_var, w_n});
+  std::vector<TensorView*> out_tvs;
+  std::transform(
+      reduction_tv->definition()->outputs().begin(),
+      reduction_tv->definition()->outputs().end(),
+      std::back_inserter(out_tvs),
+      [](Val* val) { return val->as<TensorView>(); });
 
-  if (reduction_tv == w_n) {
-    return rtvs.at(2);
-  } else if (reduction_tv == w_var) {
-    return rtvs.at(1);
-  } else {
-    return rtvs.at(0);
-  }
+  auto rf_tvs = reduction_tv->rFactor(axes, out_tvs);
+
+  return rf_tvs.at(std::distance(
+      out_tvs.begin(),
+      std::find(out_tvs.begin(), out_tvs.end(), reduction_tv)));
 }
 
 namespace {
@@ -809,6 +808,18 @@ Val* getReductionInitValOf(TensorView* tv) {
   return init;
 }
 
+// TODO: Should mma be in here? Should we return true if it's a trivial
+// reduction?
+bool isReductionOp(const Expr* expr) {
+  // Note that GridReduction inherits ReductionOp
+  return expr->isA<ReductionOp>() || expr->isA<GroupedReductionOp>() ||
+      expr->isA<WelfordOp>() || expr->isA<kir::GridWelford>();
+}
+
+bool isReductionTvOp(const Expr* expr) {
+  return ir_utils::isTvOp(expr) && isReductionOp(expr);
+}
+
 namespace {
 
 struct ReplaceValInIndexVal : public OptInDispatch {
@@ -837,7 +848,7 @@ struct ReplaceValInIndexVal : public OptInDispatch {
 
   void handle(Val* val) override {
     TORCH_INTERNAL_ASSERT(
-        val->isA<Int>() || val->isA<NamedScalar>(),
+        val->isA<Int>() || val->isA<NamedScalar>() || val->isA<kir::IntPair>(),
         "Invalid Val type: ",
         val->toString());
 
@@ -853,11 +864,17 @@ struct ReplaceValInIndexVal : public OptInDispatch {
     // Recursively traverse its defining expr
     auto def = val->definition();
     if (def != nullptr) {
-      TORCH_INTERNAL_ASSERT(
-          def->isA<UnaryOp>() || def->isA<BinaryOp>(),
-          "Unexpected definition: ",
-          def->toString());
-      handle(val->definition());
+      switch (def->etype()) {
+        case ExprType::UnaryOp:
+        case ExprType::BinaryOp:
+        case ExprType::Swizzle2DInt:
+        case ExprType::PairSelect:
+          handle(val->definition());
+          break;
+        default:
+          TORCH_INTERNAL_ASSERT(
+              false, "Unexpected definition: ", def->toString())
+      }
       // last_visited_val_ is set in the expr handlers
     } else {
       last_visited_val_ = val;
@@ -883,6 +900,36 @@ struct ReplaceValInIndexVal : public OptInDispatch {
     TORCH_INTERNAL_ASSERT(bop->out()->isA<Int>());
     auto out = IrBuilder::create<Int>(c10::nullopt);
     IrBuilder::create<BinaryOp>(bop->getBinaryOpType(), out, lhs, rhs);
+    last_visited_val_ = out;
+  }
+
+  // Clone expression after recurisvely replacing inputs
+  void handle(kir::Swizzle2DInt* swizzle_2d) override {
+    handle(swizzle_2d->inX());
+    auto in_x = last_visited_val_;
+    handle(swizzle_2d->inY());
+    auto in_y = last_visited_val_;
+    auto out = IrBuilder::create<kir::IntPair>();
+
+    // Extents are assumed constant in swizzle so no need to
+    //  duplicate their graphs.
+    IrBuilder::create<kir::Swizzle2DInt>(
+        out,
+        in_x,
+        in_y,
+        swizzle_2d->extentX(),
+        swizzle_2d->extentY(),
+        swizzle_2d->swizzleType());
+    last_visited_val_ = out;
+  }
+
+  void handle(kir::PairSelect* pair_select) override {
+    handle(pair_select->in()->asVal());
+    auto in = last_visited_val_;
+    TORCH_INTERNAL_ASSERT(pair_select->out()->isA<Int>());
+    auto out = IrBuilder::create<Int>(c10::nullopt);
+    IrBuilder::create<kir::PairSelect>(
+        out, in->as<kir::IntPair>(), pair_select->selection());
     last_visited_val_ = out;
   }
 
