@@ -8,6 +8,21 @@ namespace fuser {
 namespace cuda {
 
 namespace {
+
+// std::gcd is c++17, so use a custom implementation for now.
+int gcd(int a, int b) {
+  TORCH_INTERNAL_ASSERT(a != 0 && b != 0, "gcd : illegal input");
+  while (a != 0 && b != 0) {
+    if (a > b) {
+      a = a % b;
+    } else {
+      b = b % a;
+    }
+  }
+
+  return a == 0 ? b : a;
+}
+
 // Move the broadcast axes to the left on the specified number of inner
 // dimensions e.g.  (when number_of_inner_pos == 3):
 //      [... I0, B, I1] -> [... B, I0, I1]
@@ -38,6 +53,187 @@ void moveInnerBroadcastLeft(TensorView* tv, int number_of_inner_pos = 3) {
 
   // Apply ordering.
   tv->reorder(order_map);
+}
+
+//! Automatically generates the shared memory swizzled data layout
+//!  for matmul mainloop.
+//! The shared mem datalayout is always 2D currently, and this utility
+//!  function assumes that the innermost 2 dimensions on shared_mem_tv
+//!  are the ones begin swizzled.
+void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
+  // Check that the innermost 2 dimensions are concrete and static
+  //  sized so that the swizzle function can be defined.
+
+  // Utility to check concrete static size:
+  auto check_concrete_static_dim = [](IterDomain* id) {
+    TORCH_INTERNAL_ASSERT(
+        !id->isBroadcast() && !id->isReduction(),
+        "no support on reduction or broadcast dims");
+    TORCH_INTERNAL_ASSERT(
+        id->extent()->isConstInt(),
+        "swizzled dimensions need to be statically sized");
+  };
+
+  TORCH_INTERNAL_ASSERT(
+      shared_mem_tv->nDims() >= 2, "At least 2D input needed for swizzling");
+  check_concrete_static_dim(shared_mem_tv->axis(-2));
+  check_concrete_static_dim(shared_mem_tv->axis(-1));
+
+  auto mma_config = params.mma_builder.build();
+
+  // Extract the constant sizes of the swizzled tile
+  const auto tile_size_x = shared_mem_tv->axis(-2)->extent()->evaluateInt();
+  const auto tile_size_y = shared_mem_tv->axis(-2)->extent()->evaluateInt();
+
+  // TODO: add support for tf32(different macro) and fp32(ffma)
+  if (isTuring(mma_config.macro) || isAmpere(mma_config.macro)) {
+    // Dimension of each inner unit of swizzled indices.
+    // Turing and Ampere case, ldmatrix access assumed (see TODO above)
+    // Each ldmatrix access is 8x8
+    int row_unit = 8;
+    int col_unit = 8;
+
+    // Column size of the tile needs to be multiples of 8 for ldmatrix to work.
+    TORCH_INTERNAL_ASSERT(
+        tile_size_x >= row_unit && tile_size_x % row_unit == 0 &&
+            tile_size_y >= col_unit && tile_size_y % col_unit == 0,
+        "Prolog swizzle for ldmatrix, illegal tile size for prolog swizzle",
+        tile_size_x,
+        "x",
+        tile_size_y);
+
+    int units_per_row = tile_size_y / col_unit;
+    int units_per_col = tile_size_x / row_unit;
+
+    // Number of column units that can fit in a conflict free shared mem wave
+    //  with memory width = 1024 bit assumed.
+    const int units_per_memory_row =
+        1024 / dataTypeSize(DataType::Half) / col_unit;
+
+    if (units_per_memory_row >= row_unit * units_per_row) {
+      // No need to swizzle in this case as each bank width
+      //  is already able to cover all the rows in an access window.
+      // E.g. 128 x 8 for fp16, wouldn't need to swizzle to get a sub column
+      // of 16.
+      return;
+    }
+
+    // Calculate swizzle period:
+    int residue_unit_count = units_per_row % units_per_memory_row;
+
+    // In the case where tile row is a multiple of memory row, the whole memory
+    // row
+    //  is the repeated pattern of swizzle. In the case where tile row is not
+    //  divisible, the residule part is the repeated pattern.
+    int repeated_pattern_size_in_units =
+        residue_unit_count == 0 ? units_per_memory_row : residue_unit_count;
+
+    c10::optional<int> maybe_row_multiplier = c10::nullopt;
+
+    if (units_per_memory_row % repeated_pattern_size_in_units == 0) {
+      maybe_row_multiplier =
+          units_per_memory_row / repeated_pattern_size_in_units;
+    } else if (
+        units_per_memory_row > repeated_pattern_size_in_units &&
+        units_per_memory_row %
+                (units_per_memory_row - repeated_pattern_size_in_units) ==
+            0) {
+      maybe_row_multiplier = units_per_memory_row /
+          (units_per_memory_row - repeated_pattern_size_in_units);
+    }
+
+    // The case where the row multiplier cannot be an integer would be where
+    //  fractional tiling support is needed. Would gradually build out support
+    //  on this one.
+    if (!maybe_row_multiplier.has_value()) {
+      // calculate effective row_period = lcm / repeated_pattern_size which is
+      // the same as below
+      int row_period = units_per_memory_row /
+          gcd(units_per_memory_row, repeated_pattern_size_in_units);
+
+      if (row_period < row_unit) {
+        TORCH_WARN_ONCE(
+            "Fractional pattern not yet implemented for swizzling memory row of size :",
+            units_per_memory_row,
+            " and tile row of size: ",
+            repeated_pattern_size_in_units);
+        // This would not lead to functional issue but just perf regression, so
+        // just do not swizzle anything yet.
+        //  TODO: add support for swizzles with different row and col periods to
+        //  enable this case.
+        return;
+      } else {
+        // This case would not need swizzling at all as the period of
+        //   memory bank index over the row is wider than the access window.
+        return;
+      }
+    }else if(maybe_row_multiplier.value()>=row_unit){
+      // No need to swizzle in this case. 
+      return;
+    }
+
+    // Calculate swizzle period, only equal row/col periods at the moment:
+    //  TODO: aperiodic swizzle could also be supported in a follow up:
+    int swizzle_period = repeated_pattern_size_in_units;
+
+    int row_multiplier = maybe_row_multiplier.value();
+
+    TORCH_INTERNAL_ASSERT(
+        units_per_col % swizzle_period == 0 &&
+            units_per_row % (swizzle_period * row_multiplier) == 0,
+        "need aperiodic swizzle config for tile size ",
+        tile_size_x,
+        "x",
+        tile_size_y,
+        "with units",
+        row_unit,
+        "x",
+        col_unit);
+
+    // add the swizzling op:
+    shared_mem_tv->split(-2, (row_unit / row_multiplier) * swizzle_period);
+    shared_mem_tv->split(-2, (row_unit / row_multiplier));
+
+    shared_mem_tv->split(-1, col_unit * swizzle_period);
+    shared_mem_tv->split(-1, col_unit);
+
+    //        -6        -5           -4        -3        -2       -1
+    // [..., Irow_o, Irow_period, Irow_unit, Icol_o, Icol_period, Icol_unit]
+    shared_mem_tv->swizzle(Swizzle2DType::XOR, -5, -2);
+
+    // Merge back the tile for subsequent vectorization scheduling
+    //  TODO: could potentially simplify away the merges
+    shared_mem_tv->merge(-6);
+    shared_mem_tv->merge(-5);
+    shared_mem_tv->merge(-3);
+    shared_mem_tv->merge(-2);
+  } else if (isVolta(mma_config.macro)) {
+    // TODO: Volta is slightly more complex, and a fixed recipe would
+    //  not scale. In a follow up this would be inferred from the mma
+    //  macro layout themselves as we already have them registered in
+    //  the utils.
+    return;
+  } else {
+    TORCH_INTERNAL_ASSERT(false, "Prolog swizzle: unsupported mma macro");
+  }
+}
+
+//! Generates the prolog schedule on the shared memory buffer
+//!  tensor. The scheduling performs two steps:
+//!
+//! 1. Swizzled the shared mem data layout.
+//! 2. Coalesce and vectorize the read write schedule.
+void scheduleProlog(TensorView* shared_mem_tv, const MatmulParam& params) {
+  prologSwizzle(shared_mem_tv, params);
+
+  // Assuming we are always vectorizing smem write by 128b at the moment:
+  //   TODO: would need a data-type and alignment dependent interface
+  //    to support non-vectorizable shapes.
+  //   The vectorizable width logic would be in a separate PR as the
+  //    current effort tries to focus on generating swizzles.
+  shared_mem_tv->merge(-2);
+  scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
+      shared_mem_tv, params.tile_sizes, 8, false);
 }
 
 } // namespace
@@ -194,15 +390,11 @@ void scheduleMatmul(
   // ------------------------------------------------------------------
   scheduler_utils::matmul_utils::orderTiledConcreteIdAsRoot(acw_smem);
   // [... M, K]
-  acw_smem->merge(-2);
-  scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      acw_smem, gemm_tile, 8, false);
+  scheduleProlog(acw_smem, params);
 
-  // [... N, K]
   scheduler_utils::matmul_utils::orderTiledConcreteIdAsRoot(bcw_smem);
-  bcw_smem->merge(-2);
-  scheduler_utils::matmul_utils::scheduleContiguousVectorLoad(
-      bcw_smem, gemm_tile, 8, false);
+  // [... N, K]
+  scheduleProlog(bcw_smem, params);
 
   // Propagate prolog tensors
   //  propagate up the DAG, and propagate parallel type.
