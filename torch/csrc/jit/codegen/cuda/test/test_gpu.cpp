@@ -1,4 +1,5 @@
 #if defined(USE_CUDA)
+#include <gmock/gmock-matchers.h>
 #include <gtest/gtest.h>
 
 #include <torch/csrc/jit/codegen/cuda/arith.h>
@@ -369,6 +370,17 @@ TEST_F(NVFuserTest, FusionExprEvalConstants_CUDA) {
   checkIntValue(evaluator, neg(mul(sub(a, b), add(a, b))), -40);
   checkIntValue(evaluator, mod(a, b), 1);
   checkIntValue(evaluator, ceilDiv(a, b), 3);
+}
+
+TEST_F(NVFuserTest, FusionExprEvalDouble_CUDA) {
+  auto fusion = std::make_unique<Fusion>();
+  FusionGuard fg(fusion.get());
+  auto ten = IrBuilder::create<Double>(10);
+  auto two = IrBuilder::create<Double>(2);
+  auto three = IrBuilder::create<Double>(3);
+  auto val = castOp(DataType::Int, ceilDiv(sub(ten, two), three));
+  auto reference = static_cast<int64_t>(std::ceil((10.0 - 2.0) / 3.0));
+  TORCH_CHECK(reference == val->evaluateInt());
 }
 
 // Evaluate basic scalar operations with bound values
@@ -4199,6 +4211,14 @@ TEST_F(NVFuserTest, FusionUnaryOps_CUDA) {
       OpTuple{at::isposinf, UnaryOpType::IsPosInf, "isposinf"},
   };
 
+  // The following ops only supports complex
+  std::vector<OpTuple> ops_complex_only{
+      // real is supported via UnaryOpType::Set for non-complex types, and
+      // UnaryOpType::Real requires input to be complex
+      OpTuple{at::real, UnaryOpType::Real, "real"},
+      OpTuple{at::imag, UnaryOpType::Imag, "imag"},
+  };
+
   // Complex support for the following op is not working in nvFuser yet
   std::vector<OpTuple> ops_skip_complex{
       // TODO: abs is actually supported in nvFuser, but it has bug!!!
@@ -4230,6 +4250,9 @@ TEST_F(NVFuserTest, FusionUnaryOps_CUDA) {
           ops_without_complex.end());
       ops_to_test.insert(
           ops_to_test.end(), ops_skip_complex.begin(), ops_skip_complex.end());
+    } else {
+      ops_to_test.insert(
+          ops_to_test.end(), ops_complex_only.begin(), ops_complex_only.end());
     }
     std::for_each(ops.begin(), ops.end(), [&](OpTuple& op) {
       test_op(
@@ -25437,6 +25460,79 @@ TEST_F(NVFuserTest, FusionPrint_CUDA) {
         __LINE__,
         __FILE__);
   }
+}
+
+TEST_F(NVFuserTest, FusionCheckedSymbolicShape_CUDA) {
+  const auto options =
+      at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor a = at::randn({123, 456}, options);
+  at::Tensor b = at::randn({123, 456}, options);
+  at::Tensor c = at::randn({321, 654}, options);
+
+  using return_t =
+      std::pair<std::unique_ptr<FusionExecutorCache>, std::vector<at::Tensor>>;
+  auto matched_add = [](at::Tensor a, at::Tensor b) -> return_t {
+    auto fusion = std::make_unique<Fusion>();
+    FusionGuard fg(fusion.get());
+
+    Val* s1 = IrBuilder::create<Int>();
+    Val* s2 = IrBuilder::create<Int>();
+    auto builder = TensorViewBuilder().shape(std::vector<Val*>{s1, s2});
+    TensorView* tv0 = builder.build();
+    TensorView* tv1 = builder.build();
+
+    fusion->addInput(tv0);
+    fusion->addInput(tv1);
+
+    auto tv2 = add(tv0, tv1);
+
+    fusion->addOutput(tv2);
+
+    auto executor_cache =
+        std::make_unique<FusionExecutorCache>(std::move(fusion));
+    auto cg_outputs = executor_cache->runFusionWithInputs({a, b});
+    return {std::move(executor_cache), std::move(cg_outputs)};
+  };
+
+  {
+    auto ret1 = matched_add(a, b);
+    testValidate(
+        ret1.first->fusion(), ret1.second, {a, b}, {a + b}, __LINE__, __FILE__);
+  }
+
+  {
+    EXPECT_THAT(
+        [&]() { matched_add(a, c); },
+        ::testing::ThrowsMessage<c10::Error>(
+            ::testing::HasSubstr("Attempting to bind")));
+  }
+}
+
+TEST_F(NVFuserTest, FusionSizeDependentData_CUDA) {
+  auto fusion = std::make_unique<Fusion>();
+  FusionGuard fg(fusion.get());
+
+  Val* s1 = IrBuilder::create<Int>();
+  auto builder = TensorViewBuilder().shape(std::vector<Val*>{s1});
+  TensorView* tv0 = builder.build();
+
+  fusion->addInput(tv0);
+
+  auto tv1 = add(tv0, s1);
+
+  fusion->addOutput(tv1);
+
+  const auto options =
+      at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor a = at::zeros({123}, options);
+
+  FusionExecutorCache executor_cache(std::move(fusion));
+  auto cg_outputs = executor_cache.runFusionWithInputs({a});
+
+  testValidate(
+      executor_cache.fusion(), cg_outputs, {a}, {a + 123}, __LINE__, __FILE__);
 }
 
 } // namespace jit
