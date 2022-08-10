@@ -167,7 +167,10 @@ auto parseDisableOptions() {
 
 auto parseEnableOptions() {
   std::unordered_map<EnableOption, bool> options_map = {
-      {EnableOption::Complex, false}, {EnableOption::KernelProfile, false}};
+      {EnableOption::Complex, false},
+      {EnableOption::KernelProfile, false},
+      {EnableOption::LinearDecomposition, false},
+      {EnableOption::ConvDecomposition, false}};
 
   if (const char* dump_options = std::getenv("PYTORCH_NVFUSER_ENABLE")) {
     c10::string_view options_view(dump_options);
@@ -178,6 +181,10 @@ auto parseEnableOptions() {
         options_map[EnableOption::Complex] = true;
       } else if (token == "kernel_profile") {
         options_map[EnableOption::KernelProfile] = true;
+      } else if (token == "linear_decomposition") {
+        options_map[EnableOption::LinearDecomposition] = true;
+      } else if (token == "conv_decomposition") {
+        options_map[EnableOption::ConvDecomposition] = true;
       } else {
         TORCH_CHECK(
             false,
@@ -283,12 +290,12 @@ bool isDebugDumpEnabled(DebugDumpOption option) {
   return dump_options.at(option);
 }
 
-bool isDisabled(DisableOption option) {
+bool isOptionDisabled(DisableOption option) {
   const static auto options = parseDisableOptions();
   return options.at(option);
 }
 
-bool isEnabled(EnableOption option) {
+bool isOptionEnabled(EnableOption option) {
   const static auto options = parseEnableOptions();
   return options.at(option);
 }
@@ -297,7 +304,8 @@ bool useFallback() {
   // Keep this env var for compatibility
   const char* disable_fb_env = getenv("PYTORCH_NVFUSER_DISABLE_FALLBACK");
   bool fallback_disabled = disable_fb_env ? atoi(disable_fb_env) : false;
-  fallback_disabled = fallback_disabled || isDisabled(DisableOption::Fallback);
+  fallback_disabled =
+      fallback_disabled || isOptionDisabled(DisableOption::Fallback);
 
   return !fallback_disabled;
 }

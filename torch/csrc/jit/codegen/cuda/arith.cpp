@@ -528,6 +528,46 @@ TensorView* abs(TensorView* tv) {
   return abs(tv->as<Val>())->as<TensorView>();
 }
 
+// The output of real(complex_tensor) are real numbers
+Val* real(Val* v) {
+  if (v->getDataType() == DataType::ComplexDouble) {
+    Val* out = newValLike(v, DataType::Double);
+    IrBuilder::create<UnaryOp>(UnaryOpType::Real, out, v);
+    return out;
+  }
+  if (v->getDataType() == DataType::ComplexFloat) {
+    Val* out = newValLike(v, DataType::Float);
+    IrBuilder::create<UnaryOp>(UnaryOpType::Real, out, v);
+    return out;
+  }
+  // We use UnaryOpType::Set instead of UnaryOpType::Real to support non-complex
+  // tensors
+  return unaryOp(UnaryOpType::Set, v);
+}
+
+TensorView* real(TensorView* tv) {
+  return real(tv->as<Val>())->as<TensorView>();
+}
+
+// The output of imag(complex_tensor) are real numbers
+Val* imag(Val* v) {
+  if (v->getDataType() == DataType::ComplexDouble) {
+    Val* out = newValLike(v, DataType::Double);
+    IrBuilder::create<UnaryOp>(UnaryOpType::Imag, out, v);
+    return out;
+  }
+  if (v->getDataType() == DataType::ComplexFloat) {
+    Val* out = newValLike(v, DataType::Float);
+    IrBuilder::create<UnaryOp>(UnaryOpType::Imag, out, v);
+    return out;
+  }
+  TORCH_CHECK(false, "imag not supported for non-complex tensors");
+}
+
+TensorView* imag(TensorView* tv) {
+  return imag(tv->as<Val>())->as<TensorView>();
+}
+
 // UNARY FLOAT CAST OPERATIONS
 
 #define NVFUSER_DEFINE_UNARY_FLOAT_OP(op_name, op_type)                       \
@@ -964,6 +1004,11 @@ static TensorView* newForReduction(
 
     new_domain.push_back(
         IterDomainBuilder(id)
+            // If the domain is being reduced, but it's coming in as an expanded
+            // extent, we need to realize the expand.
+            .extent(
+                isReduction && id->hasExpandedExtent() ? id->expandedExtent()
+                                                       : id->extent())
             .resetSchedulingParams()
             .iter_type(isReduction ? IterType::Reduction : id->getIterType())
             .build());
@@ -1091,7 +1136,11 @@ TensorView* sum(
 TensorView* max(
     TensorView* v1,
     const std::vector<int>& axes,
-    bool keep_dim /*=false*/) {
+    bool keep_dim /*=false*/,
+    DataType dtype /* DataType::Null */) {
+  TORCH_CHECK(
+      dtype == DataType::Null,
+      "A dtype other than Null is not currently supported.");
   Val* init = getMinimumValue(v1->getDataType().value());
   TORCH_CHECK(init != nullptr, "Missing initial value");
   return reductionOp(BinaryOpType::Max, axes, init, v1, keep_dim);
@@ -1100,7 +1149,11 @@ TensorView* max(
 TensorView* min(
     TensorView* v1,
     const std::vector<int>& axes,
-    bool keep_dim /*=false*/) {
+    bool keep_dim /*=false*/,
+    DataType dtype /* DataType::Null */) {
+  TORCH_CHECK(
+      dtype == DataType::Null,
+      "A dtype other than Null is not currently supported.");
   Val* init = getMaximumValue(v1->getDataType().value());
   TORCH_CHECK(init != nullptr, "Missing initial value");
   return reductionOp(BinaryOpType::Min, axes, init, v1, keep_dim);
@@ -1194,7 +1247,7 @@ TensorView* expand(TensorView* inp, const std::vector<Val*>& expanded_sizes) {
       // This is just done for clarity. It isn't necessary as it's
       // already done when constructing out_id_builder.
       out_id_builder.extent(inp_id->extent());
-    } else if (inp_id->isBroadcast()) {
+    } else if (inp_id->isBroadcast() && expanded_size_int != 1) {
       // When input id is a broadcast, expand the extent to the given
       // size, which can be concrete or symbolic.
       expanded = true;
@@ -1207,7 +1260,7 @@ TensorView* expand(TensorView* inp, const std::vector<Val*>& expanded_sizes) {
       // does not mean the ID becomes a broadcast.
       out_id_builder.extent(expanded_sizes[i]);
     } else {
-      // Input id is non-broadcast and its extent is concrete. Nothing
+      // Input id is non-expand and its extent is concrete. Nothing
       // to expand, but the input and expanded sizes should match if
       // the expanded size is also concrete.
       auto inp_id_size_int = inp_id->extent()->getInt();
@@ -1522,13 +1575,14 @@ Val* where(Val* c, Val* v1, Val* v2) {
       "Condition should be of DataType Bool, not ",
       c->getDataType().value());
 
-  auto cast_values = promoteValues(TypePromotion::default_op_config, {v1, v2});
+  std::vector<Val*> operands = {v1, v2};
+  auto common_dtype = computeTypes(TypePromotion::default_op_config, operands);
+  auto cast_values = promoteValues(operands, common_dtype);
   v1 = cast_values[0];
   v2 = cast_values[1];
 
   TORCH_CHECK(c->getDataType().value() == DataType::Bool);
-  auto out_dtype =
-      promote_type(v1->getDataType().value(), v2->getDataType().value());
+  auto out_dtype = common_dtype;
   auto out_vtype =
       promote_type(v1->getValType().value(), v2->getValType().value());
   // Even when v1 and v2 are scalar, the output is a tensor if the
