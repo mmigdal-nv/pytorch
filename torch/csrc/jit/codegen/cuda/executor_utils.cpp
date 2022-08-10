@@ -992,7 +992,7 @@ std::pair<NvrtcFunction, std::string> nvrtcCompile(
   compile_to_sass = false;
 #endif
 
-  if (isDisabled(DisableOption::CompileToSass)) {
+  if (isOptionDisabled(DisableOption::CompileToSass)) {
     // Allows manually disabling compilation to sass
     //  so the intermediate ptx could be checked.
     compile_to_sass = false;
