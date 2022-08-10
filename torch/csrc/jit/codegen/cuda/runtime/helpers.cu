@@ -630,13 +630,10 @@ __device__ __bfloat print_impl(const char* name, __bfloat value) {
 #define print(...) print_impl(#__VA_ARGS__, (__VA_ARGS__))
 
 //! Utility to print out bank conflicts given the address from each thread.
-inline __device__ void checkBankConflict(
+__device__ void checkBankConflict(
     size_t address,
     int vec_word_in_byte,
     int call_id) {
-  // poll active mask to avoid sync with inactive threads.
-  unsigned active_mask = __activemask();
-
   // Calculate number of threads in each phase that could result in
   //  bank conflict.
   int phase_size = vec_word_in_byte == 16 ? 8 : vec_word_in_byte == 8 ? 16 : 32;
@@ -652,13 +649,11 @@ inline __device__ void checkBankConflict(
       index_utils::maskedOffset<true, true, true>(threadIdx, blockDim) % 32;
 
   // Populate address within phase:
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < phase_size; i++) {
     size_t shfl_value = 0;
-    if (i < phase_size) {
-      shfl_value = __shfl_down_sync(active_mask, address, i);
-    }
+    shfl_value = __shfl_down_sync(__activemask(), address, i);
 
-    if (active_mask & (1 << (lane_id + i))) {
+    if (__activemask() & (1 << (lane_id + i))) {
       address_warp[i] = shfl_value;
     }
   }
