@@ -106,9 +106,9 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
     int units_per_col = tile_size_x / row_unit;
 
     // Number of column units that can fit in a conflict free shared mem wave
-    //  with memory width = 1024 bit assumed.
+    //  with memory width = 128 Byte assumed.
     const int units_per_memory_row =
-        1024 / dataTypeSize(DataType::Half) / col_unit;
+        128 / dataTypeSize(DataType::Half) / col_unit;
 
     // Calculate swizzle period:
     int residue_unit_count = units_per_row % units_per_memory_row;
@@ -173,13 +173,13 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
     int row_multiplier = maybe_row_multiplier.value();
 
     TORCH_INTERNAL_ASSERT(
-        units_per_col % swizzle_period == 0 &&
-            units_per_row % (swizzle_period * row_multiplier) == 0,
+        tile_size_x % (swizzle_period * row_multiplier) == 0 &&
+            tile_size_y % (swizzle_period * col_unit) == 0,
         "need aperiodic swizzle config for tile size ",
         tile_size_x,
         "x",
         tile_size_y,
-        "with units",
+        "with units ",
         row_unit,
         "x",
         col_unit);
@@ -219,6 +219,7 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
 //! 1. Swizzled the shared mem data layout.
 //! 2. Coalesce and vectorize the read write schedule.
 void scheduleProlog(TensorView* shared_mem_tv, const MatmulParam& params) {
+  // Swizzle the shared memory data layout
   prologSwizzle(shared_mem_tv, params);
 
   // Assuming we are always vectorizing smem write by 128b at the moment:
