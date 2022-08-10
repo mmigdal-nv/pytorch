@@ -859,7 +859,7 @@ namespace {
 //!  higher than provided major.minor.
 void validateMinimumArch(int major, int minor) {
   // Skip checking arch if disabled.
-  if (isDisabled(DisableOption::ArchCheck)) {
+  if (isOptionDisabled(DisableOption::ArchCheck)) {
     return;
   }
 
