@@ -558,7 +558,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void genBankConflictCheck(Val* accessor, size_t vector_word) {
-    if (isEnabled(EnableOption::BankConflictDetection)) {
+    if (isOptionEnabled(EnableOption::BankConflictDetection)) {
       indent() << "checkBankConflict((size_t)&" << gen(accessor) << ","
                << vector_word << ", /*call_id = */" << bank_conflict_check_id_++
                << ");\n";
