@@ -567,6 +567,10 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     code_ << "*" << genVectorPointer(ldst->out(), dtype, vector_word_size)
           << ","
           << "&" << gen(ldst->in()) << ");\n";
+    if (isEnabled(EnableOption::BankConflictDetection)) {
+      indent() << "checkBankConflict((size_t)&" << gen(ldst->in()) << ","
+               << 16 << ", /*call_id = */" << bank_conflict_check_id_++ << ");\n";
+    }
   }
 
   void handle(const UnaryOp* uop) final {
@@ -2468,6 +2472,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   std::deque<const kir::ForLoop*> grouped_loops_;
   //! Used to replace symbolic indices with concrete values
   std::unordered_map<const Int*, int64_t> index_replacement_map_;
+  //! Keep track of bank conflict check instances
+  int bank_conflict_check_id_ = 0;
 };
 
 } // namespace

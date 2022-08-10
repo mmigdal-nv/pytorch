@@ -83,7 +83,7 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
 
   // Extract the constant sizes of the swizzled tile
   const auto tile_size_x = shared_mem_tv->axis(-2)->extent()->evaluateInt();
-  const auto tile_size_y = shared_mem_tv->axis(-2)->extent()->evaluateInt();
+  const auto tile_size_y = shared_mem_tv->axis(-1)->extent()->evaluateInt();
 
   // TODO: add support for tf32(different macro) and fp32(ffma)
   if (isTuring(mma_config.macro) || isAmpere(mma_config.macro)) {
@@ -110,14 +110,6 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
     const int units_per_memory_row =
         1024 / dataTypeSize(DataType::Half) / col_unit;
 
-    if (units_per_memory_row >= row_unit * units_per_row) {
-      // No need to swizzle in this case as each bank width
-      //  is already able to cover all the rows in an access window.
-      // E.g. 128 x 8 for fp16, wouldn't need to swizzle to get a sub column
-      // of 16.
-      return;
-    }
-
     // Calculate swizzle period:
     int residue_unit_count = units_per_row % units_per_memory_row;
 
@@ -128,6 +120,8 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
     int repeated_pattern_size_in_units =
         residue_unit_count == 0 ? units_per_memory_row : residue_unit_count;
 
+    // Calculate row multiplier, which is defined as minimum number of rows
+    //  to look down from an element until the same bank index is observed.
     c10::optional<int> maybe_row_multiplier = c10::nullopt;
 
     if (units_per_memory_row % repeated_pattern_size_in_units == 0) {
@@ -146,8 +140,8 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
     //  fractional tiling support is needed. Would gradually build out support
     //  on this one.
     if (!maybe_row_multiplier.has_value()) {
-      // calculate effective row_period = lcm / repeated_pattern_size which is
-      // the same as below
+      // calculate effective row_period = lcm(row_period, repeated_pattern) /
+      // repeated_pattern_size which is the same as below
       int row_period = units_per_memory_row /
           gcd(units_per_memory_row, repeated_pattern_size_in_units);
 
@@ -167,8 +161,8 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
         //   memory bank index over the row is wider than the access window.
         return;
       }
-    }else if(maybe_row_multiplier.value()>=row_unit){
-      // No need to swizzle in this case. 
+    } else if (maybe_row_multiplier.value() >= row_unit) {
+      // No need to swizzle in this case.
       return;
     }
 
@@ -191,14 +185,15 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
         col_unit);
 
     // add the swizzling op:
-    shared_mem_tv->split(-2, (row_unit / row_multiplier) * swizzle_period);
-    shared_mem_tv->split(-2, (row_unit / row_multiplier));
+    shared_mem_tv->split(-2, row_multiplier * swizzle_period);
+    shared_mem_tv->split(-2, row_multiplier);
 
     shared_mem_tv->split(-1, col_unit * swizzle_period);
     shared_mem_tv->split(-1, col_unit);
 
-    //        -6        -5           -4        -3        -2       -1
-    // [..., Irow_o, Irow_period, Irow_unit, Icol_o, Icol_period, Icol_unit]
+    //        -6        -5           -4              -3        -2       -1
+    // [..., Irow_o, Irow_period, Irow_multiplier, Icol_o, Icol_period,
+    // Icol_unit]
     shared_mem_tv->swizzle(Swizzle2DType::XOR, -5, -2);
 
     // Merge back the tile for subsequent vectorization scheduling
