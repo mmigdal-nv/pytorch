@@ -23,6 +23,11 @@ int gcd(int a, int b) {
   return a == 0 ? b : a;
 }
 
+// Returns true if given number is power of 2
+bool isPowOf2(int x) {
+  return x > 1 && (x & (x - 1)) == 0;
+}
+
 // Move the broadcast axes to the left on the specified number of inner
 // dimensions e.g.  (when number_of_inner_pos == 3):
 //      [... I0, B, I1] -> [... B, I0, I1]
@@ -103,7 +108,6 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
         tile_size_y);
 
     int units_per_row = tile_size_y / col_unit;
-    int units_per_col = tile_size_x / row_unit;
 
     // Number of column units that can fit in a conflict free shared mem wave
     //  with memory width = 128 Byte assumed.
@@ -194,7 +198,11 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
     //        -6        -5           -4              -3        -2       -1
     // [..., Irow_o, Irow_period, Irow_multiplier, Icol_o, Icol_period,
     // Icol_unit]
-    shared_mem_tv->swizzle(Swizzle2DType::XOR, -5, -2);
+    if (isPowOf2(swizzle_period)) {
+      shared_mem_tv->swizzle(Swizzle2DType::XOR, -5, -2);
+    } else {
+      shared_mem_tv->swizzle(Swizzle2DType::CyclicShift, -5, -2);
+    }
 
     // Merge back the tile for subsequent vectorization scheduling
     //  TODO: could potentially simplify away the merges
@@ -414,7 +422,7 @@ void scheduleMatmul(
   // CTA tile:
 
   // Swizzle block tiles:
-  c->swizzle(Swizzle2DType::ZShape, 0, 1, SwizzleMode::Loop);
+  // c->swizzle(Swizzle2DType::ZShape, 0, 1, SwizzleMode::Loop);
 
   a->computeAt(c, 2);
   b->computeAt(c, 2);
