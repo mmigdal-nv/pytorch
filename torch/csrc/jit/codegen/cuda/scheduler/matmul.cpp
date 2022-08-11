@@ -172,7 +172,17 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
 
     // Calculate swizzle period, only equal row/col periods at the moment:
     //  TODO: aperiodic swizzle could also be supported in a follow up:
-    int swizzle_period = repeated_pattern_size_in_units;
+    int max_swizzle_period = repeated_pattern_size_in_units;
+
+    int swizzle_period = max_swizzle_period;
+
+    // Do not have to use the max_swizzle period if we already had
+    //  enough swizzle to permute a row_unit. This would encourage
+    //  usage of power of 2 swizzle periods.
+    if (row_unit % maybe_row_multiplier.value() == 0) {
+      swizzle_period =
+          std::min(swizzle_period, row_unit / maybe_row_multiplier.value());
+    }
 
     int row_multiplier = maybe_row_multiplier.value();
 
