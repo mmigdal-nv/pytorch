@@ -902,7 +902,8 @@ BestEffortReplay BestEffortReplay::replayCasP(
     const TensorView* consumer,
     const TensorView* producer,
     int producer_compute_at_axis,
-    const RootDomainMap& root_map) {
+    const RootDomainMap& root_map,
+    bool skip_swizzles) {
   if (producer_compute_at_axis < 0)
     producer_compute_at_axis += (int)producer->nDims() + 1;
 
@@ -949,7 +950,8 @@ BestEffortReplay BestEffortReplay::replayCasP(
       producer_CA_ids,
       p2c_root_map,
       consumer_forwarding_info.forwarding_map,
-      producer_forwarding_info.forwarding_map);
+      producer_forwarding_info.forwarding_map,
+      skip_swizzles);
 
   consumer_replay.addComplimentLeafIDs(
       consumer_forwarding_info.forwarding_map,
@@ -964,7 +966,8 @@ BestEffortReplay BestEffortReplay::replayPasC(
     const TensorView* producer,
     const TensorView* consumer,
     int consumer_compute_at_axis,
-    const RootDomainMap& root_map) {
+    const RootDomainMap& root_map,
+    bool skip_swizzles) {
   if (consumer_compute_at_axis < 0)
     consumer_compute_at_axis += (int)consumer->nDims() + 1;
   TORCH_INTERNAL_ASSERT(
@@ -1003,7 +1006,8 @@ BestEffortReplay BestEffortReplay::replayPasC(
       consumer_CA_ids,
       c2p_root_map,
       producer_forwarding_info.forwarding_map,
-      consumer_forwarding_info.forwarding_map);
+      consumer_forwarding_info.forwarding_map,
+      skip_swizzles);
 
   producer_replay.addComplimentLeafIDs(
       producer_forwarding_info.forwarding_map,

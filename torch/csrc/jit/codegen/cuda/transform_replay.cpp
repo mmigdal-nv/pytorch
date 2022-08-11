@@ -245,8 +245,14 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayPasC(
   // Instead of replaying from the root, lets try to play forward the history of
   // producer if they match ops on consumer. Enforce if we modify an rfactor
   // axis that those ops must match.
+  // Swizzles should not be skipped in the BestEffortReplay matching in this
+  //  case. If a swizzle mismatch is found, by default BestEffortReplay forwards
+  //  the mapping to the swizzle outputs, which would help in the case of CaMap
+  //  build but in the case of transform replay, would need to do the replay
+  //  from the inputs of the swizzles instead of the outputs, and therefore
+  //  should not skip swizzles in here.
   auto forward_replay = BestEffortReplay::replayPasC(
-      producer, consumer, consumer_compute_at_axis, root_map);
+      producer, consumer, consumer_compute_at_axis, root_map, false);
 
   // Make a new map based on all the leaves resulting from best effort replay
   id_map forwarded_replay_map;
@@ -457,8 +463,11 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
   // Instead of replaying from the root, lets try to forward the history of
   // consumer if they match ops on producer. Enforce if we modify an rfactor
   // axis that those ops match.
+  // Note on skip_swizzles:
+  //  Similar constraints apply in replayPasC. See the corresponding
+  // notes there on not skipping swizzles in the matching here.
   BestEffortReplay forward_replay = BestEffortReplay::replayCasP(
-      consumer, producer, producer_compute_at_axis, root_map);
+      consumer, producer, producer_compute_at_axis, root_map, false);
 
   // Track dangling leaves which can be produced in
   // BestEffortReplay::replayCasP these don't have any equivalent in producer
