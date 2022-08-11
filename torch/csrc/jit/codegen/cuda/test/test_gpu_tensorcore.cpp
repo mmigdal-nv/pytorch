@@ -2920,6 +2920,54 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
   }
 }
 
+TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
+  REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
+  // Keep multiples of 8 to keep vectorizable.
+  int M = 504, N = 136, K = 248;
+  for (auto layout : kAllSupportedLayout) {
+    for (int k_size : {32, 48, 64}) {
+      Fusion fusion;
+      FusionGuard fg(&fusion);
+      auto tv0 = makeContigTensor(2, DataType::Half);
+      auto tv1 = makeContigTensor(2, DataType::Half);
+
+      fusion.addInput(tv0);
+      fusion.addInput(tv1);
+
+      auto tv2 = matmul(tv0, tv1, layout);
+
+      fusion.addOutput(tv2);
+
+      MatMulTileOptions gemm_tile;
+      // 2 warp by 3 warp
+      gemm_tile.cta_tile = GemmTile(192, 128, k_size);
+      gemm_tile.warp_tile = GemmTile(64, 64, k_size);
+      gemm_tile.instruction_tile = GemmTile(16, 16, 16);
+
+      auto mma_builder =
+          MmaBuilder(MmaOptions::MacroType::Ampere_16_16_16, gemm_tile)
+              .layout(layout);
+
+      MatmulParam params(mma_builder);
+      params.tile_sizes = gemm_tile;
+      params.async_gmem_load_operands = true;
+      params.double_buffer_options.double_buffer_smem_write = true;
+      scheduleMatmul(tv2, tv0, tv1, params);
+
+      at::manual_seed(0);
+      auto inputs = fp16MatmulAtInput(M, N, K, layout);
+
+      FusionExecutor fe;
+      NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
+          8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+      auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
+      auto tref = atMatmul(
+          inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
+      TORCH_CHECK(cg_outputs[0].allclose(tref, 0.0001, 0.0001));
+    }
+  }
+}
+
 // Matmul test for Turing MMA: across supported layouts
 TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
