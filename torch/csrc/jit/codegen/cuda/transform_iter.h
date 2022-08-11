@@ -317,7 +317,7 @@ class TORCH_CUDA_CU_API BestEffortReplay {
       const TensorView* producer,
       int producer_compute_at_axis,
       const RootDomainMap& root_map,
-      bool skip_swizzles = false);
+      bool skip_swizzles = true);
 
   // Runs a best effort replay that ignores broadcast axes that appear in
   // consumer that are not mapped to producer in root_map.
@@ -326,7 +326,7 @@ class TORCH_CUDA_CU_API BestEffortReplay {
       const TensorView* consumer,
       int consumer_compute_at_axis,
       const RootDomainMap& root_map,
-      bool skip_swizzles = false);
+      bool skip_swizzles = true);
 
   // Find the first position i where td1[i] is not the same as td2[i]. "Same"
   // means the DAG and input IDs to generate td1[i] and td2[i] are the same.
