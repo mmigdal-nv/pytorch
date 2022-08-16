@@ -313,6 +313,17 @@ TORCH_CUDA_CU_API bool isReductionOp(const Expr*);
 // Returns if Expr is a reduction op with TensorView or TensorIndex
 TORCH_CUDA_CU_API bool isReductionTvOp(const Expr*);
 
+// Returns if Expr is an op with iterdomain inputs/outputs
+TORCH_CUDA_CU_API bool isIterDomainOp(const Expr*);
+
+// Returns the single use expr if the given val has only one expression consumer
+//  that satisfies the filter condition.
+// Returns nullopt if the value has either multiple or no use that satisfies the
+// filter condition.
+TORCH_CUDA_CU_API c10::optional<Expr*> getMaybeSingleUse(
+    const Val*,
+    std::function<bool(Expr*)> filter);
+
 template <typename T>
 std::string toString(const T& nodes) {
   std::stringstream ss;

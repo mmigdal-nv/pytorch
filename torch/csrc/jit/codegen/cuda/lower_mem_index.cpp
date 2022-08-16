@@ -215,14 +215,84 @@ std::unordered_set<IterDomain*> getInitialContiguousRootIdsOnReferenceTv(
   return contig_ids;
 }
 
+// Get all the nodes merged with a sequence of merge ops.
+//  ordered by their inner/outer position at the ops.
+std::vector<IterDomain*> getFlattenedMergedIds(IterDomain* merged_id) {
+  std::vector<IterDomain*> result;
+
+  if (merged_id->definition() != nullptr) {
+    if (auto merge = dynamic_cast<Merge*>(merged_id->definition())) {
+      auto left_leaves = getFlattenedMergedIds(merge->outer());
+      auto right_leaves = getFlattenedMergedIds(merge->inner());
+
+      result.insert(result.end(), left_leaves.begin(), left_leaves.end());
+      result.insert(result.end(), right_leaves.begin(), right_leaves.end());
+    }
+  }
+
+  return result;
+}
+
+// Get all the nodes merged with a sequence of merge ops.
+//  ordered by their inner/outer position at the ops.
+std::vector<IterDomain*> getFlattenedSplitIds(
+    IterDomain* split_id,
+    std::unordered_set<IterDomain*> stop_set = {}) {
+  std::vector<IterDomain*> result;
+
+  auto maybe_single_use =
+      ir_utils::getMaybeSingleUse(split_id, ir_utils::isIterDomainOp);
+
+  // Assuming this means the iter domain is a leaf domain,
+  //  the invariant that each iter domain should be consumed by only
+  //  one iter domain op should be validated in another pass.
+  if (maybe_single_use.has_value()) {
+    if (auto split = dynamic_cast<Split*>(maybe_single_use.value())) {
+      auto process_node = [&result, &stop_set](IterDomain* id) {
+        if (stop_set.count(id)) {
+          result.push_back(id);
+        } else {
+          auto leaves = getFlattenedSplitIds(id, stop_set);
+          result.insert(result.end(), leaves.begin(), leaves.end());
+        }
+      };
+
+      process_node(split->outer());
+      process_node(split->inner());
+    }
+  }
+
+  return result;
+}
+
+//! Returns the stride of the leading dimension given the vector of leaf
+//! iterdomains.
+c10::optional<int64_t> getMaybeLeadingStride(
+    std::vector<IterDomain*> leaf_ids) {
+  // Utility to compute the effective stride of id and prev_id:
+  int64_t result = 1;
+  for (auto leaf_it = std::next(leaf_ids.begin()); leaf_it != leaf_ids.end();
+       leaf_it++) {
+    auto leaf_id = *leaf_it;
+    if (!leaf_id->extent()->isConst()) {
+      // Non-constant dimensions cannot be supported.
+      return c10::nullopt;
+    }
+    result *= leaf_id->extent()->evaluateInt();
+  }
+  return result;
+}
+
 bool isSeparable(
     const TensorView* tv,
     IterDomain* id,
     const std::unordered_set<IterDomain*>& contig_merged_ids) {
   auto id_def = id->definition();
+  IterDomain* prev_id = nullptr;
   while (id_def != nullptr) {
     if (auto split = dynamic_cast<Split*>(id_def)) {
       // Traverse backward towards the root domains.
+      prev_id = id;
       id = split->in();
       id_def = id->definition();
 
@@ -245,8 +315,38 @@ bool isSeparable(
         // Non-divisible split cannot be separated.
         return false;
       }
+    } else if (auto merge = dynamic_cast<Merge*>(id_def)) {
+      // Support only the simplest case for lifting across merge.
+
+      if (prev_id == nullptr) {
+        // A merge on the leaf domain not yet supported.
+        return false;
+      }
+
+      if (auto prev_split = dynamic_cast<Split*>(prev_id->definition())) {
+        auto split_leaves = getFlattenedSplitIds(id, {prev_id});
+        auto merged_leaves = getFlattenedMergedIds(id);
+
+        if (prev_id != split_leaves.at(0) || id != merged_leaves.at(0)) {
+          // Only support the case when both ids are leading dims.
+          return false;
+        }
+
+        // Check the actual static dimensions, which would be the
+        //  only way for now to prove that we'd not need to wrap
+        //  around when incrementing this id:
+        auto maybe_id_stride = getMaybeLeadingStride(merged_leaves);
+        auto maybe_prev_id_stride = getMaybeLeadingStride(split_leaves);
+
+        if (maybe_id_stride.has_value() && maybe_prev_id_stride.has_value()) {
+          if (maybe_id_stride.value() <= maybe_id_stride.value()) {
+            return true;
+          }
+        }
+      }
+
+      return false;
     } else {
-      // TODO: build out to support swizzle
       return false;
     }
   }
@@ -254,6 +354,99 @@ bool isSeparable(
   // This covers the base case where we start
   //  with a contigous merged output of root.
   return contig_merged_ids.count(id);
+}
+
+bool isSwizzleProducer(IterDomain* id) {
+  auto single_use = ir_utils::getMaybeSingleUse(id, ir_utils::isIterDomainOp);
+  if (!single_use.has_value()) {
+    // Base case check.
+    return false;
+  }
+
+  if (single_use.value()->isA<Swizzle2D>()) {
+    return true;
+  }
+
+  for (auto id :
+       ir_utils::filterByType<IterDomain>(single_use.value()->outputs())) {
+    // The current id is swizzled if any subsequent consumer iterdomains
+    //  is a producer of swizzle op.
+    if (isSwizzleProducer(id)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool isSeparableSmemSwizzledProducerIndex(
+    const TensorView* producer_tv,
+    const TensorView* consumer_tv,
+    IterDomain* id,
+    const std::unordered_set<IterDomain*>& contig_merged_ids) {
+  // Collect exact iterdomains in producer tv on the right of the producer
+  //  ca_axis, which would be the nodes that'd be materialzied in shared mem
+  //  tile.
+  std::unordered_map<IterDomain*, IterDomain*> exact_to_producer_id_map;
+  auto all_producer_id_vals = DependencyCheck::getAllValsBetween(
+      {producer_tv->getMaybeRFactorDomain().begin(),
+       producer_tv->getMaybeRFactorDomain().end()},
+      {producer_tv->domain()->domain().begin() +
+           producer_tv->getComputeAtPosition(),
+       producer_tv->domain()->domain().end()});
+
+  for (auto producer_id :
+       ir_utils::filterByType<IterDomain>(all_producer_id_vals)) {
+    exact_to_producer_id_map.emplace(std::make_pair(
+        ir_utils::caMapExactConcreteId(producer_id), producer_id));
+  }
+
+  if (id->definition() == nullptr) {
+    // If id is in root domain this should be supported.
+    return true;
+  }
+
+  if (auto split = dynamic_cast<Split*>(id->definition())) {
+    auto in_id = split->in();
+    auto exact_producer_it = exact_to_producer_id_map.find(in_id);
+    if (exact_producer_it == exact_to_producer_id_map.end()) {
+      // TODO: more levels of splits and merges should not be too hard
+      //  to support but would probably want to do after the next round
+      //  of indexing cleanup.
+      return false;
+    }
+
+    auto producer_in_id = exact_producer_it->second;
+    auto split_leaves = getFlattenedSplitIds(split->in(), {id});
+    if (id != split_leaves.at(0)) {
+      // Only support the leading dimension lifting.
+      return false;
+    }
+
+    auto producer_split_leaves = getFlattenedSplitIds(producer_in_id);
+
+    // Check that the leading dimension of producer split leaves are not
+    // directly swizzled:
+    if (isSwizzleProducer(producer_split_leaves.at(0))) {
+      // No support for lifting swizzled id.
+      return false;
+    }
+
+    auto maybe_producer_stride = getMaybeLeadingStride(producer_split_leaves);
+    auto maybe_consumer_stride = getMaybeLeadingStride(split_leaves);
+
+    if (maybe_consumer_stride.has_value() &&
+        maybe_producer_stride.has_value()) {
+      if (maybe_consumer_stride.value() >= maybe_producer_stride.value()) {
+        // Only supports the case where the leading dimension maps to
+        //  the leading dimension of the producer side.
+        return true;
+      }
+    }
+  }
+
+  // TODO: more flexible checking would need to be built out.
+  return false;
 }
 
 void validateSeparability(
@@ -282,6 +475,7 @@ void AddressComputeInfo::makeAddressRecord(
   // Signify if this is caching shared mem access,
   //  assume it'd be global access if other wise.
   bool is_shared_mem_access = data_tv->getMemoryType() == MemoryType::Shared;
+  bool is_data_read = data_tv != reference_tv;
 
   auto& ca_map = GpuLower::current()->caMap();
 
@@ -364,8 +558,15 @@ void AddressComputeInfo::makeAddressRecord(
       // TODO: there are exceptions to this rule of thumb
       //  and they could matter in extremely register limited
       //  scenarios. Will be built out in follow ups.
-      // ref_id_it++;
-      // continue;
+      if (
+          // Checking reference tv is enough for non-swizzled producer.
+          !is_data_read || !data_tv->hasSwizzleOp() ||
+          // Check supported lifting in the case of swizzled producer.
+          !isSeparableSmemSwizzledProducerIndex(
+              data_tv, reference_tv, ref_id, contig_merged_ids)) {
+        ref_id_it++;
+        continue;
+      }
     }
 
     // We are visiting the iterdomains from reference
@@ -447,7 +648,7 @@ c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedAddress(
 TensorView* AddressComputeInfo::makeAddressTv(
     std::vector<IterDomain*> address_domains,
     bool is_global_address) {
-  DataType dtype = is_global_address ? DataType::Int : DataType::Int32;
+  DataType dtype = is_global_address ? DataType::Index : DataType::Int32;
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
           address_domains, std::vector<bool>(address_domains.size(), true)),
