@@ -747,14 +747,16 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
   //! Create an replica of the original loop except that
   //!  the extent and index are zeroed.
   kir::ForLoop* createZeroedLoop(kir::ForLoop* original_loop) {
+    auto start = original_loop->iter_domain()->isThread() ? original_loop->start() : GpuLower::current()->kernel()->zeroVal();
+    auto stop = original_loop->iter_domain()->isThread() ? original_loop->iter_domain()->extent() : GpuLower::current()->kernel()->oneVal();
     return IrBuilder::create<kir::ForLoop>(
         original_loop->iter_domain(),
         // index
         GpuLower::current()->kernel()->zeroVal(),
         // Start
-        GpuLower::current()->kernel()->zeroVal(),
+        start,
         // Stop
-        GpuLower::current()->kernel()->oneVal(),
+        stop,
         // Step
         GpuLower::current()->kernel()->oneVal(),
         false,

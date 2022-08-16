@@ -242,7 +242,7 @@ IndexingParameters getGlobalIndexParameters(
 
     for (auto loop_idx : c10::irange(loops.size())) {
       auto loop = loops[loop_idx];
-      if (loop == double_buffer_loop) {
+      if (loop == double_buffer_loop && !double_buffer_loop->isTrivial()) {
         TORCH_INTERNAL_ASSERT(
             !loop->isTrivial(), "The double buffer loop must be materialized");
 
