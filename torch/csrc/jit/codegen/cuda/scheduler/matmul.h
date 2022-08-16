@@ -21,6 +21,11 @@ class MatmulParam {
     int smem_double_buffer_stage = 2;
   };
 
+  bool lift_smem_read_address = false;
+  bool lift_smem_write_address = false;
+  bool lift_gmem_read_address = false;
+  bool lift_gmem_write_address = false;
+
   //! (Ampere+) Use cp.async to load operands.
   bool async_gmem_load_operands = false;
 

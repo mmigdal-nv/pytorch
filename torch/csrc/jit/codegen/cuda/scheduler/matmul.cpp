@@ -527,6 +527,11 @@ void scheduleMatmul(
       scheduler_utils::BoundedDirectionalTransformPropagator::Options()
           .propagateParallelType()
           .propagateToBoundary());
+  
+  if(params.lift_gmem_read_address){
+    a->liftReadAddress();
+    b->liftReadAddress();
+  }
 }
 
 } // namespace cuda
