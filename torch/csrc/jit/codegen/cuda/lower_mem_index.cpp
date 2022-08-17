@@ -747,8 +747,12 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
   //! Create an replica of the original loop except that
   //!  the extent and index are zeroed.
   kir::ForLoop* createZeroedLoop(kir::ForLoop* original_loop) {
-    auto start = original_loop->iter_domain()->isThread() ? original_loop->start() : GpuLower::current()->kernel()->zeroVal();
-    auto stop = original_loop->iter_domain()->isThread() ? original_loop->iter_domain()->extent() : GpuLower::current()->kernel()->oneVal();
+    auto start = original_loop->iter_domain()->isThread()
+        ? original_loop->start()
+        : GpuLower::current()->kernel()->zeroVal();
+    auto stop = original_loop->iter_domain()->isThread()
+        ? original_loop->iter_domain()->extent()
+        : GpuLower::current()->kernel()->oneVal();
     return IrBuilder::create<kir::ForLoop>(
         original_loop->iter_domain(),
         // index
@@ -837,7 +841,7 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
   }
 
   void handle(Expr* expr) final {
-    if (ir_utils::isTvOp(expr)) {
+    if (ir_utils::isTvOp(expr) && !ir_utils::isTensorScalarFillOp(expr)) {
       auto& address_compute_info = GpuLower::current()->addressComputeInfo();
 
       // Register memory writes to insert
