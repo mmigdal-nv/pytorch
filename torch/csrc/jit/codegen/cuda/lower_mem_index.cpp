@@ -259,26 +259,45 @@ std::vector<IterDomain*> getFlattenedSplitIds(
 
       process_node(split->outer());
       process_node(split->inner());
+      return result;
     }
   }
 
+  // base case where the current node is even a leaf or
+  //  not a split consumer:
+  result.push_back(split_id);
   return result;
 }
 
 //! Returns the stride of the leading dimension given the vector of leaf
 //! iterdomains.
 c10::optional<int64_t> getMaybeLeadingStride(
-    std::vector<IterDomain*> leaf_ids) {
+    std::vector<IterDomain*> leaf_ids,
+    IterDomain* leading_id = nullptr) {
+  if (leaf_ids.empty()) {
+    return c10::nullopt;
+  }
+  if (leading_id == nullptr) {
+    leading_id = leaf_ids.at(0);
+  }
+
+  bool leading_id_found = false;
   // Utility to compute the effective stride of id and prev_id:
-  int64_t result = 1;
-  for (auto leaf_it = std::next(leaf_ids.begin()); leaf_it != leaf_ids.end();
-       leaf_it++) {
+  c10::optional<int64_t> result = c10::nullopt;
+  for (auto leaf_it = leaf_ids.begin(); leaf_it != leaf_ids.end(); leaf_it++) {
     auto leaf_id = *leaf_it;
-    if (!leaf_id->extent()->isConst()) {
-      // Non-constant dimensions cannot be supported.
-      return c10::nullopt;
+    if (leading_id_found) {
+      if (!leaf_id->extent()->isConstInt()) {
+        // Non-constant dimensions cannot be supported.
+        return c10::nullopt;
+      }
+      result.value() *= leaf_id->extent()->evaluateInt();
+    } else {
+      if (leaf_id == leading_id) {
+        leading_id_found = true;
+        result = 1;
+      }
     }
-    result *= leaf_id->extent()->evaluateInt();
   }
   return result;
 }
@@ -407,9 +426,24 @@ bool isSeparableSmemSwizzledProducerIndex(
   }
 
   if (auto split = dynamic_cast<Split*>(id->definition())) {
-    auto in_id = split->in();
-    auto exact_producer_it = exact_to_producer_id_map.find(in_id);
-    if (exact_producer_it == exact_to_producer_id_map.end()) {
+    auto exact_producer_it = exact_to_producer_id_map.find(
+        ir_utils::caMapExactConcreteId(split->in()));
+
+    // Find a tile split node that this needs to assume.
+    while (exact_producer_it == exact_to_producer_id_map.end()) {
+      auto in_def = split->in()->definition();
+      if (in_def == nullptr) {
+        return false;
+      }
+      split = dynamic_cast<Split*>(in_def);
+      if (split == nullptr) {
+        return false;
+      }
+      exact_producer_it = exact_to_producer_id_map.find(
+          ir_utils::caMapExactConcreteId(split->in()));
+    }
+
+    if (!exact_producer_it->second->extent()->isConstInt()) {
       // TODO: more levels of splits and merges should not be too hard
       //  to support but would probably want to do after the next round
       //  of indexing cleanup.
@@ -418,11 +452,6 @@ bool isSeparableSmemSwizzledProducerIndex(
 
     auto producer_in_id = exact_producer_it->second;
     auto split_leaves = getFlattenedSplitIds(split->in(), {id});
-    if (id != split_leaves.at(0)) {
-      // Only support the leading dimension lifting.
-      return false;
-    }
-
     auto producer_split_leaves = getFlattenedSplitIds(producer_in_id);
 
     // Check that the leading dimension of producer split leaves are not
@@ -433,7 +462,7 @@ bool isSeparableSmemSwizzledProducerIndex(
     }
 
     auto maybe_producer_stride = getMaybeLeadingStride(producer_split_leaves);
-    auto maybe_consumer_stride = getMaybeLeadingStride(split_leaves);
+    auto maybe_consumer_stride = getMaybeLeadingStride(split_leaves, id);
 
     if (maybe_consumer_stride.has_value() &&
         maybe_producer_stride.has_value()) {
@@ -562,7 +591,7 @@ void AddressComputeInfo::makeAddressRecord(
           // Checking reference tv is enough for non-swizzled producer.
           !is_data_read || !data_tv->hasSwizzleOp() ||
           // Check supported lifting in the case of swizzled producer.
-          !isSeparableSmemSwizzledProducerIndex(
+          isSeparableSmemSwizzledProducerIndex(
               data_tv, reference_tv, ref_id, contig_merged_ids)) {
         ref_id_it++;
         continue;

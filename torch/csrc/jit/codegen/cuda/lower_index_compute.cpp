@@ -121,9 +121,17 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
     }
   }
 
-  std::unordered_set<IterDomain*> concrete_allocated_address_ids{
+  std::unordered_set<IterDomain*> concrete_allocated_address_ids;
+
+  std::transform(
       address_record->allocationIterDomains().begin(),
-      address_record->allocationIterDomains().end()};
+      address_record->allocationIterDomains().end(),
+      std::inserter(
+          concrete_allocated_address_ids, concrete_allocated_address_ids.end()),
+      [](IterDomain* id) {
+        return GpuLower::current()->caMap()->getConcreteMappedID(
+            id, IdMappingMode::LOOP);
+      });
 
   // We only modify loops on the right of the serial loop
   //  for the moment.
