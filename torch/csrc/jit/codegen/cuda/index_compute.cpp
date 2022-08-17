@@ -310,6 +310,27 @@ Val* getProducerIndexWithPartialSplit(
       producer_index, SimplifyingIrBuilder::create<Int>(diff_eval.value()));
 }
 
+bool shouldUseLiftedAddress(
+    const TensorView* data_tv,
+    const TensorView* reference_tv,
+    const std::vector<kir::ForLoop*>& loops) {
+  auto maybe_address_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+          data_tv, reference_tv);
+  if (maybe_address_record.has_value()) {
+    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
+    return std::any_of(loops.begin(), loops.end(), [serial_id](auto loop) {
+      // TODO: use loop attribute to detect
+      //  address calculation loop.
+      return !loop->index()->isZeroInt() &&
+          GpuLower::current()->caMap()->areMapped(
+              loop->iter_domain(), serial_id, IdMappingMode::LOOP);
+    });
+  }
+
+  return false;
+}
+
 } // namespace
 
 void IndexCompute::handle(Split* split) {
@@ -1648,6 +1669,8 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
     const TensorView* consumer_tv,
     const std::vector<kir::ForLoop*>& loops) {
   const auto gpu_lower = GpuLower::current();
+  auto should_use_lifted_address =
+      shouldUseLiftedAddress(producer_tv, consumer_tv, loops);
 
   // Replay producer to look like consumer so we can index on producer since our
   // loop nests look like consumer
@@ -1723,7 +1746,11 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
 
   auto producer_swizzled_index = index_swizzle;
 
-  if (producer_tv->hasSwizzleOp()) {
+  // TODO: add validation pass:
+  //  swizzle should be lifted when lifting read index is
+  // specified. So would not need to compute the swizzle again
+  // on the inlined part of tensor index.
+  if (producer_tv->hasSwizzleOp() && !should_use_lifted_address) {
     // Special handling needed on the new swizzle
     //  op pass:
     //  each swizzle op is local to the tensor,
@@ -1889,17 +1916,10 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
       GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
           producer_tv, consumer_tv);
 
-  if (maybe_address_record.has_value()) {
-    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
-    for (auto loop : loops) {
-      if (!loop->index()->isZeroInt() &&
-          GpuLower::current()->caMap()->areMapped(
-              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
-        auto address_index = generateAddressTensorIndex(
-            loops, maybe_address_record.value()->addressTensor());
-        strided_inds.push_back(address_index);
-      }
-    }
+  if (should_use_lifted_address) {
+    auto address_index = generateAddressTensorIndex(
+        loops, maybe_address_record.value()->addressTensor());
+    strided_inds.push_back(address_index);
   }
 
   return strided_inds;
