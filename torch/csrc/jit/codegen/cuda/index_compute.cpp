@@ -1329,7 +1329,8 @@ Val* hoistConsumerIndex(
   auto maybe_hoisted_consumer_id = getMaybeIndexedIdToHoist(
       consumer_root_id, consumer_tv, consumer_indexing, index);
 
-  if (!maybe_hoisted_consumer_id.has_value()) {
+  if (!maybe_hoisted_consumer_id.has_value() ||
+      consumer_tv->shouldLiftWriteAddress()) {
     return index;
   }
 
@@ -1375,7 +1376,8 @@ Val* hoistProducerIndex(
   auto maybe_indexed_producer_id = getMaybeIndexedIdToHoist(
       producer_root_id, producer_tv, producer_indexing, index);
 
-  if (!maybe_indexed_producer_id.has_value()) {
+  if (!maybe_indexed_producer_id.has_value() ||
+      producer_tv->shouldLiftReadAddress()) {
     return index;
   }
 
