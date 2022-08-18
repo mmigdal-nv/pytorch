@@ -306,6 +306,19 @@ IndexingParameters getNonGlobalInitialIndexParameters(
     double_buffer_loop =
         GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
             consumer_tv, loops, true);
+    // TODO: detect address calculation loop:
+    if (double_buffer_loop && maybe_address_record.has_value()) {
+      // Detect address calculation loop:
+      //  TODO: would need to check the case where double buffer loop is
+      // outside of the serial loop. Which would be the case in double buffer
+      // gmem support.
+      auto serial_loop = maybe_address_record.value()->getMaybeSerialLoop(
+          loop_indexing.loops());
+      if (serial_loop.has_value() &&
+          serial_loop.value()->index()->isZeroInt()) {
+        double_buffer_loop = nullptr;
+      }
+    }
   }
 
   std::tie(loop_to_ind_map, zero_loops) = indexMapFromTV(

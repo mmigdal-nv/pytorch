@@ -3192,13 +3192,25 @@ kir::TensorIndex* Index::generateAddressTensorIndex(
   auto maybe_address_record =
       GpuLower::current()->addressComputeInfo().getMaybeRecordForAddressTv(
           address_tv);
-  TORCH_INTERNAL_ASSERT(maybe_address_record.has_value());
+  TORCH_INTERNAL_ASSERT(
+      maybe_address_record.has_value(),
+      "Each address tv has to be associated with an address record");
   auto address_record = maybe_address_record.value();
 
   auto alloc_id_it = address_record->allocationIterDomains().rbegin();
 
   std::deque<Val*> index_deq;
   Val* local_stride = address_tv->fusion()->oneVal();
+
+  // Double buffer loop used to handle double buffer read access
+  // TODO: add test case for double buffer write
+  auto double_buffer_loop =
+      GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
+          address_record->indexReferenceTensor(), for_loops, true);
+  auto maybe_serial_loop = address_record->getMaybeSerialLoop(for_loops);
+  TORCH_INTERNAL_ASSERT(
+      maybe_serial_loop.has_value(), "Invalid address record in the loop nest");
+  bool is_address_calculation = maybe_serial_loop.value()->index()->isZeroInt();
 
   for (auto loop_it = for_loops.rbegin(); loop_it != for_loops.rend();
        loop_it++) {
@@ -3208,8 +3220,24 @@ kir::TensorIndex* Index::generateAddressTensorIndex(
     }
     if (GpuLower::current()->caMap()->areMapped(
             loop->iter_domain(), *alloc_id_it, IdMappingMode::LOOP)) {
-      index_deq.push_front(
-          SimplifyingIrBuilder::mulExpr(loop->index(), local_stride));
+      auto index = loop->isTrivial() ? loop->start() : loop->index();
+
+      // Double buffer read access:
+      if (loop == double_buffer_loop && !is_address_calculation) {
+        auto stage_depth =
+            GpuLower::current()->doubleBufferInfo().getStageDepthFor(
+                double_buffer_loop->iter_domain());
+        // TODO: the write address lifting case would be most likely a single
+        //  unrolled loop of cpasync. Will add coverage and support in a follow
+        //  up.
+        TORCH_INTERNAL_ASSERT(
+            address_record->isRead(),
+            "unrolled double buffer write support not yet enabled");
+        index = SimplifyingIrBuilder::addExpr(
+            index, SimplifyingIrBuilder::create<Int>(stage_depth - 1));
+      }
+
+      index_deq.push_front(SimplifyingIrBuilder::mulExpr(index, local_stride));
       local_stride =
           SimplifyingIrBuilder::mulExpr(local_stride, (*alloc_id_it)->extent());
       alloc_id_it++;

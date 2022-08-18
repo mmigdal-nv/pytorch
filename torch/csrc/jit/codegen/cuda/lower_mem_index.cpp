@@ -693,6 +693,23 @@ c10::optional<AddressRecord*> AddressComputeInfo::getMaybeRecordForAddressTv(
   return record_it->second;
 }
 
+c10::optional<kir::ForLoop*> AddressRecord::getMaybeSerialLoop(
+    std::vector<kir::ForLoop*> loops) {
+  auto concrete_loop_id = getConcreteSerialLoopId();
+
+  auto serial_loop_it = std::find_if(
+      loops.begin(), loops.end(), [concrete_loop_id](kir::ForLoop* for_loop) {
+        return GpuLower::current()->caMap()->areMapped(
+            for_loop->iter_domain(), concrete_loop_id, IdMappingMode::LOOP);
+      });
+
+  if (serial_loop_it != loops.end()) {
+    return *serial_loop_it;
+  }
+
+  return c10::nullopt;
+}
+
 namespace {
 
 struct AddressComputeInsertionInfo {

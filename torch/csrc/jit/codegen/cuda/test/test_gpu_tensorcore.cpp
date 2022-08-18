@@ -804,7 +804,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulPipelineGmem_CUDA) {
   }
 }
 
-TEST_F(NVFuserTest, FusionAmpereMatmulRegDbouleBuffer_CUDA) {
+TEST_F(NVFuserTest, FusionAmpereMatmulRegDoubleBuffer_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
   REQUIRE_DEVICE_SMEM_SIZE(70 << 10, 0);

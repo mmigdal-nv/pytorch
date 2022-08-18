@@ -57,6 +57,11 @@ class AddressRecord {
     return loop_concrete_serial_id_;
   }
 
+  //! Returns the serial loop that this address record requests
+  //!  to lift the index math out of.
+  c10::optional<kir::ForLoop*> getMaybeSerialLoop(
+      std::vector<kir::ForLoop*> loops);
+
  private:
   //! The address tensor that will hold the
   //!  data address to the access_tv.
