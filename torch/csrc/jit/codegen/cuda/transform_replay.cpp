@@ -252,7 +252,12 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayPasC(
   //  from the inputs of the swizzles instead of the outputs, and therefore
   //  should not skip swizzles in here.
   auto forward_replay = BestEffortReplay::replayPasC(
-      producer, consumer, consumer_compute_at_axis, root_map, false);
+      producer,
+      consumer,
+      consumer_compute_at_axis,
+      root_map,
+      false,
+      !replay_swizzle);
 
   // Make a new map based on all the leaves resulting from best effort replay
   id_map forwarded_replay_map;
@@ -438,7 +443,8 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
     const TensorView* consumer,
     const TensorView* producer,
     int producer_compute_at_axis,
-    const RootDomainMap& root_map) {
+    const RootDomainMap& root_map,
+    bool replay_swizzle) {
   FUSER_PERF_SCOPE("TransformReplay::replayCasP");
 
   // If this is a reduction operation, we may call transform_replay on the same
@@ -467,7 +473,12 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
   //  Similar constraints apply in replayPasC. See the corresponding
   // notes there on not skipping swizzles in the matching here.
   BestEffortReplay forward_replay = BestEffortReplay::replayCasP(
-      consumer, producer, producer_compute_at_axis, root_map, false);
+      consumer,
+      producer,
+      producer_compute_at_axis,
+      root_map,
+      false,
+      !replay_swizzle);
 
   // Track dangling leaves which can be produced in
   // BestEffortReplay::replayCasP these don't have any equivalent in producer
@@ -485,7 +496,7 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
 
   // Replay producer dimensions.
   ReplayTransformations replay_CasP(
-      producer_CA_ids, forwarded_replay_map, false);
+      producer_CA_ids, forwarded_replay_map, replay_swizzle);
 
   auto leaf_ids(replay_CasP.getUnorderedLeafIDs());
 
@@ -650,10 +661,12 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayPasC(
 std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
     const TensorView* consumer,
     const TensorView* producer,
-    int compute_at_axis) {
+    int compute_at_axis,
+    bool replay_swizzle) {
   // Use the pairwise root map as a default mapper
   PairwiseRootDomainMap root_map(producer, consumer);
-  return replayCasP(consumer, producer, compute_at_axis, root_map);
+  return replayCasP(
+      consumer, producer, compute_at_axis, root_map, replay_swizzle);
 }
 
 // In a PasC replay, we want the producer to exactly match the consumer:
