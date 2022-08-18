@@ -21,11 +21,6 @@ class MatmulParam {
     int smem_double_buffer_stage = 2;
   };
 
-  bool lift_smem_read_address = false;
-  bool lift_smem_write_address = false;
-  bool lift_gmem_read_address = false;
-  bool lift_gmem_write_address = false;
-
   //! (Ampere+) Use cp.async to load operands.
   bool async_gmem_load_operands = false;
 
@@ -38,6 +33,21 @@ class MatmulParam {
 
   //! Specify which tensor we double buffer.
   DoubleBufferOptions double_buffer_options;
+
+  //! Tunable spec to enable/disable lifting
+  //!  memory indexing math out of the main
+  //!  loop on the generated kernel.
+  //! (All defaults to on).
+  //! Note: eventually this part of logic
+  //!  will be merged into automatic
+  //!  indexing math allocation/placement pass.
+  struct IndexLiftingOptions {
+    bool lift_smem_read_address = true;
+    bool lift_smem_write_address = true;
+    bool lift_gmem_read_address = true;
+    // TODO: add gmem_write address for
+    //  latency bound kernels.
+  } index_lift_options;
 };
 
 //! Prototype auto scheduling function.

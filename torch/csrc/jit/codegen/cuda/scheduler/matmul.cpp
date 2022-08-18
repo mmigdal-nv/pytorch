@@ -527,10 +527,20 @@ void scheduleMatmul(
       scheduler_utils::BoundedDirectionalTransformPropagator::Options()
           .propagateParallelType()
           .propagateToBoundary());
-  
-  if(params.lift_gmem_read_address){
+
+  if (params.index_lift_options.lift_gmem_read_address) {
     a->liftReadAddress();
     b->liftReadAddress();
+  }
+
+  if (params.index_lift_options.lift_smem_write_address) {
+    acw_smem->liftWriteAddress();
+    bcw_smem->liftWriteAddress();
+  }
+
+  if (params.index_lift_options.lift_smem_read_address) {
+    acw_smem->liftReadAddress();
+    bcw_smem->liftReadAddress();
   }
 }
 
