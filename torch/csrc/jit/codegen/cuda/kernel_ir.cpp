@@ -256,7 +256,7 @@ ForLoop::ForLoop(
     bool vectorize,
     Val* vectorize_shift,
     bool unroll_required,
-    DoubleBufferLoopStage double_buffer_loop_stage)
+    LoopTransformInfo loop_transform_info)
     : Expr(passkey, ExprType::ForLoop),
       iter_domain_{iter_domain},
       index_(index),
@@ -267,7 +267,7 @@ ForLoop::ForLoop(
       vectorize_shift_(vectorize_shift),
       unroll_required_(unroll_required),
       body_(this),
-      double_buffer_loop_stage_(double_buffer_loop_stage) {
+      loop_transform_info_(loop_transform_info) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
@@ -298,7 +298,7 @@ ForLoop::ForLoop(IrBuilderPasskey passkey, IterDomain* iter_domain)
               isParallelTypeVectorize(iter_domain->getParallelType()),
           nullptr,
           false,
-          DoubleBufferLoopStage::NotApplicable) {
+          LoopTransformInfo()) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
@@ -315,7 +315,7 @@ ForLoop::ForLoop(IrBuilderPasskey passkey, const ForLoop* other)
           other->vectorize(),
           other->vectorize_shift(),
           other->isUnrollRequired(),
-          other->doubleBufferLoopStage()) {
+          other->loopTransformInfo()) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
@@ -663,6 +663,13 @@ const ParallelTypeBitmap& AllocateFusedReduction::threadPredicate() const {
 }
 
 } // namespace kir
+
+std::ostream& operator<<(
+    std::ostream& os,
+    const kir::LoopTransformInfo loop_transform_info) {
+  return os;
+}
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

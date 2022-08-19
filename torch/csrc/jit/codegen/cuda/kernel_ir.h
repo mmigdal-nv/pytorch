@@ -421,6 +421,31 @@ class TORCH_CUDA_CU_API Scope {
   Expr* owner_ = nullptr;
 };
 
+//! Utility to keep track of loop states when double buffered
+//!  or loop transformed (i.e. rotated, offset etc.)
+struct LoopTransformInfo {
+  //! Tracks if this for loop is implementing a stage of
+  //!  a double buffered iterdomain.
+  DoubleBufferLoopStage double_buffer_loop_stage =
+      DoubleBufferLoopStage::NotApplicable;
+
+  //! Tracks if this for loop is for base index calculation for
+  //!  lifted memory address.
+  bool is_base_index_loop = false;
+
+  //! Setter API
+  LoopTransformInfo& doubleBufferStage(DoubleBufferLoopStage stage) {
+    double_buffer_loop_stage = stage;
+    return *this;
+  }
+
+  //! Setter API
+  LoopTransformInfo& baseIndexLoop() {
+    is_base_index_loop = true;
+    return *this;
+  }
+};
+
 //! ForLoop provides scoping around an int iterator from 0 to range. Exprs
 //! placed in its body are considered inside the scope of the for loop. In the
 //! future the implementation should look quite different so that we can do
@@ -447,7 +472,7 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
       bool vectorize,
       Val* vectorize_shift,
       bool unroll_required,
-      DoubleBufferLoopStage double_buffer_loop_stage);
+      LoopTransformInfo loop_transform_info);
 
   ForLoop(IrBuilderPasskey passkey, IterDomain* iter_domain);
 
@@ -500,10 +525,21 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
   //! True if no actual for-loop is materialized
   bool isTrivial() const;
 
+  //! Returns all loop transform related information.
+  auto loopTransformInfo() const {
+    return loop_transform_info_;
+  }
+
   //! Returns the stage of a double buffered iterdomain
   //!  that this for loop materializes.
   auto doubleBufferLoopStage() const {
-    return double_buffer_loop_stage_;
+    return loop_transform_info_.double_buffer_loop_stage;
+  }
+
+  //! Returns if this loop is used to calculate
+  //!  base index for lifted memory address.
+  bool isBaseIndexLoop() const {
+    return loop_transform_info_.is_base_index_loop;
   }
 
  private:
@@ -530,10 +566,9 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
 
   Scope body_;
 
-  //! Tracks if this for loop is implementing a stage of
-  //!  a double buffered iterdomain.
-  DoubleBufferLoopStage double_buffer_loop_stage_ =
-      DoubleBufferLoopStage::NotApplicable;
+  //! Keeps track of loop transformation status of this instance
+  //!  of for loop.
+  LoopTransformInfo loop_transform_info_;
 };
 
 //! IfThenElse provides scoping for an boolean operator. Exprs placed in its
@@ -920,6 +955,11 @@ class TORCH_CUDA_CU_API Swizzle2DInt : public Expr {
 };
 
 } // namespace kir
+
+TORCH_CUDA_CU_API std::ostream& operator<<(
+    std::ostream&,
+    const kir::LoopTransformInfo);
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

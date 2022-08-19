@@ -812,7 +812,7 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
         false,
         nullptr,
         original_loop->isUnrollRequired(),
-        original_loop->doubleBufferLoopStage());
+        original_loop->loopTransformInfo());
   }
 
   std::vector<kir::ForLoop*> createAddressComputeLoop(

@@ -217,7 +217,7 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
         false,
         nullptr,
         double_buffer_loop_->isUnrollRequired(),
-        loop_type_);
+        double_buffer_loop_->loopTransformInfo().doubleBufferStage(loop_type_));
 
     handle(double_buffer_loop_);
 
