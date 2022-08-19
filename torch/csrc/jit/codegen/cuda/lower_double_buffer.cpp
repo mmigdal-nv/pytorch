@@ -565,9 +565,9 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
     // TODO: enable shared double buffer loop
     std::unordered_set<IterDomain*> lifted;
     for (auto& loop_nest_entry : double_buffer_info.nestLiftingMap()) {
-      if(lifted.insert(loop_nest_entry.first).second){
+      if (lifted.insert(loop_nest_entry.first).second) {
         SkewDoubleBufferLoop skew_loop(
-          skewed_exprs, loop_nest_entry.first, loop_nest_entry.second);
+            skewed_exprs, loop_nest_entry.first, loop_nest_entry.second);
         skewed_exprs = skew_loop.exprs_;
       }
     }
@@ -657,7 +657,7 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
         false,
         nullptr,
         outer_main_loop_->isUnrollRequired(),
-        DoubleBufferLoopStage::NotApplicable);
+        kir::LoopTransformInfo());
 
     auto upper_prolog_loop = IrBuilder::create<kir::ForLoop>(
         original_prolog->iter_domain(),
@@ -668,7 +668,8 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
         false,
         nullptr,
         original_prolog->isUnrollRequired(),
-        DoubleBufferLoopStage::UpperProlog);
+        original_prolog->loopTransformInfo().doubleBufferStage(
+            DoubleBufferLoopStage::UpperProlog));
 
     auto outer_loop =
         getClonedPrologLoopNest(original_prolog, upper_prolog_loop);
@@ -690,7 +691,8 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
         false,
         nullptr,
         original_prolog->isUnrollRequired(),
-        DoubleBufferLoopStage::LowerProlog);
+        original_prolog->loopTransformInfo().doubleBufferStage(
+            DoubleBufferLoopStage::LowerProlog));
 
     return getClonedPrologLoopNest(original_prolog, lower_prolog_loop);
   }
@@ -939,7 +941,9 @@ kir::ForLoop* DoubleBufferInfo::getDoubleBufferLoop(
     return GpuLower::current()->caMap()->areMapped(
                loop->iter_domain(), axis, IdMappingMode::EXACT) &&
         (!ignore_prologue ||
-         loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Prolog);
+         (loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Prolog &&
+          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::UpperProlog &&
+          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::LowerProlog));
   });
 
   if (loop_it != loops.end()) {

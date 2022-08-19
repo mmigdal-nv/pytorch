@@ -518,6 +518,8 @@ void scheduleMatmul(
   if (params.double_buffer_options.double_buffer_smem_read) {
     acr->doubleBuffer();
     bcr->doubleBuffer();
+    acr->skewDoubleBuffer();
+    bcr->skewDoubleBuffer();
   }
 
   scheduler_utils::BoundedDirectionalTransformPropagator::forward(
