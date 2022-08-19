@@ -322,7 +322,7 @@ bool shouldUseLiftedAddress(
     return std::any_of(loops.begin(), loops.end(), [serial_id](auto loop) {
       // TODO: use loop attribute to detect
       //  address calculation loop.
-      return !loop->index()->isZeroInt() &&
+      return !loop->isBaseIndexLoop() &&
           GpuLower::current()->caMap()->areMapped(
               loop->iter_domain(), serial_id, IdMappingMode::LOOP);
     });
@@ -1606,21 +1606,14 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
     }
   }
 
-  auto maybe_address_record =
-      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
-          producer_tv, consumer_tv);
+  if (shouldUseLiftedAddress(producer_tv, consumer_tv, loops)) {
+    auto maybe_address_record =
+        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+            producer_tv, consumer_tv);
 
-  if (maybe_address_record.has_value()) {
-    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
-    for (auto loop : loops) {
-      if (!loop->index()->isZeroInt() &&
-          GpuLower::current()->caMap()->areMapped(
-              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
-        auto address_index = generateAddressTensorIndex(
-            loops, maybe_address_record.value()->addressTensor());
-        strided_inds.push_back(address_index);
-      }
-    }
+    auto address_index = generateAddressTensorIndex(
+        loops, maybe_address_record.value()->addressTensor());
+    strided_inds.push_back(address_index);
   }
 
   return strided_inds;
@@ -1898,7 +1891,7 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
     if (db_loop != nullptr) {
       // TODO: add loop attribute to note it is not
       //  in an address calculation loop:
-      if (!db_loop->index()->isZeroInt()) {
+      if (!db_loop->isBaseIndexLoop()) {
         auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
             db_loop->iter_domain());
         auto loop_index =
@@ -2087,21 +2080,14 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
   TORCH_INTERNAL_ASSERT(
       strided_inds.size() == consumer_tv->getMaybeRFactorDomain().size());
 
-  auto maybe_address_record =
-      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
-          consumer_tv);
+  if (shouldUseLiftedAddress(consumer_tv, consumer_tv, loops)) {
+    auto maybe_address_record =
+        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+            consumer_tv);
 
-  if (maybe_address_record.has_value()) {
-    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
-    for (auto loop : loops) {
-      if (!loop->index()->isZeroInt() &&
-          GpuLower::current()->caMap()->areMapped(
-              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
-        auto address_index = generateAddressTensorIndex(
-            loops, maybe_address_record.value()->addressTensor());
-        strided_inds.push_back(address_index);
-      }
-    }
+    auto address_index = generateAddressTensorIndex(
+        loops, maybe_address_record.value()->addressTensor());
+    strided_inds.push_back(address_index);
   }
 
   return strided_inds;
@@ -2229,7 +2215,7 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
 
     // TODO: add loop attribute to note it is not
     //  in an address calculation loop:
-    if (!db_loop->index()->isZeroInt()) {
+    if (!db_loop->isBaseIndexLoop()) {
       auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
           db_loop->iter_domain());
       bool is_circular_buffer_loop = stage_depth > 2;
@@ -2268,21 +2254,13 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
 
   // Add pre computed index path:
 
-  auto maybe_address_record =
-      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
-          consumer_tv);
-
-  if (maybe_address_record.has_value()) {
-    auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
-    for (auto loop : loops) {
-      if (!loop->index()->isZeroInt() &&
-          GpuLower::current()->caMap()->areMapped(
-              loop->iter_domain(), serial_id, IdMappingMode::LOOP)) {
-        auto address_index = generateAddressTensorIndex(
-            loops, maybe_address_record.value()->addressTensor());
-        strided_inds.push_back(address_index);
-      }
-    }
+  if (shouldUseLiftedAddress(consumer_tv, consumer_tv, loops)) {
+    auto maybe_address_record =
+        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+            consumer_tv);
+    auto address_index = generateAddressTensorIndex(
+        loops, maybe_address_record.value()->addressTensor());
+    strided_inds.push_back(address_index);
   }
 
   return strided_inds;

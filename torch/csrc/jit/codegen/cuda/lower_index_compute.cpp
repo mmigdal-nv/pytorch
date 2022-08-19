@@ -98,7 +98,7 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
 
   // WAR : Check if this is calculating address tv or using address tv
   //  should tag this on loop attribute
-  bool is_address_tv_calculation = serial_loop->index()->isZeroInt();
+  bool is_address_tv_calculation = serial_loop->isBaseIndexLoop();
 
   std::unordered_set<IterDomain*> zero_ids;
 
