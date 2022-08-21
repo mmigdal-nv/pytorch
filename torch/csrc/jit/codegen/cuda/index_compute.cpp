@@ -2279,7 +2279,8 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
         if (is_prolog && is_circular_buffer_loop) {
           // The buffer switching logic is the same as original index
           //  in the case of circular buffer prolog.
-          db_switch_index = db_loop->index();
+          db_switch_index =
+              db_loop->isTrivial() ? db_loop->start() : db_loop->index();
         } else {
           // Switching index generated for main loop or epilog component.
           db_switch_index = SimplifyingIrBuilder::modExpr(
@@ -3220,7 +3221,15 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
                           ->as<Bool>();
         } else if (
             tile_entry.for_loop->doubleBufferLoopStage() ==
-            DoubleBufferLoopStage::Main) {
+                DoubleBufferLoopStage::Main &&
+            // TODO: need to unify the double buffer index/predicate calculation
+            // TODO: need to update this part as well in double buffer extension
+            //        for turing/volta staging regs.
+            db_axis != nullptr &&
+            GpuLower::current()->caMap()->areMapped(
+                db_axis,
+                tile_entry.for_loop->iter_domain(),
+                IdMappingMode::LOOP)) {
           auto db_index = SimplifyingIrBuilder::addExpr(
               tile_entry.for_loop->index(),
               IrBuilder::create<Int>(
