@@ -48,6 +48,9 @@ class MatmulParam {
     // TODO: add gmem_write address for
     //  latency bound kernels.
   } index_lift_options;
+
+  //! Enables predicate peeling mainloop:
+  bool peel_main_loop = false;
 };
 
 //! Prototype auto scheduling function.

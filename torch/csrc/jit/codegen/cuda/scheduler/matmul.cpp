@@ -544,6 +544,10 @@ void scheduleMatmul(
     acw_smem->liftReadAddress();
     bcw_smem->liftReadAddress();
   }
+
+  if (params.peel_main_loop) {
+    cc->peelPredicatedLoop(2);
+  }
 }
 
 } // namespace cuda
