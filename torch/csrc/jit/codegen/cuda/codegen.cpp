@@ -2296,7 +2296,9 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     //  should not apply here.
     if (loop->iter_domain()->isParallelized() ||
         loop->loopTransformInfo().predicate_peel_stage ==
-            PredicatePeelStage::Main) {
+            PredicatePeelStage::Main ||
+        loop->loopTransformInfo().double_buffer_loop_stage ==
+            DoubleBufferLoopStage::CircularInitProlog) {
       code_ << " = " << gen_start << "; ";
     } else {
       // Do not start at  the start of the ID when not parallelized. Instead,

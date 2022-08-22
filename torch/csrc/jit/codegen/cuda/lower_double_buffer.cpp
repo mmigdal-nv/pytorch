@@ -206,6 +206,10 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       start = IrBuilder::subExpr(
           double_buffer_loop_->stop(),
           SimplifyingIrBuilder::create<Int>(stage_depth - 1));
+    } else if (loop_type_ == DoubleBufferLoopStage::CircularInitProlog) {
+      TORCH_INTERNAL_ASSERT(start->isZeroInt());
+      start = SimplifyingIrBuilder::create<Int>(stage_depth - 1);
+      stop = SimplifyingIrBuilder::create<Int>(stage_depth);
     }
 
     cloned_top_level_loop_ = IrBuilder::create<kir::ForLoop>(
@@ -258,7 +262,9 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
     TORCH_INTERNAL_ASSERT(!cloned_scopes_.empty());
 
     if (loop_type_ == DoubleBufferLoopStage::Main) {
-      cloned_scopes_.back()->push_back(expr);
+      if (!canOmitInitInMainLoop(expr, double_buffer_loop_)) {
+        cloned_scopes_.back()->push_back(expr);
+      }
       return;
     }
 
@@ -275,6 +281,7 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
           TORCH_INTERNAL_ASSERT(double_buffer_tv != nullptr);
           return out_tv == double_buffer_tv;
         });
+
     if ((loop_type_ == DoubleBufferLoopStage::Prolog &&
          is_double_buffer_load_expr) ||
         (loop_type_ == DoubleBufferLoopStage::Epilog &&
@@ -286,7 +293,64 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       } else {
         cloned_scopes_.back()->push_back(expr);
       }
+    } else if (
+        loop_type_ == DoubleBufferLoopStage::CircularInitProlog &&
+        is_double_buffer_load_expr) {
+      // Only need the init expressions in circular init prolog stage
+      if (ir_utils::isTensorScalarFillOp(expr)) {
+        cloned_scopes_.back()->push_back(expr);
+      }
     }
+  }
+
+  //! Returns true if the expression is an initialization expr that
+  //!  can be omitted in main loop.
+  bool canOmitInitInMainLoop(Expr* expr, kir::ForLoop* double_buffer_loop) {
+    if (!ir_utils::isCpAsyncInit(expr) ||
+        !GpuLower::current()->predicatePeelingInfo().shouldPeelLoop(
+            double_buffer_loop)) {
+      return false;
+    }
+
+    auto out_tv = ir_utils::getTvOutput(expr);
+
+    bool db_loop_found = false;
+    auto& ca_map = GpuLower::current()->caMap();
+
+    if (!(out_tv->isDoubleBuffered() || out_tv->isCircularBuffered()) ||
+        !ca_map->areMapped(
+            GpuLower::current()->doubleBufferInfo().getDoubleBufferAxis(out_tv),
+            double_buffer_loop->iter_domain(),
+            IdMappingMode::LOOP)) {
+      return false;
+    }
+
+    for (auto id : out_tv->domain()->domain()) {
+      if (db_loop_found) {
+        auto loop_concrete_id =
+            ca_map->getConcreteMappedID(id, IdMappingMode::LOOP);
+
+        if (!loop_concrete_id->isParallelized() &&
+            !loop_concrete_id->extent()->isConstInt()) {
+          // If all the loops on the right of the peeled double buffer loop are
+          //  either parallel or unrolled. Should not need to
+
+          // TODO: also check broadcast resolution, and predicate removal here,
+          //  for general safety.
+          return false;
+        }
+      }
+
+      db_loop_found = db_loop_found ||
+          ca_map->areMapped(
+              id, double_buffer_loop->iter_domain(), IdMappingMode::LOOP);
+    }
+
+    TORCH_INTERNAL_ASSERT(
+        db_loop_found,
+        "Double buffer axis not on tv's tensor domain: ",
+        out_tv->toString());
+    return true;
   }
 
  private:
@@ -433,6 +497,17 @@ class DoubleBufferInserter : private kir::ExprMutator {
           return expr->output(0)->as<TensorView>()->getMemoryType() ==
               MemoryType::Shared;
         });
+
+    // If the double buffer loop is to be peeled. Will need to insert
+    //  a circular buffer init stage to initialize the final stage of
+    //  circular buffer space.
+    if (GpuLower::current()->predicatePeelingInfo().shouldPeelLoop(
+            double_buffer_loop) &&
+        write_to_smem) {
+      auto circular_init_loop = DoubleBufferLoopCloner::clone(
+          double_buffer_loop, loads, DoubleBufferLoopStage::CircularInitProlog);
+      registerInsertBefore(double_buffer_loop, circular_init_loop);
+    }
 
     // RAW sync is not inserted for double buffered tensors. The only
     // exception is the prologue load.
@@ -943,7 +1018,9 @@ kir::ForLoop* DoubleBufferInfo::getDoubleBufferLoop(
         (!ignore_prologue ||
          (loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Prolog &&
           loop->doubleBufferLoopStage() != DoubleBufferLoopStage::UpperProlog &&
-          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::LowerProlog));
+          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::LowerProlog &&
+          loop->doubleBufferLoopStage() !=
+              DoubleBufferLoopStage::CircularInitProlog));
   });
 
   if (loop_it != loops.end()) {

@@ -330,6 +330,7 @@ enum class DoubleBufferLoopStage {
   Prolog,
   Main,
   Epilog,
+  CircularInitProlog,
   UpperProlog,
   LowerProlog
 };

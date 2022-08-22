@@ -2270,7 +2270,9 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
           db_loop->doubleBufferLoopStage() ==
               DoubleBufferLoopStage::UpperProlog ||
           db_loop->doubleBufferLoopStage() ==
-              DoubleBufferLoopStage::LowerProlog;
+              DoubleBufferLoopStage::LowerProlog ||
+          db_loop->doubleBufferLoopStage() ==
+              DoubleBufferLoopStage::CircularInitProlog;
 
       Val* db_switch_index = nullptr;
 
