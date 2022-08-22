@@ -66,10 +66,12 @@ Predicate::Predicate(IrBuilderPasskey passkey, const Predicate* other)
 TensorIndex::TensorIndex(
     IrBuilderPasskey passkey,
     const TensorView* view,
-    std::vector<Val*> indices)
+    std::vector<Val*> indices,
+    Val* base_address)
     : Val(passkey, ValType::TensorIndex, view->getDataType().value()),
       view_(view),
-      indices_(indices) {
+      indices_(indices),
+      base_address_(base_address) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
