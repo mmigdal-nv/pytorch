@@ -112,8 +112,12 @@ class ConditionalFromPredicateModifier : public kir::IrVisitor {
   // Invert the predicate of given expr.
   void invertPredicateForGmemToSharedMemInitialize(Expr* expr) {
     auto pred = expr->predicate()->value();
-    auto invert = SimplifyingIrBuilder::notExpr(pred);
-    expr->predicate()->setValue(invert->as<Bool>());
+    if (!pred->isConst()) {
+      // TODO: this is a WAR for the current incomplete support
+      //  of Inline type predicate for cp.async.
+      auto invert = SimplifyingIrBuilder::notExpr(pred);
+      expr->predicate()->setValue(invert->as<Bool>());
+    }
   }
 
   // Detect if this expr is an initialization for vectorized

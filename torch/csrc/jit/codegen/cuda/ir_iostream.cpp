@@ -435,8 +435,12 @@ void IrPrinter::handle(const WelfordOp* wop) {
 }
 
 void IrPrinter::handle(const LoadStoreOp* ldst) {
-  indent() << ldst->out() << " = " << ldst->opType() << "( " << ldst->in()
-           << " )\n";
+  indent() << ldst->out() << " = " << ldst->opType() << "( " << ldst->in();
+  if (ldst->container()->isA<kir::Kernel>() && ldst->predicate() != nullptr &&
+      ldst->predicate()->hasValue()) {
+    os_ << ", " << ldst->predicate()->value()->toInlineString();
+  }
+  os_ << " )\n";
 }
 
 void IrPrinter::handle(const BroadcastOp* bop) {
@@ -549,6 +553,9 @@ void IrPrinter::handle(const kir::Predicate* node) {
     }
     default:
       os_ << node->predicate_type();
+      if (node->hasValue()) {
+        os_ << " : " << node->value()->toInlineString();
+      }
       break;
   }
 }

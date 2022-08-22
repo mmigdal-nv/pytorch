@@ -100,6 +100,21 @@ c10::optional<PeeledTileEntry> PredicatePeelingInfo::getMaybePeeledTileEntry(
   return c10::nullopt;
 }
 
+bool PredicatePeelingInfo::hasPeeledId(const TensorView* tv) const {
+  for (auto id : concrete_id_of_peeled_loops_) {
+    if (std::any_of(
+            tv->domain()->domain().begin(),
+            tv->domain()->domain().end(),
+            [id](IterDomain* tv_id) {
+              return GpuLower::current()->caMap()->areMapped(
+                  tv_id, id, IdMappingMode::LOOP);
+            })) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool PredicatePeelingInfo::shouldPeelLoop(kir::ForLoop* forloop) const {
   auto loop_concrete_id = GpuLower::current()->caMap()->getConcreteMappedID(
       forloop->iter_domain(), IdMappingMode::LOOP);

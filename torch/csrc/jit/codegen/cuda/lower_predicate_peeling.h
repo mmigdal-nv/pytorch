@@ -30,6 +30,8 @@ class PredicatePeelingInfo {
       const std::vector<kir::ForLoop*>& loops,
       IterDomain* root_id);
 
+  bool hasPeeledId(const TensorView* tv) const;
+
  private:
   std::unordered_set<IterDomain*> concrete_id_of_peeled_loops_;
 };
