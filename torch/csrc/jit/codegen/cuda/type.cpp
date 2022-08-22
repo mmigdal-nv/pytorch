@@ -28,6 +28,7 @@ bool isFloatingPointType(DataType dtype) {
       return true;
     case DataType::Bool:
     case DataType::Index:
+    case DataType::Pointer:
     case DataType::Int:
     case DataType::Int32:
     case DataType::ComplexFloat:
@@ -73,6 +74,7 @@ bool isIntegralType(DataType dtype) {
     case DataType::ComplexDouble:
       return false;
     case DataType::Index:
+    case DataType::Pointer:
     case DataType::Int:
     case DataType::Int32:
       return true;
@@ -95,6 +97,7 @@ bool isComplexType(DataType dtype) {
     case DataType::BFloat16:
     case DataType::Int:
     case DataType::Index:
+    case DataType::Pointer:
     case DataType::Int32:
       return false;
     case DataType::Null:
@@ -223,6 +226,8 @@ static const char* data_type2string(DataType t) {
       return "int64_t";
     case DataType::Index:
       return "nvfuser_index_t";
+    case DataType::Pointer:
+      return "DataPointer";
     case DataType::Int32:
       return "int";
     case DataType::ComplexFloat:
@@ -939,6 +944,7 @@ at::ScalarType data_type_to_aten(const DataType& data_type) {
     case DataType::Int:
       return at::ScalarType::Long;
     case DataType::Index:
+    case DataType::Pointer:
       TORCH_INTERNAL_ASSERT(
           false,
           "Index is determined at compile time,",
@@ -1104,6 +1110,8 @@ std::string typePrefix(const DataType data_type) {
     case DataType::Int:
     case DataType::Int32:
       return "i";
+    case DataType::Pointer:
+      return "p";
     case DataType::ComplexFloat:
     case DataType::ComplexDouble:
       return "c";
@@ -1155,6 +1163,7 @@ size_t dataTypeSize(DataType type) {
     case DataType::BFloat16:
       return sizeof(at::BFloat16);
     case DataType::Index:
+    case DataType::Pointer:
       TORCH_INTERNAL_ASSERT(
           false, "The actual type of Index is only known at compile time.");
     case DataType::Int:

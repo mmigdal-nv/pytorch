@@ -66,6 +66,7 @@ enum class DataType {
   Half,
   Int,
   Index,
+  Pointer,
   Int32,
   Bool,
   BFloat16,
