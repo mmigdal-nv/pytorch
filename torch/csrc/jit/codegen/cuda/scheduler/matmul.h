@@ -50,7 +50,7 @@ class MatmulParam {
   } index_lift_options;
 
   //! Enables predicate peeling mainloop:
-  bool peel_main_loop = false;
+  bool peel_main_loop = true;
 };
 
 //! Prototype auto scheduling function.
