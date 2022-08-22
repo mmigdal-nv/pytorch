@@ -1605,7 +1605,10 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
       if (auto tile_entry =
               gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
                   loops, root_dom[i])) {
-        if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog) {
+        if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog &&
+            !tile_entry.value()
+                 .for_loop->loopTransformInfo()
+                 .is_base_index_loop) {
           root_ind = SimplifyingIrBuilder::subExpr(
               root_ind,
               PredicatePeeling::getSplitTileMainOffset(

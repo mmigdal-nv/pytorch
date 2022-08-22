@@ -119,7 +119,8 @@ bool PredicatePeelingInfo::shouldPeelLoop(kir::ForLoop* forloop) const {
   auto loop_concrete_id = GpuLower::current()->caMap()->getConcreteMappedID(
       forloop->iter_domain(), IdMappingMode::LOOP);
 
-  return concrete_id_of_peeled_loops_.count(loop_concrete_id);
+  return !forloop->loopTransformInfo().is_base_index_loop &&
+      concrete_id_of_peeled_loops_.count(loop_concrete_id);
 }
 
 namespace {
