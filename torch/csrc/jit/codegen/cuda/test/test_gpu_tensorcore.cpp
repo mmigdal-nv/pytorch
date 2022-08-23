@@ -2771,7 +2771,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTNSwizzled_CUDA) {
 TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
-  for (auto layout : kAllSupportedLayout) {
+  for (auto layout : {kAllSupportedLayout[2]}) {
     Fusion fusion;
     FusionGuard fg(&fusion);
     auto tv0 = makeContigTensor(2, DataType::Half);
@@ -2803,9 +2803,18 @@ TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
     at::manual_seed(0);
     auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
+    fusion.printKernel();
+    // return;
+    CompileOptions co;
+    co.index_mode = KernelIndexMode::INT32;
+
     FusionExecutor fe;
     NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-        8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+        8,
+        0,
+        fe.compileFusion(
+            &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+    // return;
     auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
     auto tref = atMatmul(
         inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);

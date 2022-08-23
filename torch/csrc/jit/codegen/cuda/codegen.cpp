@@ -532,6 +532,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     if (is_volatile) {
       code_ << "*(volatile " << ti->getDataType().value() << "*)&";
     }
+
+    if (ti->hasBaseAddress()) {
+      // WAR path to generate a tensor index with pointer content.
+      code_ << "reinterpret_cast<" << ti->view()->dtype() << "*>("
+            << gen(ti->baseAddress()) << ")"
+            << "[" << genTensorIndex(ti) << "]";
+      return;
+    }
     code_ << varName(ti->view()) << "[" << genTensorIndex(ti) << "]";
   }
 
@@ -567,8 +575,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return ss.str();
   }
 
-  std::string genMaybeHoistedPointer(Val* val) {
-    auto ti = dynamic_cast<kir::TensorIndex*>(val);
+  std::string genMaybeHoistedPointer(const Val* val) {
+    auto ti = dynamic_cast<const kir::TensorIndex*>(val);
     TORCH_INTERNAL_ASSERT(ti != nullptr, "only support tensor index input");
     std::stringstream ss;
 
@@ -578,6 +586,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     } else {
       ss << "&" << gen(ti) << "\n";
     }
+
+    return ss.str();
   }
 
   // Utility function to emit a cp.async intrinsic
@@ -2462,12 +2472,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void handle(const kir::AddressCompute* address_compute) final {
-    indent() << "// Address tensor for indexing "
-             << varName(address_compute->dataTv()) << "\n";
-    indent() << gen(address_compute->addressTv()) << " = "
-             << genTensorIndex(
-                    address_compute->dataTv()->as<kir::TensorIndex>())
-             << ";\n";
+    indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"
+             << gen(address_compute->dataTv()->as<kir::TensorIndex>()) << ";\n";
   }
 
   void handle(const kir::GridSync* sync) final {

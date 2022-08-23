@@ -118,13 +118,13 @@ DEVICE_INLINE void ldMatrixT(Array<__half, 8, 8>& out, void const* ptr) {
 DEVICE_INLINE void ldMatrix(
     Array<__half, 4, 4>& out,
     nvfuser_index_t index,
-    Pointer base_ptr) {
+    DataPointer base_ptr) {
   uint2& val = reinterpret_cast<uint2&>(out);
   unsigned addr = util::toSmem(base_ptr);
   util::adjustPartialLdMatrixAddrInTuring(addr);
   asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%0,%1}, [%2];"
                : "=r"(val.x), "=r"(val.y)
-               : "r"(addr + index));
+               : "r"(addr + (unsigned)index));
 }
 
 // Same as previous, 8x8 matrix is vectorized loaded, then scattered (to perform
@@ -133,36 +133,36 @@ DEVICE_INLINE void ldMatrix(
 DEVICE_INLINE void ldMatrixT(
     Array<__half, 4, 4>& out,
     nvfuser_index_t index,
-    Pointer base_ptr) {
+    DataPointer base_ptr) {
   uint2& val = reinterpret_cast<uint2&>(out);
   unsigned addr = util::toSmem(base_ptr);
   util::adjustPartialLdMatrixAddrInTuring(addr);
   asm volatile("ldmatrix.sync.aligned.x2.trans.m8n8.shared.b16 {%0,%1}, [%2];"
                : "=r"(val.x), "=r"(val.y)
-               : "r"(addr + index));
+               : "r"(addr + (unsigned)index));
 }
 
 DEVICE_INLINE void ldMatrix(
     Array<__half, 8, 8>& out,
     nvfuser_index_t index,
-    Pointer base_ptr) {
+    DataPointer base_ptr) {
   uint4& val = reinterpret_cast<uint4&>(out);
   unsigned addr = util::toSmem(base_ptr);
   asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
                : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
-               : "r"(addr + index));
+               : "r"(addr + (unsigned)index));
 }
 
 DEVICE_INLINE void ldMatrixT(
     Array<__half, 8, 8>& out,
     nvfuser_index_t index,
-    Pointer base_ptr) {
+    DataPointer base_ptr) {
   uint4& val = reinterpret_cast<uint4&>(out);
-  unsigned addr = util::toSmem(ptr);
+  unsigned addr = util::toSmem(base_ptr);
   asm volatile(
       "ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
       : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
-      : "r"(addr + index));
+      : "r"(addr + (unsigned)index));
 }
 
 } // namespace Turing
@@ -240,9 +240,9 @@ DEVICE_INLINE void cpAsync(
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsync(
     nvfuser_index_t smem_index,
-    Pointer smem_base_ptr,
+    DataPointer smem_base_ptr,
     nvfuser_index_t gmem_index,
-    Pointer& gmem_ptr) {
+    DataPointer& gmem_ptr) {
   unsigned smem_addr = util::toSmem(smem_base_ptr);
   constexpr int byte_size = sizeof(dtype) * len;
 
@@ -253,8 +253,8 @@ DEVICE_INLINE void cpAsync(
   gmem_ptr += gmem_index;
   asm volatile(
       "cp.async.ca.shared.global [%0], [%1], %2;\n" ::"r"(
-          smem_addr + smem_index),
-      "+l"(gmem_ptr),
+          smem_addr + (unsigned)smem_index),
+      "l"(gmem_ptr),
       "n"(byte_size));
   gmem_ptr -= gmem_index;
 }
@@ -264,9 +264,9 @@ DEVICE_INLINE void cpAsync(
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsync(
     nvfuser_index_t smem_index,
-    Pointer smem_base_ptr,
+    DataPointer smem_base_ptr,
     nvfuser_index_t gmem_index,
-    Pointer& gmem_ptr,
+    DataPointer& gmem_ptr,
     bool predicate) {
   unsigned smem_addr = util::toSmem(smem_base_ptr);
   constexpr int byte_size = sizeof(dtype) * len;
@@ -281,8 +281,8 @@ DEVICE_INLINE void cpAsync(
       "  .reg .pred p;\n"
       "  setp.ne.b32 p, %3, 0;\n"
       "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
-      "}\n" ::"r"(smem_addr + smem_index),
-      "+l"(gmem_ptr),
+      "}\n" ::"r"(smem_addr + (unsigned)smem_index),
+      "l"(gmem_ptr),
       "n"(byte_size),
       "r"((int)predicate));
   gmem_ptr -= gmem_index;

@@ -1625,16 +1625,6 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
     }
   }
 
-  if (shouldUseLiftedAddress(producer_tv, consumer_tv, loops)) {
-    auto maybe_address_record =
-        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
-            producer_tv, consumer_tv);
-
-    auto address_index = generateAddressTensorIndex(
-        loops, maybe_address_record.value()->addressTensor());
-    strided_inds.push_back(address_index);
-  }
-
   return strided_inds;
 }
 
@@ -1943,16 +1933,6 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
     }
   }
 
-  auto maybe_address_record =
-      GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
-          producer_tv, consumer_tv);
-
-  if (should_use_lifted_address) {
-    auto address_index = generateAddressTensorIndex(
-        loops, maybe_address_record.value()->addressTensor());
-    strided_inds.push_back(address_index);
-  }
-
   return strided_inds;
 }
 
@@ -2126,16 +2106,6 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
   TORCH_INTERNAL_ASSERT(
       strided_inds.size() == consumer_tv->getMaybeRFactorDomain().size());
 
-  if (shouldUseLiftedAddress(consumer_tv, consumer_tv, loops)) {
-    auto maybe_address_record =
-        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
-            consumer_tv);
-
-    auto address_index = generateAddressTensorIndex(
-        loops, maybe_address_record.value()->addressTensor());
-    strided_inds.push_back(address_index);
-  }
-
   return strided_inds;
 }
 
@@ -2305,17 +2275,6 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
     }
   }
 
-  // Add pre computed index path:
-
-  if (shouldUseLiftedAddress(consumer_tv, consumer_tv, loops)) {
-    auto maybe_address_record =
-        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
-            consumer_tv);
-    auto address_index = generateAddressTensorIndex(
-        loops, maybe_address_record.value()->addressTensor());
-    strided_inds.push_back(address_index);
-  }
-
   return strided_inds;
 }
 
@@ -2361,6 +2320,18 @@ kir::TensorIndex* Index::getProducerIndex(
     const TensorView* consumer,
     const std::vector<kir::ForLoop*>& loops) {
   auto strided_indices = getProducerStridedIndices(producer, consumer, loops);
+
+  if (shouldUseLiftedAddress(producer, consumer, loops)) {
+    auto maybe_address_record =
+        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+            producer, consumer);
+
+    auto address_index = generateAddressTensorIndex(
+        loops, maybe_address_record.value()->addressTensor());
+    return SimplifyingIrBuilder::create<kir::TensorIndex>(
+        producer, strided_indices, address_index);
+  }
+
   return SimplifyingIrBuilder::create<kir::TensorIndex>(
       producer, strided_indices);
 }
@@ -2390,6 +2361,18 @@ kir::TensorIndex* Index::getConsumerIndex(
     const TensorView* consumer,
     const std::vector<kir::ForLoop*>& loops) {
   auto strided_indices = getConsumerStridedIndices(consumer, loops);
+
+  if (shouldUseLiftedAddress(consumer, consumer, loops)) {
+    auto maybe_address_record =
+        GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
+            consumer);
+
+    auto address_index = generateAddressTensorIndex(
+        loops, maybe_address_record.value()->addressTensor());
+    return SimplifyingIrBuilder::create<kir::TensorIndex>(
+        consumer, strided_indices, address_index);
+  }
+
   return SimplifyingIrBuilder::create<kir::TensorIndex>(
       consumer, strided_indices);
 }

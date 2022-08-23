@@ -677,7 +677,7 @@ c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedAddress(
 TensorView* AddressComputeInfo::makeAddressTv(
     std::vector<IterDomain*> address_domains,
     bool is_global_address) {
-  DataType dtype = is_global_address ? DataType::Index : DataType::Int32;
+  DataType dtype = DataType::Pointer;
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
           address_domains, std::vector<bool>(address_domains.size(), true)),
