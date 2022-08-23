@@ -504,6 +504,28 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return index.str();
   }
 
+  std::string genTensorAddressIndex(
+      const kir::TensorIndex* ti,
+      DataType dtype) {
+    bool first = true;
+    std::stringstream index;
+    for (auto* ind : ti->indices()) {
+      if (!ind->isZeroInt()) {
+        if (!first) {
+          index << " + ";
+        }
+        index << "(" << genInline(ind) << ")*" << dataTypeSize(dtype);
+        first = false;
+      }
+    }
+
+    if (first) {
+      index << "0";
+    }
+
+    return index.str();
+  }
+
   void handle(const kir::TensorIndex* ti) final {
     bool is_volatile = ti->view()->getMemoryType() == MemoryType::Global &&
         kernel_->summary().sync_map.needsRawSync(ti->view()).hasBID();
@@ -545,20 +567,33 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return ss.str();
   }
 
+  std::string genMaybeHoistedPointer(Val* val) {
+    auto ti = dynamic_cast<kir::TensorIndex*>(val);
+    TORCH_INTERNAL_ASSERT(ti != nullptr, "only support tensor index input");
+    std::stringstream ss;
+
+    if (ti->hasBaseAddress()) {
+      ss << genTensorAddressIndex(ti, ti->view()->dtype()) << ","
+         << gen(ti->baseAddress());
+    } else {
+      ss << "&" << gen(ti) << "\n";
+    }
+  }
+
   // Utility function to emit a cp.async intrinsic
   void genCpAsync(const LoadStoreOp* ldst, int vec_size) {
     auto dtype = ldst->in()->getDataType().value();
 
     if (ldst->predicate() == nullptr) {
       // Out of line predicate variant
-      indent() << "Ampere::cpAsync("
-               << genVectorPointer(ldst->out(), dtype, vec_size) << ","
-               << genVectorPointer(ldst->in(), dtype, vec_size) << ");\n";
+      indent() << "Ampere::cpAsync<" << dtype << "," << vec_size << ">("
+               << genMaybeHoistedPointer(ldst->out()) << ","
+               << genMaybeHoistedPointer(ldst->in()) << ");\n";
     } else {
       // Inline predicate variant
-      indent() << "Ampere::cpAsync("
-               << genVectorPointer(ldst->out(), dtype, vec_size) << ","
-               << genVectorPointer(ldst->in(), dtype, vec_size) << ","
+      indent() << "Ampere::cpAsync<" << dtype << "," << vec_size << ">("
+               << genMaybeHoistedPointer(ldst->out()) << ","
+               << genMaybeHoistedPointer(ldst->in()) << ","
                << genInline(ldst->predicate()) << ");\n";
     }
   }
@@ -579,8 +614,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     }
     code_ << " (";
     code_ << "*" << genVectorPointer(ldst->out(), dtype, vector_word_size)
-          << ","
-          << "&" << gen(ldst->in()) << ");\n";
+          << "," << genMaybeHoistedPointer(ldst->in()) << ");\n";
     genBankConflictCheck(ldst->in(), 16);
   }
 

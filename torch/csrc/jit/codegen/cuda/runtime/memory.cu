@@ -105,6 +105,66 @@ DEVICE_INLINE void ldMatrixT(Array<__half, 8, 8>& out, void const* ptr) {
       : "r"(addr));
 }
 
+// Load Matrix (per warp instruction) is to take data from SMEM to Local Memory.
+//   Automatically handles vectorized loads/stores in the MMA operation.
+//   Loads 8x8 matrix into a warp. Thread 0-7 provide the ptr that is the start
+//   of each row. All other threads can simply point to something valid
+//   (including 0).
+// The x2 modifier on the instruction will actually load 2x8 rows to make a
+// 16x8,
+//   then thread 0-15 will specify the start of each row.
+// Finally is an x4 modifier producing a 32x8 using addrs from 0-31 in each
+// warp.
+DEVICE_INLINE void ldMatrix(
+    Array<__half, 4, 4>& out,
+    nvfuser_index_t index,
+    Pointer base_ptr) {
+  uint2& val = reinterpret_cast<uint2&>(out);
+  unsigned addr = util::toSmem(base_ptr);
+  util::adjustPartialLdMatrixAddrInTuring(addr);
+  asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%0,%1}, [%2];"
+               : "=r"(val.x), "=r"(val.y)
+               : "r"(addr + index));
+}
+
+// Same as previous, 8x8 matrix is vectorized loaded, then scattered (to perform
+// transpose) so threads will hold 2 values down a column (instead of the
+// previous instruction that's across a row).
+DEVICE_INLINE void ldMatrixT(
+    Array<__half, 4, 4>& out,
+    nvfuser_index_t index,
+    Pointer base_ptr) {
+  uint2& val = reinterpret_cast<uint2&>(out);
+  unsigned addr = util::toSmem(base_ptr);
+  util::adjustPartialLdMatrixAddrInTuring(addr);
+  asm volatile("ldmatrix.sync.aligned.x2.trans.m8n8.shared.b16 {%0,%1}, [%2];"
+               : "=r"(val.x), "=r"(val.y)
+               : "r"(addr + index));
+}
+
+DEVICE_INLINE void ldMatrix(
+    Array<__half, 8, 8>& out,
+    nvfuser_index_t index,
+    Pointer base_ptr) {
+  uint4& val = reinterpret_cast<uint4&>(out);
+  unsigned addr = util::toSmem(base_ptr);
+  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
+               : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
+               : "r"(addr + index));
+}
+
+DEVICE_INLINE void ldMatrixT(
+    Array<__half, 8, 8>& out,
+    nvfuser_index_t index,
+    Pointer base_ptr) {
+  uint4& val = reinterpret_cast<uint4&>(out);
+  unsigned addr = util::toSmem(ptr);
+  asm volatile(
+      "ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
+      : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
+      : "r"(addr + index));
+}
+
 } // namespace Turing
 
 #endif // Arch 75
@@ -136,10 +196,8 @@ DEVICE_INLINE unsigned toSmem(void* ptr) {
 // Global to SMEM load that is asynchronous,
 // not guaranteed to be completed until cpAsyncBarrier() is called.
 template <typename dtype, int len>
-DEVICE_INLINE void cpAsync(
-    Array<dtype, len, len>* smem_ptr,
-    void const* gmem_ptr) {
-  unsigned smem_addr = util::toSmem(&(smem_ptr->array[0]));
+DEVICE_INLINE void cpAsync(void* smem_ptr, void const* gmem_ptr) {
+  unsigned smem_addr = util::toSmem(smem_ptr);
   constexpr int byte_size = sizeof(dtype) * len;
 
   static_assert(
@@ -156,10 +214,10 @@ DEVICE_INLINE void cpAsync(
 // not guaranteed to be completed until cpAsyncBarrier() is called.
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsync(
-    Array<dtype, len, len>* smem_ptr,
+    void* smem_ptr,
     void const* gmem_ptr,
     bool predicate) {
-  unsigned smem_addr = util::toSmem(&(smem_ptr->array[0]));
+  unsigned smem_addr = util::toSmem(smem_ptr);
   constexpr int byte_size = sizeof(dtype) * len;
 
   static_assert(
@@ -175,6 +233,59 @@ DEVICE_INLINE void cpAsync(
       "l"(gmem_ptr),
       "n"(byte_size),
       "r"((int)predicate));
+}
+
+// Global to SMEM load that is asynchronous,
+// not guaranteed to be completed until cpAsyncBarrier() is called.
+template <typename dtype, int len>
+DEVICE_INLINE void cpAsync(
+    nvfuser_index_t smem_index,
+    Pointer smem_base_ptr,
+    nvfuser_index_t gmem_index,
+    Pointer& gmem_ptr) {
+  unsigned smem_addr = util::toSmem(smem_base_ptr);
+  constexpr int byte_size = sizeof(dtype) * len;
+
+  static_assert(
+      byte_size == 4 || byte_size == 8 || byte_size == 16,
+      "cp_async : unsupported byte size");
+
+  gmem_ptr += gmem_index;
+  asm volatile(
+      "cp.async.ca.shared.global [%0], [%1], %2;\n" ::"r"(
+          smem_addr + smem_index),
+      "+l"(gmem_ptr),
+      "n"(byte_size));
+  gmem_ptr -= gmem_index;
+}
+
+// Global to SMEM load that is asynchronous,
+// not guaranteed to be completed until cpAsyncBarrier() is called.
+template <typename dtype, int len>
+DEVICE_INLINE void cpAsync(
+    nvfuser_index_t smem_index,
+    Pointer smem_base_ptr,
+    nvfuser_index_t gmem_index,
+    Pointer& gmem_ptr,
+    bool predicate) {
+  unsigned smem_addr = util::toSmem(smem_base_ptr);
+  constexpr int byte_size = sizeof(dtype) * len;
+
+  static_assert(
+      byte_size == 4 || byte_size == 8 || byte_size == 16,
+      "cp_async : unsupported byte size");
+
+  gmem_ptr += gmem_index;
+  asm volatile(
+      "{\n"
+      "  .reg .pred p;\n"
+      "  setp.ne.b32 p, %3, 0;\n"
+      "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
+      "}\n" ::"r"(smem_addr + smem_index),
+      "+l"(gmem_ptr),
+      "n"(byte_size),
+      "r"((int)predicate));
+  gmem_ptr -= gmem_index;
 }
 
 // TODO: Might have a different category of sync if we want to build out this:
