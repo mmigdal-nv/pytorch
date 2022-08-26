@@ -297,7 +297,7 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
 
 class TORCH_CUDA_CU_API AddressCompute final : public Expr {
  public:
-  enum class AddressComputeOpType { BASE_ADDRESS };
+  enum class AddressComputeOpType { BASE_ADDRESS, INCREMENT };
 
   explicit AddressCompute(
       IrBuilderPasskey passkey,
@@ -329,6 +329,9 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
   // Tensor that stores pre-computed address for the
   //  data tensor.
   Val* address_tensor_ = nullptr;
+
+  // Tensor that holds the value to increment (INCREMENT MODE only).
+  Val* inc_value_ = nullptr;
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is
