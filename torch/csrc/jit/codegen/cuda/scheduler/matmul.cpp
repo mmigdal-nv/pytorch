@@ -392,6 +392,8 @@ void scheduleMatmul(
   scheduler_utils::transformPropagateToAllFrom(cc, -1);
 
   // Schedule warp tile
+  //  0   1  2  3   4   5   6  7  8  9  10
+  // [Mo No Ko  Kw Mwo  Nwo Mw Nw (Mi Ni Ki)]
   scheduler_utils::matmul_utils::scheduleWarpTileWithReduction(cc, gemm_tile);
 
   // Propagate warp tile to main loop and epilog/output tvs
@@ -442,8 +444,8 @@ void scheduleMatmul(
   b->computeAt(cc, 3);
 
   // Main Loop:
-  acr->computeAt(cc, -6);
-  bcr->computeAt(cc, -6);
+  acr->computeAt(cc, -8);
+  bcr->computeAt(cc, -8);
 
   // Add mma swizzle:
   //   TODO: this section goes to a separate matmul util,
@@ -491,12 +493,18 @@ void scheduleMatmul(
   acr->axis(-1)->parallelize(ParallelType::Vectorize);
   bcr->axis(-1)->parallelize(ParallelType::Vectorize);
 
-  //  0   1  2  3    4   5  6  7  8  9  10
-  // [Mo No Ko Mwo  Nwo Kw Mw Nw (Mi Ni Ki)]
+  //  0   1  2  3   4   5   6  7  8  9  10
+  // [Mo No Ko  Kw Mwo  Nwo Mw Nw (Mi Ni Ki)]
   cc->axis(0)->parallelize(ParallelType::BIDx);
   cc->axis(1)->parallelize(ParallelType::BIDy);
-  cc->axis(3)->parallelize(ParallelType::TIDz);
-  cc->axis(4)->parallelize(ParallelType::TIDy);
+  cc->axis(4)->parallelize(ParallelType::TIDz);
+  cc->axis(5)->parallelize(ParallelType::TIDy);
+
+  scheduler_utils::parallelizeAllLike(
+      cc,
+      -1,
+      {acr, bcr, ab, bb, a, b},
+      {ParallelType::TIDy, ParallelType::TIDz});
 
   // Propagate mma output swizzle and parallelization down the DAG
   if (params.double_buffer_options.double_buffer_smem_write) {
@@ -549,6 +557,7 @@ void scheduleMatmul(
 
   if (params.peel_main_loop) {
     cc->peelPredicatedLoop(2);
+    cc->interleave(2);
   }
 }
 

@@ -1548,9 +1548,9 @@ void scheduleWarpTileWithReduction(TensorView* tv, MatMulTileOptions tile) {
     //   -8  -7 -6 -5 -4 -3 -2 -1
     // [Mwo Mw Mi Nwo Nw Ni Ko Ki]
 
-    tv->reorder({{-7, -5}, {-6, -3}, {-5, -7}, {-3, -2}, {-2, -6}});
-    //   -8  -7  -6 -5 -4 -3 -2 -1
-    // [Mwo  Nwo Ko Mw Nw Mi Ni Ki]
+    tv->reorder({{-8, -7}, {-7, -5}, {-6, -3}, {-5, -6}, {-3, -2}, {-2, -8}});
+    //   -8  -7  -6  -5 -4 -3 -2 -1
+    // [ Ko Mwo  Nwo Mw Nw Mi Ni Ki]
   } else {
     // Split K over warp case:
     // Main difference is that an additional
