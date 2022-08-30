@@ -42,6 +42,11 @@ void AddressComputeInfo::build(Fusion* fusion) {
         //  be lifted.
         makeAddressRecord(consumer_tv, consumer_tv);
       }
+      if (consumer_tv->shouldLiftPredicateIndex()) {
+        // Build write address record if consumer index should
+        //  be lifted.
+        makePredicateRecord(consumer_tv);
+      }
       for (auto producer_tv :
            ir_utils::filterByType<TensorView>(expr->inputs())) {
         if (producer_tv->shouldLiftReadAddress()) {
@@ -305,7 +310,8 @@ c10::optional<int64_t> getMaybeLeadingStride(
 bool isSeparable(
     const TensorView* tv,
     IterDomain* id,
-    const std::unordered_set<IterDomain*>& contig_merged_ids) {
+    const std::unordered_set<IterDomain*>& contig_merged_ids,
+    bool ignore_swizzle = false) {
   auto id_def = id->definition();
   IterDomain* prev_id = nullptr;
   while (id_def != nullptr) {
@@ -365,7 +371,12 @@ bool isSeparable(
       }
 
       return false;
-    } else {
+    } else if (auto swizzle_2d = dynamic_cast<Swizzle2D*>(id_def)) {
+      if (ignore_swizzle) {
+        // Forward through swizzle if it is to be ignored.
+        id = id == swizzle_2d->outX() ? swizzle_2d->inX() : swizzle_2d->inY();
+        id_def = id->definition();
+      }
       return false;
     }
   }
@@ -500,19 +511,38 @@ void validateSeparability(
 
 void AddressComputeInfo::makeAddressRecord(
     TensorView* data_tv,
-    TensorView* reference_tv) {
+    TensorView* reference_tv,
+    bool is_predicate_record) {
+  if (is_predicate_record) {
+    TORCH_INTERNAL_ASSERT(
+        data_tv == reference_tv, "predicate record only takes reference tv");
+  }
   // Signify if this is caching shared mem access,
   //  assume it'd be global access if other wise.
-  bool is_shared_mem_access = data_tv->getMemoryType() == MemoryType::Shared;
-  bool is_data_read = data_tv != reference_tv;
+  bool is_shared_mem_access =
+      !is_predicate_record && data_tv->getMemoryType() == MemoryType::Shared;
+  bool is_data_read = !is_predicate_record && data_tv != reference_tv;
 
   auto& ca_map = GpuLower::current()->caMap();
 
   // Get allocation ids for the lifted index.
   std::deque<IterDomain*> alloc_ids;
 
-  auto contig_merged_ids =
-      getInitialContiguousRootIdsOnReferenceTv(data_tv, reference_tv);
+  std::unordered_set<IterDomain*> contig_merged_ids;
+
+  if (is_predicate_record) {
+    // TODO: should add assertion against contig merged ids for predicate
+    // lifting
+    // TODO: support predicate lifting, which will require unifying this with
+    // index
+    //   compute logic to make sure the same merged contig ids are analyzed.
+    contig_merged_ids = std::unordered_set<IterDomain*>(
+        reference_tv->getMaybeRFactorDomain().begin(),
+        reference_tv->getMaybeRFactorDomain().end());
+  } else {
+    contig_merged_ids =
+        getInitialContiguousRootIdsOnReferenceTv(data_tv, reference_tv);
+  }
 
   // Mark the boundary iterdomain at the compute at
   //  position, where iterdomains on the left would
@@ -576,8 +606,9 @@ void AddressComputeInfo::makeAddressRecord(
     }
 
     // TODO: re-enable index re-use in shared mem.
-    if (is_shared_mem_access &&
-        isSeparable(reference_tv, ref_id, contig_merged_ids)) {
+    if ((is_shared_mem_access || is_predicate_record) &&
+        isSeparable(
+            reference_tv, ref_id, contig_merged_ids, is_predicate_record)) {
       // This is an optimization step that will be built out.
       // It is related to the GPU memory indexing modes,
       //  and generally we should feel free to lift shared
@@ -629,9 +660,10 @@ void AddressComputeInfo::makeAddressRecord(
   // Assuming we are only having two scenarios,
   //  either accessing a consumer in the consumer's loop,
   //  or accessing the producer in producer's loop.
-  auto access_direction = reference_tv == data_tv
-      ? AddressRecord::ReadWrite::WRITE
-      : AddressRecord::ReadWrite::READ;
+  auto access_direction = is_predicate_record
+      ? AddressRecord::ReadWrite::PREDICATE
+      : reference_tv == data_tv ? AddressRecord::ReadWrite::WRITE
+                                : AddressRecord::ReadWrite::READ;
 
   TORCH_INTERNAL_ASSERT(
       serial_id != nullptr, "no support yet for global scope hoisting");
@@ -651,8 +683,13 @@ void AddressComputeInfo::makeAddressRecord(
   address_tv_to_address_record_[address_tv] = new_record_ptr.get();
 
   // Add address lift record
-  index_lift_record_.insert(
-      std::make_pair(new_record_ptr->key(), std::move(new_record_ptr)));
+  if (is_predicate_record) {
+    predicate_lift_record_.insert(
+        std::make_pair(new_record_ptr->key(), std::move(new_record_ptr)));
+  } else {
+    index_lift_record_.insert(
+        std::make_pair(new_record_ptr->key(), std::move(new_record_ptr)));
+  }
 }
 
 c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedAddress(

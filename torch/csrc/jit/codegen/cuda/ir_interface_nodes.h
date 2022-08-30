@@ -490,12 +490,20 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     lift_write_address_ = true;
   }
 
+  void liftPredicateIndex() {
+    lift_predicate_index_ = true;
+  }
+
   bool shouldLiftReadAddress() const {
     return lift_read_address_;
   }
 
   bool shouldLiftWriteAddress() const {
     return lift_write_address_;
+  }
+
+  bool shouldLiftPredicateIndex() const {
+    return lift_predicate_index_;
   }
 
   void skewDoubleBuffer() {
@@ -604,6 +612,7 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //   and pre-compute address for this tensor.
   bool lift_read_address_ = false;
   bool lift_write_address_ = false;
+  bool lift_predicate_index_ = false;
 
   //! Indicates if the prolog of the double buffer loop of double
   //!  buffer tensor will be lifted out of the main loop.

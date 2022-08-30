@@ -17,7 +17,7 @@ class AddressRecord {
  public:
   //! Utility class to note the read or write
   //!  direction of this address.
-  enum class ReadWrite { READ, WRITE };
+  enum class ReadWrite { READ, WRITE, PREDICATE };
 
   explicit AddressRecord(
       TensorView* data_tv,
@@ -128,7 +128,14 @@ class AddressComputeInfo {
       std::vector<IterDomain*> address_domains,
       bool is_global_address);
 
-  void makeAddressRecord(TensorView* data_tv, TensorView* reference_tv);
+  void makeAddressRecord(
+      TensorView* data_tv,
+      TensorView* reference_tv,
+      bool is_predicate_record = false);
+
+  void makePredicateRecord(TensorView* reference_tv) {
+    makeAddressRecord(reference_tv, reference_tv, true);
+  }
 
  private:
   using AddressRecordPtr = std::unique_ptr<AddressRecord>;
@@ -137,6 +144,11 @@ class AddressComputeInfo {
   //  to be lifted, indexed with reference tv and data_tv.
   std::unordered_map<AddressRecordKey, AddressRecordPtr, AddressRecordKeyHash>
       index_lift_record_;
+
+  // Collected records of all the predicate indexing math that needs
+  //  to be lifted, indexed with reference tv and data_tv.
+  std::unordered_map<AddressRecordKey, AddressRecordPtr, AddressRecordKeyHash>
+      predicate_lift_record_;
 
   //! Short cut from the address tensorview to
   //!  the address record information.

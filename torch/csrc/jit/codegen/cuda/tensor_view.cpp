@@ -218,6 +218,7 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
       has_swizzle_op_(src->has_swizzle_op_),
       lift_read_address_(src->lift_read_address_),
       lift_write_address_(src->lift_write_address_),
+      lift_predicate_index_(src->lift_predicate_index_),
       skew_double_buffer_loop_(src->skew_double_buffer_loop_),
       maybe_interleaved_axis_(src->maybe_interleaved_axis_) {
   for (const auto id : src->axesToSwizzle()) {
