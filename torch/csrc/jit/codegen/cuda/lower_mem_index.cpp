@@ -227,10 +227,12 @@ std::vector<IterDomain*> getFlattenedMergedIds(IterDomain* merged_id) {
 
       result.insert(result.end(), left_leaves.begin(), left_leaves.end());
       result.insert(result.end(), right_leaves.begin(), right_leaves.end());
+      return result;
     }
   }
 
-  return result;
+  // Not a merged id anymore so return as a leaf
+  return {merged_id};
 }
 
 // Get all the nodes merged with a sequence of merge ops.
@@ -322,15 +324,18 @@ bool isSeparable(
       }
 
       // Check for non-divisible split:
-      auto id_extent = id->extent()->getInt();
+      if (!id->extent()->isConstInt()) {
+        return false;
+      }
+      auto id_extent = id->extent()->evaluateInt();
       auto factor_extent = split->factor()->getInt();
 
-      if (!id_extent.has_value() || !factor_extent.has_value()) {
+      if (!factor_extent.has_value()) {
         // Non constant sized tiling cannot be lifted.
         return false;
       }
 
-      if (id_extent.value() % factor_extent.value() != 0) {
+      if (id_extent % factor_extent.value() != 0) {
         // Non-divisible split cannot be separated.
         return false;
       }
@@ -346,7 +351,7 @@ bool isSeparable(
         auto split_leaves = getFlattenedSplitIds(id, {prev_id});
         auto merged_leaves = getFlattenedMergedIds(id);
 
-        if (prev_id != split_leaves.at(0) || id != merged_leaves.at(0)) {
+        if (prev_id != split_leaves.at(0)) {
           // Only support the case when both ids are leading dims.
           return false;
         }
@@ -358,15 +363,23 @@ bool isSeparable(
         auto maybe_prev_id_stride = getMaybeLeadingStride(split_leaves);
 
         if (maybe_id_stride.has_value() && maybe_prev_id_stride.has_value()) {
-          if (maybe_id_stride.value() <= maybe_id_stride.value()) {
-            return true;
+          if (maybe_id_stride.value() <= maybe_prev_id_stride.value()) {
+            id = merged_leaves.at(0);
+            id_def = id->definition();
+            continue;
           }
         }
       }
 
       return false;
-    } else {
-      return false;
+    } else if (auto swizzle_2d = dynamic_cast<Swizzle2D*>(id_def)) {
+      if (ignore_swizzle) {
+        // Forward through swizzle if it is to be ignored.
+        id = id == swizzle_2d->outX() ? swizzle_2d->inX() : swizzle_2d->inY();
+        id_def = id->definition();
+      } else {
+        return false;
+      }
     }
   }
 
@@ -589,10 +602,12 @@ void AddressComputeInfo::makeAddressRecord(
       //  scenarios. Will be built out in follow ups.
       if (
           // Checking reference tv is enough for non-swizzled producer.
-          !is_data_read || !data_tv->hasSwizzleOp() ||
-          // Check supported lifting in the case of swizzled producer.
-          isSeparableSmemSwizzledProducerIndex(
-              data_tv, reference_tv, ref_id, contig_merged_ids)) {
+          // TODO: re-enable data write
+          is_data_read &&
+          (!data_tv->hasSwizzleOp() ||
+           // Check supported lifting in the case of swizzled producer.
+           isSeparableSmemSwizzledProducerIndex(
+               data_tv, reference_tv, ref_id, contig_merged_ids))) {
         ref_id_it++;
         continue;
       }
