@@ -35,6 +35,10 @@ class AddressRecord {
     return access_direction_ == ReadWrite::WRITE;
   }
 
+  bool isPredicate() const {
+    return access_direction_ == ReadWrite::PREDICATE;
+  }
+
   TensorView* dataTensor() const {
     return data_tv_;
   }
@@ -121,6 +125,9 @@ class AddressComputeInfo {
 
   c10::optional<AddressRecord*> getMaybeRecordForAddressTv(
       const TensorView* tv);
+
+  c10::optional<AddressRecord*> getMaybeLiftedPredicateIndex(
+      const TensorView* reference_tv);
 
  private:
   // Utility to help allocate space for saving pre-computed address.

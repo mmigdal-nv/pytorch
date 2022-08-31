@@ -888,7 +888,7 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
   }
 
   pushBack(IrBuilder::create<kir::AddressCompute>(
-      kir::AddressCompute::AddressComputeOpType::BASE_ADDRESS,
+      address_compute->opType(),
       Index::generateAddressTensorIndex(
           for_loops_, address_tv->as<TensorView>()),
       lowered_data_index));

@@ -297,7 +297,7 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
 
 class TORCH_CUDA_CU_API AddressCompute final : public Expr {
  public:
-  enum class AddressComputeOpType { BASE_ADDRESS, INCREMENT };
+  enum class AddressComputeOpType { BASE_ADDRESS, INCREMENT, PREDICATE_INDEX };
 
   explicit AddressCompute(
       IrBuilderPasskey passkey,

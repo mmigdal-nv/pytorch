@@ -629,11 +629,12 @@ void AddressComputeInfo::makeAddressRecord(
       if (
           // Checking reference tv is enough for non-swizzled producer.
           // TODO: re-enable data write
-          is_data_read &&
-          (!data_tv->hasSwizzleOp() ||
-           // Check supported lifting in the case of swizzled producer.
-           isSeparableSmemSwizzledProducerIndex(
-               data_tv, reference_tv, ref_id, contig_merged_ids))) {
+          (is_data_read &&
+           (!data_tv->hasSwizzleOp() ||
+            // Check supported lifting in the case of swizzled producer.
+            isSeparableSmemSwizzledProducerIndex(
+                data_tv, reference_tv, ref_id, contig_merged_ids))) ||
+          is_predicate_record) {
         ref_id_it++;
         continue;
       }
@@ -715,6 +716,18 @@ c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedAddress(
       index_lift_record_.find(AddressRecordKey(reference_tv, data_tv));
 
   if (address_record_it == index_lift_record_.end()) {
+    return c10::nullopt;
+  }
+
+  return address_record_it->second.get();
+}
+
+c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedPredicateIndex(
+    const TensorView* reference_tv) {
+  auto address_record_it =
+      predicate_lift_record_.find(AddressRecordKey(reference_tv, reference_tv));
+
+  if (address_record_it == predicate_lift_record_.end()) {
     return c10::nullopt;
   }
 
@@ -819,8 +832,11 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
           scope_utils::makeLoopNest(insertion_info.loop_nest);
 
       // make the address compute op:
+      auto compute_type = insertion_info.address_compute_record->isPredicate()
+          ? kir::AddressCompute::AddressComputeOpType::PREDICATE_INDEX
+          : kir::AddressCompute::AddressComputeOpType::BASE_ADDRESS;
       auto address_initialize_op = IrBuilder::create<kir::AddressCompute>(
-          kir::AddressCompute::AddressComputeOpType::BASE_ADDRESS,
+          compute_type,
           insertion_info.address_compute_record->addressTensor(),
           insertion_info.address_compute_record->dataTensor());
 
@@ -948,6 +964,16 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
               makeInsertionInfo(maybe_consumer_address_record.value());
           addAddressComputeInsertionInfo(
               maybe_consumer_address_record.value()->getConcreteSerialLoopId(),
+              insert_info);
+        }
+
+        auto maybe_predicate_record =
+            address_compute_info.getMaybeLiftedPredicateIndex(consumer_tv);
+
+        if (maybe_predicate_record.has_value()) {
+          auto insert_info = makeInsertionInfo(maybe_predicate_record.value());
+          addAddressComputeInsertionInfo(
+              maybe_predicate_record.value()->getConcreteSerialLoopId(),
               insert_info);
         }
 
