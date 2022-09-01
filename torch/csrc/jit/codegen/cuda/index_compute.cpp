@@ -2116,7 +2116,9 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
       consumer_indexing.zeroDomains(),
       consumer_indexing.zeroMergedIn());
 
-  index_swizzle.run();
+  if (!shouldUseLiftedAddress(consumer_tv, consumer_tv, loops)) {
+    index_swizzle.run();
+  }
 
   const auto& index_map = index_swizzle.indexMap();
   const auto& extent_map = consumer_indexing.extentMap();

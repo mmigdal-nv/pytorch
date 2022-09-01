@@ -603,11 +603,11 @@ void AddressComputeInfo::makeAddressRecord(
       if (
           // Checking reference tv is enough for non-swizzled producer.
           // TODO: re-enable data write
-          is_data_read &&
-          (!data_tv->hasSwizzleOp() ||
-           // Check supported lifting in the case of swizzled producer.
-           isSeparableSmemSwizzledProducerIndex(
-               data_tv, reference_tv, ref_id, contig_merged_ids))) {
+          (!is_data_read ||
+           (!data_tv->hasSwizzleOp() ||
+            // Check supported lifting in the case of swizzled producer.
+            isSeparableSmemSwizzledProducerIndex(
+                data_tv, reference_tv, ref_id, contig_merged_ids)))) {
         ref_id_it++;
         continue;
       }
