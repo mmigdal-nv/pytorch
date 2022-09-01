@@ -3199,6 +3199,11 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
           gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
               loops, contig_id);
 
+      auto maybe_predicate_index_record =
+          GpuLower::current()
+              ->addressComputeInfo()
+              .getMaybeLiftedPredicateIndex(consumer_tv);
+
       if (maybe_tiled_entry.has_value()) {
         auto tile_entry = maybe_tiled_entry.value();
         if (tile_entry.peel_stage == PredicatePeelStage::Prolog) {
@@ -3230,6 +3235,25 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
         } else {
           stop_pred = gpu_lower->kernel()->trueVal();
         }
+      } else if (
+          maybe_predicate_index_record.has_value() &&
+          maybe_predicate_index_record.value()->getPredicateContigId() ==
+              contig_id &&
+          // TODO: see note: [WAR for predicate peeling and index lifting]
+          std::none_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
+            return fl->loopTransformInfo().predicate_peel_stage ==
+                PredicatePeelStage::Prolog;
+          })) {
+        auto cached_index = generateAddressTensorIndex(
+            loops, maybe_predicate_index_record.value()->addressTensor());
+
+        // Move the inlined component to the right of the inequality
+        //  to minize register usage.
+        auto inlined_extent = SimplifyingIrBuilder::subExpr(
+            contig_id->extent(), offsetted_stop_index);
+
+        stop_pred = SimplifyingIrBuilder::ltExpr(cached_index, inlined_extent)
+                        ->as<Bool>();
       }
       info.stop_predicate_ = stop_pred;
     }
@@ -3241,6 +3265,148 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
   }
 
   return pred_info_vec;
+}
+
+// TODO: unify the duplicated code...
+kir::TensorIndex* Index::getReferenceRootPredicateIndex(
+    TensorView* consumer_tv,
+    const std::vector<kir::ForLoop*>& loops) {
+  const auto gpu_lower = GpuLower::current();
+  // TODO: enable unswitch and shift padding in a follow up.
+  kir::ForLoop* unswitch_or_vec_loop = nullptr;
+  const bool shift_padding = false;
+  const bool is_unswitch = unswitch_or_vec_loop != nullptr;
+
+  auto db_axis = gpu_lower->doubleBufferInfo().getDoubleBufferAxis(consumer_tv);
+
+  // Generate start and stop indexing from idgraph.
+  //
+  // Both start and stop positions may need to be predicated. Indexing
+  // differs when generating predicates for unswitch.
+  // NOTE: If we could find-and-replace KIR nodes, we could just
+  // generate one index map, clone it and replace the loop-to-index
+  // mappings of unswitched loops for the start predicate.
+
+  auto stop_indexing_from_idgraph = getPredicateIndexingFromIdGraph(
+      loops, consumer_tv, unswitch_or_vec_loop, db_axis, false);
+  const auto consumer_stop_indexing = stop_indexing_from_idgraph.index;
+  const auto& consumer_stop_index_map = consumer_stop_indexing.indexMap();
+
+  // If not unswitch, share the same indexing map as the stop index
+  // map
+  const auto start_indexing_from_idgraph = is_unswitch
+      ? getPredicateIndexingFromIdGraph(
+            loops, consumer_tv, unswitch_or_vec_loop, db_axis, true)
+      : stop_indexing_from_idgraph;
+  const auto consumer_start_indexing = start_indexing_from_idgraph.index;
+  const auto& consumer_start_index_map = consumer_start_indexing.indexMap();
+
+  // Get the contiguous ids we need to generate predicates for
+  auto contig_id_infos =
+      getPredicateContigIds(consumer_tv, consumer_stop_index_map);
+
+  auto non_divisible_splits =
+      getNonDivisibleConsumerDomainsToPredicate(consumer_tv);
+  contig_id_infos.insert(
+      contig_id_infos.end(),
+      non_divisible_splits.begin(),
+      non_divisible_splits.end());
+
+  auto pred_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedPredicateIndex(
+          consumer_tv);
+
+  TORCH_INTERNAL_ASSERT(
+      pred_record.has_value(),
+      "predicate lifting info missing for lifted pred computation.");
+
+  // FIXME:
+  //  Only supporting lifting one branch of the predicate
+  //    currently. Allocating space for all the preidicates
+  //    ahead of time would need require deciding contig_id_infos
+  //    without the loop nest, which should be a goal with loop free
+  //    indexing generation.
+  std::vector<RootPredicateInfo> pred_info_vec;
+  kir::TensorIndex* result_index = nullptr;
+
+  for (auto contig_id_entry : contig_id_infos) {
+    auto contig_id = contig_id_entry.id;
+    // No predicates needed for braodcasted indices.
+    if (contig_id->isBroadcast() ||
+        gpu_lower->trivialReductionInfo().isDerived(contig_id)) {
+      continue;
+    }
+
+    auto root_ids = contig_id_entry.covered_ids;
+
+    const auto consumer_stop_indexing_it =
+        consumer_stop_index_map.find(contig_id);
+
+    // First condition below happens with Misaligned predicates, where
+    // inner-most vectorized loops are not included in the loops
+    // parameter. Predicates involving vectorized loops are separately
+    // generated in lower_misaligned_vectorization.
+    //
+    // Second condition is simply to avoid predication on broadcasting axes as
+    // it's not required.
+    if (consumer_stop_indexing_it == consumer_stop_index_map.end() ||
+        consumer_stop_indexing_it->second->isZeroInt()) {
+      continue;
+    }
+
+    RootPredicateInfo info;
+
+    // Compute offsets for start and stop predicate. For non-shift,
+    // non-gather ops, there's only stop predicate as indices never be
+    // negative. However, for shift and gather, the index may need to
+    // be predicated so that it is >= zero.
+    //
+    // Furthermore, in case of gather, both producer and consumer
+    // positions may need to be predicated, so there can be multiple
+    // offset values.
+    //
+    // The final predicates will look like:
+    // (index + start_offset) >= 0 && (index + stop_offset) < extent.
+
+    std::tie(info.start_offset_, info.stop_offset_) = getStartAndStopOffsets(
+        contig_id,
+        consumer_tv,
+        consumer_start_index_map,
+        consumer_stop_index_map,
+        shift_padding,
+        unswitch_or_vec_loop != nullptr,
+        contig_id_entry.is_non_divisible_split);
+
+    auto stop_index = consumer_stop_indexing_it->second;
+    // auto start_index = consumer_start_index_map.at(contig_id);
+
+    // Build predicates for start positions as:
+    //   start_index + start_offset >= 0
+    auto start_offset = simplifyStartOffset(info.start_offset_);
+
+    TORCH_INTERNAL_ASSERT(
+        start_offset == nullptr, "No support for start offset yet");
+
+    auto maybe_tiled_entry =
+        gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
+            loops, contig_id);
+    if (canOmitStopPredicate(stop_index, info.stop_offset_, contig_id) ||
+        maybe_tiled_entry.has_value()) {
+      // No need to lift predicate for peeled contig ids.
+      continue;
+    }
+    // Build predicates for stop positions as:
+    //   stop_index + stop_offset < IterDomain::extent
+    auto offsetted_stop_index =
+        SimplifyingIrBuilder::addExpr(stop_index, info.stop_offset_);
+    pred_record.value()->setPredicateContigId(contig_id);
+
+    result_index = SimplifyingIrBuilder::create<kir::TensorIndex>(
+        consumer_tv, std::vector<Val*>({offsetted_stop_index}));
+  }
+
+  TORCH_INTERNAL_ASSERT(result_index != nullptr);
+  return result_index;
 }
 
 RootPredicateInfo RootPredicateInfo::getFalseInfo() {

@@ -2771,7 +2771,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTNSwizzled_CUDA) {
 TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
-  for (auto layout : {kAllSupportedLayout[2]}) {
+  for (auto layout : kAllSupportedLayout) {
     Fusion fusion;
     FusionGuard fg(&fusion);
     auto tv0 = makeContigTensor(2, DataType::Half);
@@ -2785,8 +2785,8 @@ TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
     fusion.addOutput(tv2);
 
     MatMulTileOptions gemm_tile;
-    gemm_tile.cta_tile = GemmTile(128, 128, 32);
-    gemm_tile.warp_tile = GemmTile(64, 64, 32);
+    gemm_tile.cta_tile = GemmTile(128, 128, 64);
+    gemm_tile.warp_tile = GemmTile(64, 64, 64);
     gemm_tile.instruction_tile = GemmTile(16, 16, 16);
 
     auto mma_builder =
@@ -2797,14 +2797,12 @@ TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
     params.tile_sizes = gemm_tile;
     params.async_gmem_load_operands = true;
     params.double_buffer_options.double_buffer_smem_write = true;
-    params.double_buffer_options.smem_double_buffer_stage = 4;
+    params.double_buffer_options.smem_double_buffer_stage = 3;
     scheduleMatmul(tv2, tv0, tv1, params);
 
     at::manual_seed(0);
     auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
-    fusion.printKernel();
-    // return;
     CompileOptions co;
     co.index_mode = KernelIndexMode::INT32;
 

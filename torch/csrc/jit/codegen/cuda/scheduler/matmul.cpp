@@ -548,6 +548,8 @@ void scheduleMatmul(
   if (params.index_lift_options.lift_smem_write_address) {
     acw_smem->liftWriteAddress();
     bcw_smem->liftWriteAddress();
+    acw_smem->liftPredicateIndex();
+    bcw_smem->liftPredicateIndex();
   }
 
   if (params.index_lift_options.lift_smem_read_address) {

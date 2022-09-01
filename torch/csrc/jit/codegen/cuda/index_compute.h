@@ -381,6 +381,10 @@ class Index {
   static kir::TensorIndex* generateAddressTensorIndex(
       const std::vector<kir::ForLoop*>& for_loops,
       TensorView* address_tv);
+
+  static kir::TensorIndex* getReferenceRootPredicateIndex(
+      TensorView* consumer_tv,
+      const std::vector<kir::ForLoop*>& loops);
 };
 
 // Used for local and shared index mapping. Returns a map from loops

@@ -666,7 +666,8 @@ void AddressComputeInfo::makeAddressRecord(
   // validateSeparability(data_tv, alloc_ids_vec, contig_merged_ids);
 
   // Create address record:
-  auto address_tv = makeAddressTv(alloc_ids_vec, !is_shared_mem_access);
+  auto address_tv =
+      makeAddressTv(alloc_ids_vec, !is_shared_mem_access, is_predicate_record);
 
   // Assuming we are only having two scenarios,
   //  either accessing a consumer in the consumer's loop,
@@ -736,8 +737,9 @@ c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedPredicateIndex(
 
 TensorView* AddressComputeInfo::makeAddressTv(
     std::vector<IterDomain*> address_domains,
-    bool is_global_address) {
-  DataType dtype = DataType::Pointer;
+    bool is_global_address,
+    bool is_predicate_index) {
+  DataType dtype = is_predicate_index ? DataType::Index : DataType::Pointer;
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
           address_domains, std::vector<bool>(address_domains.size(), true)),

@@ -880,10 +880,14 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
 
   Val* lowered_data_index = nullptr;
 
-  if (address_record->isRead()) {
+  if (address_record->isPredicate()) {
+    lowered_data_index = Index::getReferenceRootPredicateIndex(
+        address_record->indexReferenceTensor(), for_loops_);
+  } else if (address_record->isRead()) {
     lowered_data_index = lowerSrcIndex(
         address_record->dataTensor(), address_record->indexReferenceTensor());
   } else {
+    // Write index
     lowered_data_index = lowerDstIndex(address_record->dataTensor());
   }
 

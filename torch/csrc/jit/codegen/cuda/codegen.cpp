@@ -2473,8 +2473,19 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void handle(const kir::AddressCompute* address_compute) final {
-    indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"
-             << gen(address_compute->dataTv()->as<kir::TensorIndex>()) << ";\n";
+    if (address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::PREDICATE_INDEX) {
+      indent() << "//Predicate Compute Index:::\n";
+      indent() << gen(address_compute->addressTv()) << " = "
+               << genTensorIndex(
+                      address_compute->dataTv()->as<kir::TensorIndex>())
+               << ";\n";
+    } else {
+      indent() << "//Base Address:::\n";
+      indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"
+               << gen(address_compute->dataTv()->as<kir::TensorIndex>())
+               << ";\n";
+    }
   }
 
   void handle(const kir::GridSync* sync) final {

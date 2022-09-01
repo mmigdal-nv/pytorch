@@ -66,6 +66,20 @@ class AddressRecord {
   c10::optional<kir::ForLoop*> getMaybeSerialLoop(
       std::vector<kir::ForLoop*> loops);
 
+  // TODO: supporting only one contig id for now,
+  //  need to re-enable supporting an array of contig ids.
+  void setPredicateContigId(IterDomain* contig_id) {
+    TORCH_INTERNAL_ASSERT(access_direction_ == ReadWrite::PREDICATE);
+    TORCH_INTERNAL_ASSERT(
+        predicate_contig_id_ == nullptr, "need multiple id support");
+    predicate_contig_id_ = contig_id;
+  }
+
+  IterDomain* getPredicateContigId() const {
+    TORCH_INTERNAL_ASSERT(access_direction_ == ReadWrite::PREDICATE);
+    return predicate_contig_id_;
+  }
+
  private:
   //! The address tensor that will hold the
   //!  data address to the access_tv.
@@ -92,6 +106,9 @@ class AddressRecord {
   //! Loop id that this address record will be lifted
   //!  out of.
   IterDomain* loop_concrete_serial_id_;
+
+  //! (predicate record only)
+  IterDomain* predicate_contig_id_ = nullptr;
 };
 
 // Utility class to index address record
@@ -133,7 +150,8 @@ class AddressComputeInfo {
   // Utility to help allocate space for saving pre-computed address.
   TensorView* makeAddressTv(
       std::vector<IterDomain*> address_domains,
-      bool is_global_address);
+      bool is_global_address,
+      bool is_predicate_index);
 
   void makeAddressRecord(
       TensorView* data_tv,

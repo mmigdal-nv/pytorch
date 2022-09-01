@@ -530,6 +530,34 @@ IndexingParameters getPredicateInitialIndexParameters(
     }
   }
 
+  // Lift indices:
+  auto maybe_prediate_record =
+      GpuLower::current()->addressComputeInfo().getMaybeLiftedPredicateIndex(
+          consumer_tv);
+
+  if (maybe_prediate_record.has_value() &&
+      std::none_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
+        // TODO: this is a major WAR as all components of predicate indexing
+        // uses
+        //  a shared index compute, so would need to blanket disable predicate
+        //  hoisting on the peeled prolog stage.
+        return fl->loopTransformInfo().predicate_peel_stage ==
+            PredicatePeelStage::Prolog;
+      })) {
+    auto zero_ids =
+        getZeroIdSetsForAddressCompute(maybe_prediate_record.value(), loops);
+
+    for (const auto loop : loops) {
+      auto& idx = loop_to_ind_map.at(loop);
+      // If the loop is trivial, the loop index can only be the loop
+      // start value.
+      if (zero_ids.count(loop->iter_domain())) {
+        // Zero the id's that's lifted
+        idx = loop->container()->zeroVal();
+      }
+    }
+  }
+
   // Convert loop-to-ind map to concrete-to-ind map
   for (int loop_idx : c10::irange(loops.size())) {
     auto loop = loops.at(loop_idx);
