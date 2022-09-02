@@ -153,7 +153,8 @@ class TORCH_CUDA_CU_API TensorIndex final : public Val {
       IrBuilderPasskey,
       const TensorView* view,
       std::vector<Val*> indices,
-      Val* base_address = nullptr);
+      Val* base_address = nullptr,
+      Val* uniform_address = nullptr);
 
   std::vector<Val*>::size_type nDims() const {
     return indices_.size();
@@ -178,10 +179,15 @@ class TORCH_CUDA_CU_API TensorIndex final : public Val {
     return base_address_;
   }
 
+  auto uniformAddress() const {
+    return uniform_address_;
+  }
+
  private:
   const TensorView* view_ = nullptr;
   std::vector<Val*> indices_;
   Val* base_address_ = nullptr;
+  Val* uniform_address_ = nullptr;
 };
 
 //! Allocate is a lower level Node that describes a buffer of memory that
@@ -299,13 +305,29 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
 //!  that are not inlined.
 class TORCH_CUDA_CU_API AddressCompute final : public Expr {
  public:
-  enum class AddressComputeOpType { BASE_ADDRESS, INCREMENT };
+  enum class AddressComputeOpType {
+    BASE_ADDRESS,
+    INCREMENT,
+    DOUBLE_BUFFER_SWITCH,
+    DOUBLE_BUFFER_UPDATE
+  };
 
   explicit AddressCompute(
       IrBuilderPasskey passkey,
       AddressComputeOpType op_type,
       Val* address_tensor,
       Val* data_tensor);
+
+  // Interface for double buffer offset
+  //   calculation:
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      TensorView* data_tv,
+      Val* double_buffer_switch_index,
+      Val* buffer_size_in_byte,
+      int loop_offset,
+      int stage_number,
+      Val* loop_index = nullptr);
 
   auto dataTv() const {
     return data_tensor_;
@@ -317,6 +339,26 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
 
   auto opType() const {
     return op_type_;
+  }
+
+  auto doubleBufferSwitchIndex() const {
+    return double_buffer_switch_index_;
+  }
+
+  auto doubleBufferByteSize() const {
+    return buffer_size_in_byte_;
+  }
+
+  auto loopOffset() const {
+    return loop_offset_;
+  }
+
+  auto stageNumber() const {
+    return stage_number_;
+  }
+
+  auto loopIndex() const {
+    return loop_index_;
   }
 
  private:
@@ -334,6 +376,13 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
 
   // Tensor that holds the value to increment (INCREMENT MODE only).
   Val* inc_value_ = nullptr;
+
+  // Double buffer switch and update parameters:
+  Val* double_buffer_switch_index_ = nullptr;
+  Val* buffer_size_in_byte_ = nullptr;
+  int loop_offset_ = 0;
+  int stage_number_ = 0;
+  Val* loop_index_ = nullptr;
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is

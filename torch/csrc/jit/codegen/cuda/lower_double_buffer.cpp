@@ -230,6 +230,37 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       cloned_top_level_loop_->body().push_back(
           IrBuilder::create<kir::CpAsyncCommit>());
     }
+
+    // insert double buffer switching for the read offset:
+    if (loop_type_ == DoubleBufferLoopStage::Main) {
+      auto& db_info = GpuLower::current()->doubleBufferInfo();
+
+      for (auto load : double_buffer_load_exprs_) {
+        if (auto tv_out = ir_utils::getTvOutput(load)) {
+          auto maybe_read_index = db_info.getReadSwitchIndex(tv_out);
+          if (maybe_read_index.has_value()) {
+            // insert db switch:
+            auto switch_size = db_info.getOriginalAllocSize(tv_out);
+            auto switch_size_in_byte = SimplifyingIrBuilder::mulExpr(
+                switch_size,
+                SimplifyingIrBuilder::create<Int>(
+                    dataTypeSize(tv_out->dtype())));
+
+            auto address_compute =
+                SimplifyingIrBuilder::create<kir::AddressCompute>(
+                    tv_out,
+                    maybe_read_index.value(),
+                    switch_size_in_byte,
+                    0, // assume this path only supports read
+                       // so offset is 0
+                    db_info.getStageDepthFor(
+                        double_buffer_loop_->iter_domain()));
+
+            cloned_top_level_loop_->body().push_back(address_compute);
+          }
+        }
+      }
+    }
   }
 
   void handle(kir::ForLoop* fl) final {
@@ -494,6 +525,30 @@ class DoubleBufferInserter : private kir::ExprMutator {
   void insert(
       kir::ForLoop* double_buffer_loop,
       const std::vector<Expr*>& loads) {
+    // Insert double buffer read switch index
+    for (auto load : loads) {
+      if (auto load_output = dynamic_cast<TensorView*>(load->output(0))) {
+        if (load_output->getMemoryType() == MemoryType::Shared &&
+            (load_output->isDoubleBuffered() ||
+             load_output->isCircularBuffered()) &&
+            load_output->shouldLiftReadAddress()) {
+          auto switch_val = IrBuilder::create<Int>();
+          switch_val->to32b();
+
+          // TODO: maybe want to do this in id graph instead
+          GpuLower::current()->doubleBufferInfo().setReadSwitchIndex(
+              load_output, switch_val);
+
+          auto index_alloc = IrBuilder::create<kir::Allocate>(
+              switch_val,
+              MemoryType::Local,
+              GpuLower::current()->kernel()->oneVal(),
+              true);
+          registerInsertBefore(double_buffer_loop, index_alloc);
+        }
+      }
+    }
+
     auto prologue_loop = DoubleBufferLoopCloner::clone(
         double_buffer_loop, loads, DoubleBufferLoopStage::Prolog);
     registerInsertBefore(double_buffer_loop, prologue_loop);

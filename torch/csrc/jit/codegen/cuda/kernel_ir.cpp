@@ -67,11 +67,13 @@ TensorIndex::TensorIndex(
     IrBuilderPasskey passkey,
     const TensorView* view,
     std::vector<Val*> indices,
-    Val* base_address)
+    Val* base_address,
+    Val* uniform_address)
     : Val(passkey, ValType::TensorIndex, view->getDataType().value()),
       view_(view),
       indices_(indices),
-      base_address_(base_address) {
+      base_address_(base_address),
+      uniform_address_(uniform_address) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
@@ -131,6 +133,27 @@ AddressCompute::AddressCompute(
       op_type_(op_type),
       data_tensor_(data_tensor),
       address_tensor_(address_tensor) {
+  TORCH_INTERNAL_ASSERT(
+      passkey.ir_container_->isA<kir::Kernel>(),
+      "IR type only valid for Kernel container.");
+}
+
+AddressCompute::AddressCompute(
+    IrBuilderPasskey passkey,
+    TensorView* data_tv,
+    Val* double_buffer_switch_index,
+    Val* buffer_size_in_byte,
+    int loop_offset,
+    int stage_number,
+    Val* loop_index)
+    : Expr(passkey, ExprType::AddressCompute),
+      op_type_(AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH),
+      data_tensor_(data_tv),
+      double_buffer_switch_index_(double_buffer_switch_index),
+      buffer_size_in_byte_(buffer_size_in_byte),
+      loop_offset_(loop_offset),
+      stage_number_(stage_number),
+      loop_index_(loop_index) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");

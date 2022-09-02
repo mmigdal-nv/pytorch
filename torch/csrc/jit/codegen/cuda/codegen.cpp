@@ -519,6 +519,13 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       }
     }
 
+    if (ti->uniformAddress() != nullptr) {
+      if (!first) {
+        index << " + ";
+      }
+      index << genInline(ti->uniformAddress());
+    }
+
     if (first) {
       index << "0";
     }
@@ -2395,7 +2402,11 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     alloc_map_.emplace(alloc->buffer(), alloc);
 
     if (!alloc->buffer()->isA<TensorView>()) {
-      indent() << buffer_dtype << " " << gen(alloc->buffer()) << ";\n";
+      indent() << buffer_dtype << " " << gen(alloc->buffer());
+      if (alloc->zeroInit()) {
+        code_ << " = 0";
+      }
+      code_ << ";\n";
       return;
     }
 
@@ -2472,8 +2483,19 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void handle(const kir::AddressCompute* address_compute) final {
-    indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"
-             << gen(address_compute->dataTv()->as<kir::TensorIndex>()) << ";\n";
+    if (address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH) {
+      indent() << "doubleBufferSwitch<" << address_compute->stageNumber() << ","
+               << address_compute->loopOffset() << ">("
+               << gen(address_compute->doubleBufferSwitchIndex()) << ","
+               << gen(address_compute->loopIndex()) << ","
+               << gen(address_compute->doubleBufferByteSize()) << ");\n";
+    } else {
+      indent() << "//Base Address:::\n";
+      indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"
+               << gen(address_compute->dataTv()->as<kir::TensorIndex>())
+               << ";\n";
+    }
   }
 
   void handle(const kir::GridSync* sync) final {

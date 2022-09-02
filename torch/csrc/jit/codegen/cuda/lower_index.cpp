@@ -870,6 +870,27 @@ void IndexLowering::handle(const kir::CpAsyncCommit* commit) {
 }
 
 void IndexLowering::handle(const kir::AddressCompute* address_compute) {
+  // Logic for double buffer switching:
+  if (address_compute->opType() ==
+      kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH) {
+    // no indexing is needed, just forward through.
+    auto db_loop = GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
+        address_compute->dataTv()->as<TensorView>(), for_loops_, false);
+    TORCH_INTERNAL_ASSERT(db_loop != nullptr);
+    auto db_index = db_loop->isTrivial() ? db_loop->start() : db_loop->index();
+
+    pushBack(IrBuilder::create<kir::AddressCompute>(
+        address_compute->dataTv()->as<TensorView>(),
+        address_compute->doubleBufferSwitchIndex(),
+        address_compute->doubleBufferByteSize(),
+        address_compute->loopOffset(),
+        address_compute->stageNumber(),
+        db_index));
+    return;
+  }
+
+  // Logic for double buffer updating:
+
   // Logic for base address computation
   auto address_tv = address_compute->addressTv();
 

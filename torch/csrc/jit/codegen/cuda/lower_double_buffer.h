@@ -226,6 +226,20 @@ class TORCH_CUDA_CU_API DoubleBufferInfo {
   //!  skew double buffer transform within the given outer loop.
   bool isLowerPrologWithin(IterDomain* db_loop, IterDomain* outer_loop);
 
+  void setReadSwitchIndex(TensorView* db_tv, Val* switch_index) {
+    TORCH_INTERNAL_ASSERT(
+        read_switch_index_map_.insert(std::make_pair(db_tv, switch_index))
+            .second);
+  }
+
+  c10::optional<Val*> getReadSwitchIndex(TensorView* db_tv) {
+    auto val_it = read_switch_index_map_.find(db_tv);
+    if (val_it == read_switch_index_map_.end()) {
+      return c10::nullopt;
+    }
+    return val_it->second;
+  }
+
  private:
   TvInfo& getTvInfo(const TensorView* tv);
   void buildSkewInfo(const TensorView* tv, const TvInfo& tv_info);
@@ -258,6 +272,9 @@ class TORCH_CUDA_CU_API DoubleBufferInfo {
   //!  mapping from inner loop to outer loop.
   std::unordered_map<IterDomain*, IterDomain*>
       concrete_skewed_double_buffer_loop_map_;
+
+  //! Keep track of read switch index
+  std::unordered_map<TensorView*, Val*> read_switch_index_map_;
 };
 
 } // namespace cuda

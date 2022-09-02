@@ -1918,37 +1918,43 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
       // No need to compute double buffer index in the address compute loop
       //  as they have been handled with addtional offsets.
       if (!db_loop->isBaseIndexLoop()) {
-        auto loop_index =
-            db_loop->isTrivial() ? db_loop->start() : db_loop->index();
+        auto maybe_read_offset =
+            GpuLower::current()->doubleBufferInfo().getReadSwitchIndex(
+                producer_tv);
 
-        // Need to add the producer outer main loop index by 1
-        //  in the case of lower prolog, see the example in
-        // [Skew Double Buffer Loop Transformation]
-        auto consumer_db_loop =
-            gpu_lower->doubleBufferInfo().getDoubleBufferLoop(
-                consumer_tv, loops);
+        if (!maybe_read_offset.has_value()) {
+          auto loop_index =
+              db_loop->isTrivial() ? db_loop->start() : db_loop->index();
 
-        if (consumer_db_loop != nullptr) {
-          if (gpu_lower->doubleBufferInfo().isLowerPrologWithin(
-                  consumer_db_loop->iter_domain(), db_loop->iter_domain())) {
-            if (consumer_db_loop->doubleBufferLoopStage() ==
-                DoubleBufferLoopStage::LowerProlog) {
-              loop_index = SimplifyingIrBuilder::addExpr(
-                  loop_index, gpu_lower->kernel()->oneVal());
+          // Need to add the producer outer main loop index by 1
+          //  in the case of lower prolog, see the example in
+          // [Skew Double Buffer Loop Transformation]
+          auto consumer_db_loop =
+              gpu_lower->doubleBufferInfo().getDoubleBufferLoop(
+                  consumer_tv, loops);
+
+          if (consumer_db_loop != nullptr) {
+            if (gpu_lower->doubleBufferInfo().isLowerPrologWithin(
+                    consumer_db_loop->iter_domain(), db_loop->iter_domain())) {
+              if (consumer_db_loop->doubleBufferLoopStage() ==
+                  DoubleBufferLoopStage::LowerProlog) {
+                loop_index = SimplifyingIrBuilder::addExpr(
+                    loop_index, gpu_lower->kernel()->oneVal());
+              }
             }
           }
+
+          auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
+              db_loop->iter_domain());
+          auto db_switch_index = SimplifyingIrBuilder::modExpr(
+              loop_index, SimplifyingIrBuilder::create<Int>(stage_depth));
+
+          auto original_alloc_size =
+              gpu_lower->doubleBufferInfo().getOriginalAllocSize(producer_tv);
+          auto db_strided_index = SimplifyingIrBuilder::mulExpr(
+              db_switch_index, original_alloc_size);
+          strided_inds.push_back(db_strided_index);
         }
-
-        auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
-            db_loop->iter_domain());
-        auto db_switch_index = SimplifyingIrBuilder::modExpr(
-            loop_index, SimplifyingIrBuilder::create<Int>(stage_depth));
-
-        auto original_alloc_size =
-            gpu_lower->doubleBufferInfo().getOriginalAllocSize(producer_tv);
-        auto db_strided_index =
-            SimplifyingIrBuilder::mulExpr(db_switch_index, original_alloc_size);
-        strided_inds.push_back(db_strided_index);
       }
     }
   }
@@ -2350,10 +2356,16 @@ kir::TensorIndex* Index::getProducerIndex(
         GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
             producer, consumer);
 
+    auto maybe_read_offset =
+        GpuLower::current()->doubleBufferInfo().getReadSwitchIndex(producer);
+    Val* uniform_address = nullptr;
+    if (maybe_read_offset.has_value()) {
+      uniform_address = maybe_read_offset.value();
+    }
     auto address_index = generateAddressTensorIndex(
         loops, maybe_address_record.value()->addressTensor());
     return SimplifyingIrBuilder::create<kir::TensorIndex>(
-        producer, strided_indices, address_index);
+        producer, strided_indices, address_index, uniform_address);
   }
 
   return SimplifyingIrBuilder::create<kir::TensorIndex>(

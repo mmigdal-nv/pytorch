@@ -306,4 +306,49 @@ DEVICE_INLINE void cpAsyncPartialBarrier() {
 
 #endif // Arch 80
 
+// Double buffer calculation utilities:
+
+// In place update of double buffer index that has been accumulated to the data
+// buffer.
+template <int number_of_stage, int loop_offset>
+DEVICE_INLINE void doubleBufferUpdate(
+    DataPointer& data_buffer,
+    const nvfuser_index_t& loop_index,
+    nvfuser_index_t buffer_size) {
+  // static_assert(
+  //     loop_offset < number_of_stage && loop_offset > -number_of_stage);
+
+  // convert offset to [0, number_of_stage)
+  constexpr nvfuser_index_t offset =
+      loop_offset < 0 ? (loop_offset + number_of_stage) : loop_offset;
+
+  // Rewind back at number_of_stage-1, otherwise increment by 1.
+  nvfuser_index_t increment =
+      (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
+      ? buffer_size * (-number_of_stage + 1)
+      : buffer_size;
+  data_buffer += increment;
+}
+
+// Update double buffer offset value for smem double buffered tensors.
+template <int number_of_stage, int loop_offset>
+DEVICE_INLINE void doubleBufferSwitch(
+    nvfuser_index_t& buffer_offset,
+    const nvfuser_index_t& loop_index,
+    nvfuser_index_t buffer_size) {
+  // static_assert(
+  //     loop_offset < number_of_stage && loop_offset > -number_of_stage);
+
+  // convert offset to [0, number_of_stage)
+  constexpr nvfuser_index_t offset =
+      loop_offset < 0 ? (loop_offset + number_of_stage) : loop_offset;
+
+  // Rewind back at number_of_stage-1, otherwise increment by 1.
+  nvfuser_index_t increment =
+      (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
+      ? buffer_size * (-number_of_stage + 1)
+      : buffer_size;
+  buffer_offset += increment;
+}
+
 #undef DEVICE_INLINE
