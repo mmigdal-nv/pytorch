@@ -226,11 +226,6 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
     handle(double_buffer_loop_);
 
-    if (stage_depth > 2) {
-      cloned_top_level_loop_->body().push_back(
-          IrBuilder::create<kir::CpAsyncCommit>());
-    }
-
     // insert double buffer switching for the read offset:
     if (loop_type_ == DoubleBufferLoopStage::Main) {
       auto& db_info = GpuLower::current()->doubleBufferInfo();
@@ -260,6 +255,11 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
           }
         }
       }
+    }
+
+    if (stage_depth > 2) {
+      cloned_top_level_loop_->body().push_back(
+          IrBuilder::create<kir::CpAsyncCommit>());
     }
   }
 
@@ -331,6 +331,16 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       // Only need the init expressions in circular init prolog stage
       if (ir_utils::isTensorScalarFillOp(expr)) {
         cloned_scopes_.back()->push_back(expr);
+      }
+    }
+
+    // Need the double buffer update expr in prologs too.
+    if (loop_type_ == DoubleBufferLoopStage::Prolog) {
+      if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+        if (address_compute->opType() ==
+            kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE) {
+          cloned_scopes_.back()->push_back(expr);
+        }
       }
     }
   }

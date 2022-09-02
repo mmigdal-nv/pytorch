@@ -2490,6 +2490,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
                << gen(address_compute->doubleBufferSwitchIndex()) << ","
                << gen(address_compute->loopIndex()) << ","
                << gen(address_compute->doubleBufferByteSize()) << ");\n";
+    } else if (
+        address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE) {
+      indent() << "doubleBufferUpdate<" << address_compute->stageNumber() << ","
+               << address_compute->loopOffset() << ">("
+               << gen(address_compute->addressTv()) << ","
+               << gen(address_compute->loopIndex()) << ","
+               << gen(address_compute->doubleBufferByteSize()) << ");\n";
     } else {
       indent() << "//Base Address:::\n";
       indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"

@@ -887,6 +887,29 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
         address_compute->stageNumber(),
         db_index));
     return;
+  } else if (
+      address_compute->opType() ==
+      kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE) {
+    auto db_loop = GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
+        address_compute->dataTv()->as<TensorView>(), for_loops_, false);
+    TORCH_INTERNAL_ASSERT(db_loop != nullptr);
+    auto db_index = db_loop->isTrivial() ? db_loop->start() : db_loop->index();
+    auto loop_offset =
+        db_loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Main
+        ? address_compute->stageNumber() - 1
+        : 0;
+
+    auto indexed_address_tv = Index::generateAddressTensorIndex(
+        for_loops_, address_compute->addressTv()->as<TensorView>());
+
+    pushBack(IrBuilder::create<kir::AddressCompute>(
+        indexed_address_tv,
+        address_compute->doubleBufferByteSize(),
+        address_compute->stageNumber(),
+        loop_offset,
+        address_compute->dataTv()->as<TensorView>(),
+        db_index));
+    return;
   }
 
   // Logic for double buffer updating:

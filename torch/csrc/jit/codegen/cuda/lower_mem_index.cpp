@@ -1059,6 +1059,38 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
 
       // put the new loopnest before the hoisted loop
       registerInsertBefore(loop, outermost_innermost.first);
+
+      auto data_tensor = insertion_info.address_compute_record->dataTensor();
+      if ((data_tensor->isDoubleBuffered() ||
+           data_tensor->isCircularBuffered()) &&
+          insertion_info.address_compute_record->isWrite()) {
+        // Insert double buffer index update if it is a double buffered write:
+        // The insertion info loop nest starts with the serial loop,
+        //  in the double buffer update we need to insert into the original
+        //  serial loop itself, so remove the outermost level.
+        auto db_loop_nest = std::vector<kir::ForLoop*>(
+            std::next(insertion_info.loop_nest.begin()),
+            insertion_info.loop_nest.end());
+
+        auto db_outer_inner = scope_utils::makeLoopNest(db_loop_nest);
+
+        auto& db_info = GpuLower::current()->doubleBufferInfo();
+
+        auto db_size_in_byte = SimplifyingIrBuilder::mulExpr(
+            db_info.getOriginalAllocSize(data_tensor),
+            SimplifyingIrBuilder::create<Int>(
+                dataTypeSize(data_tensor->dtype())));
+
+        auto update_expr = SimplifyingIrBuilder::create<kir::AddressCompute>(
+            insertion_info.address_compute_record->addressTensor(),
+            db_size_in_byte,
+            data_tensor->circularBufferDepth(),
+            0,
+            data_tensor);
+
+        db_outer_inner.second->body().push_back(update_expr);
+        loop->body().push_back(db_outer_inner.first);
+      }
     }
   }
 

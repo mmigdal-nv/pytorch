@@ -159,6 +159,27 @@ AddressCompute::AddressCompute(
       "IR type only valid for Kernel container.");
 }
 
+AddressCompute::AddressCompute(
+    IrBuilderPasskey passkey,
+    Val* address_tensor,
+    Val* buffer_size_in_byte,
+    int stage_number,
+    int loop_offset,
+    TensorView* data_tensor,
+    Val* loop_index)
+    : Expr(passkey, ExprType::AddressCompute),
+      op_type_(AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE),
+      data_tensor_(data_tensor),
+      address_tensor_(address_tensor),
+      buffer_size_in_byte_(buffer_size_in_byte),
+      loop_offset_(loop_offset),
+      stage_number_(stage_number),
+      loop_index_(loop_index) {
+  TORCH_INTERNAL_ASSERT(
+      passkey.ir_container_->isA<kir::Kernel>(),
+      "IR type only valid for Kernel container.");
+}
+
 InitMagicZero::InitMagicZero(IrBuilderPasskey passkey)
     : Expr(passkey, ExprType::InitMagicZero) {
   TORCH_INTERNAL_ASSERT(

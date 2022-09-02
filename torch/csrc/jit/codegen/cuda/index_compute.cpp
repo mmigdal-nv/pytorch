@@ -2261,7 +2261,10 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
   TORCH_INTERNAL_ASSERT(
       strided_inds.size() == consumer_tv->getMaybeRFactorDomain().size());
 
-  if (consumer_tv->isDoubleBuffered() || consumer_tv->isCircularBuffered()) {
+  if ((consumer_tv->isDoubleBuffered() || consumer_tv->isCircularBuffered())
+      // Lifted address case the double buffer offset is
+      //   computed inplace into the write address buffer.
+      && !consumer_tv->shouldLiftWriteAddress()) {
     auto db_loop =
         gpu_lower->doubleBufferInfo().getDoubleBufferLoop(consumer_tv, loops);
     TORCH_INTERNAL_ASSERT(

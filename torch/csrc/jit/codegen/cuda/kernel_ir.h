@@ -329,6 +329,17 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       int stage_number,
       Val* loop_index = nullptr);
 
+  // Interface for double buffer offset
+  //   inplace update:
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      Val* address_tensor,
+      Val* buffer_size_in_byte,
+      int stage_number,
+      int loop_offset,
+      TensorView* data_tensor,
+      Val* loop_index = nullptr);
+
   auto dataTv() const {
     return data_tensor_;
   }
