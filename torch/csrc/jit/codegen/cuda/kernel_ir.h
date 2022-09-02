@@ -183,11 +183,21 @@ class TORCH_CUDA_CU_API TensorIndex final : public Val {
     return uniform_address_;
   }
 
+  bool useSmemAddress() const {
+    return use_smem_address_;
+  }
+
+  TensorIndex* toSmemAddress() {
+    use_smem_address_ = true;
+    return this;
+  }
+
  private:
   const TensorView* view_ = nullptr;
   std::vector<Val*> indices_;
   Val* base_address_ = nullptr;
   Val* uniform_address_ = nullptr;
+  bool use_smem_address_ = false;
 };
 
 //! Allocate is a lower level Node that describes a buffer of memory that

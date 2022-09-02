@@ -900,15 +900,26 @@ void AddressComputeInfo::makeAddressRecord(
       isSeparable(reference_tv, serial_id, contig_merged_ids),
       "The serial id is required to be separable for the index lifting to work.");
 
-  // Create address record:
-  auto address_tv = makeAddressTv(alloc_ids_vec, !is_shared_mem_access);
-
   // Assuming we are only having two scenarios,
   //  either accessing a consumer in the consumer's loop,
   //  or accessing the producer in producer's loop.
   auto access_direction = reference_tv == data_tv
       ? AddressRecord::ReadWrite::WRITE
       : AddressRecord::ReadWrite::READ;
+
+  bool is_cp_async_write =
+      access_direction == AddressRecord::ReadWrite::WRITE &&
+      ir_utils::isCpAsyncOp(data_tv->definition());
+
+  // Place holder for predicate lifting PR.
+  bool is_predicate_record = false;
+
+  // Create address record:
+  auto address_tv = makeAddressTv(
+      alloc_ids_vec,
+      !is_shared_mem_access,
+      is_predicate_record,
+      is_cp_async_write);
 
   TORCH_INTERNAL_ASSERT(
       serial_id != nullptr, "no support yet for global scope hoisting");
@@ -953,8 +964,13 @@ c10::optional<AddressRecord*> AddressComputeInfo::getMaybeLiftedAddress(
 
 TensorView* AddressComputeInfo::makeAddressTv(
     std::vector<IterDomain*> address_domains,
-    bool is_global_address) {
-  DataType dtype = DataType::Pointer;
+    bool is_global_address,
+    bool is_predicate_index,
+    bool is_cpasync_write) {
+  DataType dtype = is_predicate_index ? DataType::Index : DataType::Pointer;
+  if (is_cpasync_write) {
+    dtype = DataType::SmemAddress;
+  }
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
           address_domains, std::vector<bool>(address_domains.size(), true)),

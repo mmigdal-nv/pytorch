@@ -288,6 +288,34 @@ DEVICE_INLINE void cpAsync(
   gmem_ptr -= gmem_index;
 }
 
+// Global to SMEM load that is asynchronous,
+// not guaranteed to be completed until cpAsyncBarrier() is called.
+template <typename dtype, int len>
+DEVICE_INLINE void cpAsync(
+    nvfuser_index_t smem_index,
+    unsigned smem_addr,
+    nvfuser_index_t gmem_index,
+    DataPointer& gmem_ptr,
+    bool predicate) {
+  constexpr int byte_size = sizeof(dtype) * len;
+
+  static_assert(
+      byte_size == 4 || byte_size == 8 || byte_size == 16,
+      "cp_async : unsupported byte size");
+
+  gmem_ptr += gmem_index;
+  asm volatile(
+      "{\n"
+      "  .reg .pred p;\n"
+      "  setp.ne.b32 p, %3, 0;\n"
+      "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
+      "}\n" ::"r"(smem_addr + (unsigned)smem_index),
+      "l"(gmem_ptr),
+      "n"(byte_size),
+      "r"((int)predicate));
+  gmem_ptr -= gmem_index;
+}
+
 // TODO: Might have a different category of sync if we want to build out this:
 DEVICE_INLINE void cpAsyncBarrier() {
   asm volatile("cp.async.wait_all;");
@@ -330,6 +358,26 @@ DEVICE_INLINE void doubleBufferUpdate(
   data_buffer += increment;
 }
 
+template <int number_of_stage, int loop_offset>
+DEVICE_INLINE void doubleBufferUpdate(
+    unsigned& data_buffer,
+    const nvfuser_index_t& loop_index,
+    nvfuser_index_t buffer_size) {
+  // static_assert(
+  //     loop_offset < number_of_stage && loop_offset > -number_of_stage);
+
+  // convert offset to [0, number_of_stage)
+  constexpr nvfuser_index_t offset =
+      loop_offset < 0 ? (loop_offset + number_of_stage) : loop_offset;
+
+  // Rewind back at number_of_stage-1, otherwise increment by 1.
+  nvfuser_index_t increment =
+      (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
+      ? buffer_size * (-number_of_stage + 1)
+      : buffer_size;
+  data_buffer += increment;
+}
+
 // Update double buffer offset value for smem double buffered tensors.
 template <int number_of_stage, int loop_offset>
 DEVICE_INLINE void doubleBufferSwitch(
@@ -349,6 +397,44 @@ DEVICE_INLINE void doubleBufferSwitch(
       ? buffer_size * (-number_of_stage + 1)
       : buffer_size;
   buffer_offset += increment;
+}
+
+// Reset smem space to zero
+// TODO: try cp.async.ignore-source ?
+template <typename dtype, int len>
+DEVICE_INLINE void smemReset(SmemAddress smem_addr) {
+  constexpr int byte_size = sizeof(dtype) * len;
+
+  static_assert(
+      byte_size == 4 || byte_size == 8 || byte_size == 16,
+      "cp_async : unsupported byte size");
+
+  switch (byte_size) {
+    case 4:
+      asm volatile(
+          "{\n"
+          "st.shared.u32 [%0], {%1};\n"
+          "}\n"
+          :
+          : "r"(smem_addr), "r"(0));
+      break;
+    case 8:
+      asm volatile(
+          "{\n"
+          "st.shared.v2.u32 [%0], {%1, %2};\n"
+          "}\n"
+          :
+          : "r"(smem_addr), "r"(0), "r"(0));
+      break;
+    case 16:
+      asm volatile(
+          "{\n"
+          "st.shared.v4.u32 [%0], {%1, %2, %3, %4};\n"
+          "}\n"
+          :
+          : "r"(smem_addr), "r"(0), "r"(0), "r"(0), "r"(0));
+      break;
+  }
 }
 
 #undef DEVICE_INLINE

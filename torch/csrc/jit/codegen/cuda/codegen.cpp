@@ -708,6 +708,16 @@ class CudaKernelGenerator : private OptOutConstDispatch {
               !(out_tv->isDoubleBuffered() || out_tv->isCircularBuffered())) {
             // Vectorized initialization
             indent() << varName(out_tv) << ".set(" << gen(uop->in()) << ");\n";
+          } else if (
+              uop->out()->isA<kir::TensorIndex>() &&
+              uop->out()->as<kir::TensorIndex>()->useSmemAddress()) {
+            auto ti = uop->out()->as<kir::TensorIndex>();
+            // Special case branch for smem reset
+            // FIXME: only support filling zero at the moment:
+            indent() << "smemReset<" << ti->view()->dtype() << ","
+                     << vector_word_size << ">(" << gen(ti->baseAddress())
+                     << "+" << genTensorAddressIndex(ti, ti->view()->dtype())
+                     << ");\n";
           } else {
             // Note: currently arraySet option is not vectorized, so it will
             //  rely on auto vectorization pass of cuda compiler.
@@ -2500,9 +2510,18 @@ class CudaKernelGenerator : private OptOutConstDispatch {
                << gen(address_compute->doubleBufferByteSize()) << ");\n";
     } else {
       indent() << "//Base Address:::\n";
-      indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"
-               << gen(address_compute->dataTv()->as<kir::TensorIndex>())
-               << ";\n";
+      indent() << gen(address_compute->addressTv());
+
+      if (address_compute->addressTv()->dtype() == DataType::Pointer) {
+        code_ << " = (DataPointer) &"
+              << gen(address_compute->dataTv()->as<kir::TensorIndex>())
+              << ";\n";
+      } else if (
+          address_compute->addressTv()->dtype() == DataType::SmemAddress) {
+        code_ << " = Turing::util::toSmem(&"
+              << gen(address_compute->dataTv()->as<kir::TensorIndex>())
+              << ");\n";
+      }
     }
   }
 

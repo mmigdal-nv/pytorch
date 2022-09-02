@@ -121,6 +121,14 @@ void IndexLowering::handle(const UnaryOp* uop) {
   }
   const auto in = lowerSrcIndex(uop->in(), uop->out());
   const auto out = lowerDstIndex(uop->out());
+
+  if (ir_utils::isCpAsyncInit(uop)) {
+    auto out_tv = ir_utils::getTvOutput(uop);
+    if (out_tv->shouldLiftWriteAddress()) {
+      out->as<kir::TensorIndex>()->toSmemAddress();
+    }
+  }
+
   pushBack(IrBuilder::create<UnaryOp>(
       uop->getUnaryOpType(), out, in, uop->getRNGOffset()));
   GpuLower::current()->propagateExprInfo(uop, back());

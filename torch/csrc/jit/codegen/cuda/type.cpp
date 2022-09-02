@@ -228,6 +228,8 @@ static const char* data_type2string(DataType t) {
       return "nvfuser_index_t";
     case DataType::Pointer:
       return "DataPointer";
+    case DataType::SmemAddress:
+      return "SmemAddress";
     case DataType::Int32:
       return "int";
     case DataType::ComplexFloat:

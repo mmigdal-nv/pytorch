@@ -166,7 +166,9 @@ class AddressComputeInfo {
   // Utility to help allocate space for saving pre-computed address.
   TensorView* makeAddressTv(
       std::vector<IterDomain*> address_domains,
-      bool is_global_address);
+      bool is_global_address,
+      bool is_predicate_index,
+      bool is_cpasync_write = false);
 
   void makeAddressRecord(TensorView* data_tv, TensorView* reference_tv);
 

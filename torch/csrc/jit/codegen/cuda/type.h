@@ -67,6 +67,7 @@ enum class DataType {
   Int,
   Index,
   Pointer,
+  SmemAddress,
   Int32,
   Bool,
   BFloat16,
