@@ -307,7 +307,9 @@ c10::optional<int64_t> getMaybeLeadingStride(
 bool isSeparable(
     const TensorView* tv,
     IterDomain* id,
-    const std::unordered_set<IterDomain*>& contig_merged_ids) {
+    const std::unordered_set<IterDomain*>& contig_merged_ids,
+    bool ignore_swizzle = false,
+    bool require_divisible = false) {
   auto id_def = id->definition();
   IterDomain* prev_id = nullptr;
   while (id_def != nullptr) {
@@ -364,9 +366,12 @@ bool isSeparable(
 
         if (maybe_id_stride.has_value() && maybe_prev_id_stride.has_value()) {
           if (maybe_id_stride.value() <= maybe_prev_id_stride.value()) {
-            id = merged_leaves.at(0);
-            id_def = id->definition();
-            continue;
+            if (!require_divisible ||
+                (maybe_prev_id_stride.value() % maybe_id_stride.value() == 0)) {
+              id = merged_leaves.at(0);
+              id_def = id->definition();
+              continue;
+            }
           }
         }
       }
@@ -587,6 +592,8 @@ void AddressComputeInfo::makeAddressRecord(
       serial_id = ref_id;
       break;
     }
+
+    bool require_divisible = !is_data_read && data_tv->hasSwizzleOp();
 
     // TODO: re-enable index re-use in shared mem.
     if (is_shared_mem_access &&
