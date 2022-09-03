@@ -1077,6 +1077,8 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
       registerInsertBefore(loop, outermost_innermost.first);
 
       auto data_tensor = insertion_info.address_compute_record->dataTensor();
+
+      // Insert double buffer increment
       if ((data_tensor->isDoubleBuffered() ||
            data_tensor->isCircularBuffered()) &&
           insertion_info.address_compute_record->isWrite()) {
@@ -1106,6 +1108,22 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
 
         db_outer_inner.second->body().push_back(update_expr);
         loop->body().push_back(db_outer_inner.first);
+      }
+
+      // Insert gmem increment:
+      if (data_tensor->getMemoryType() == MemoryType::Global &&
+          insertion_info.address_compute_record->isRead()) {
+        auto increment_loop_vector =
+            createIncrementLoop(insertion_info.loop_nest);
+        auto increment_loop_outer_inner =
+            scope_utils::makeLoopNest(increment_loop_vector);
+
+        auto inc_expr = SimplifyingIrBuilder::create<kir::AddressCompute>(
+            insertion_info.address_compute_record->addressTensor(),
+            insertion_info.address_compute_record->dataTensor());
+
+        increment_loop_outer_inner.second->body().push_back(inc_expr);
+        loop->body().push_back(increment_loop_outer_inner.first);
       }
     }
   }
@@ -1138,6 +1156,29 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
         nullptr,
         original_loop->isUnrollRequired(),
         original_loop->loopTransformInfo().baseIndexLoop());
+  }
+
+  std::vector<kir::ForLoop*> createIncrementLoop(
+      std::vector<kir::ForLoop*> address_compute_loop_vector) {
+    std::vector<kir::ForLoop*> loop_nest_to_clone(
+        std::next(address_compute_loop_vector.begin()),
+        address_compute_loop_vector.end());
+
+    std::vector<kir::ForLoop*> cloned_loop_nest;
+    for (auto fl : loop_nest_to_clone) {
+      cloned_loop_nest.push_back(IrBuilder::create<kir::ForLoop>(
+          fl->iter_domain(),
+          fl->index(),
+          fl->start(),
+          fl->stop(),
+          fl->step(),
+          fl->vectorize(),
+          fl->vectorize_shift(),
+          fl->isUnrollRequired(),
+          fl->loopTransformInfo().incrementLoop()));
+    }
+
+    return cloned_loop_nest;
   }
 
   std::vector<kir::ForLoop*> createAddressComputeLoop(

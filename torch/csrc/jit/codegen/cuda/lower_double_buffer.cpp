@@ -343,6 +343,15 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
         }
       }
     }
+
+    if (loop_type_ != DoubleBufferLoopStage::CircularInitProlog) {
+      if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+        if (address_compute->opType() ==
+            kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+          cloned_scopes_.back()->push_back(expr);
+        }
+      }
+    }
   }
 
   //! Returns true if the expression is an initialization expr that

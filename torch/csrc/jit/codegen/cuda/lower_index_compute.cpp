@@ -123,8 +123,23 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
 
   // Checks if this loop nest is calculating base address.
   bool is_address_tv_calculation = serial_loop->isBaseIndexLoop();
+  bool is_increment =
+      std::any_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
+        return fl->loopTransformInfo().is_increment_loop;
+      });
 
   std::unordered_set<IterDomain*> zero_ids;
+
+  if (is_increment) {
+    for (auto fl : loops) {
+      if (fl != serial_loop) {
+        zero_ids.insert(fl->iter_domain());
+      }
+    }
+    // Zero everything except the serial loop
+    //  in the case of increment gmem iterator.
+    return zero_ids;
+  }
 
   for (auto outer_loop_it = loops.begin(); outer_loop_it != loop_it;
        outer_loop_it++) {
@@ -189,6 +204,13 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
     loop_it++;
   }
 
+  if (address_record->isRead() &&
+      address_record->dataTensor()->getMemoryType() == MemoryType::Global) {
+    // The serial loop id is incremented by the address compute,
+    //  so it could be zeroed here.
+    zero_ids.insert(address_record->getConcreteSerialLoopId());
+  }
+
   return zero_ids;
 }
 
@@ -230,6 +252,13 @@ IndexingParameters getGlobalIndexParameters(
         maybe_address_record.value(), loop_indexing.loops());
   }
 
+  bool is_increment = std::any_of(
+      loop_indexing.loops().begin(),
+      loop_indexing.loops().end(),
+      [](kir::ForLoop* fl) {
+        return fl->loopTransformInfo().is_increment_loop;
+      });
+
   auto& loops = loop_indexing.loops();
   auto& loop_domain = loop_indexing.loopDomains();
   auto& loop_index_map = index_parameters.initial_concrete_id_index;
@@ -253,6 +282,20 @@ IndexingParameters getGlobalIndexParameters(
       // Default use pre-allocated integers for index
       loop_index_map[index_domain] = loop->index();
     }
+
+    if (is_increment) {
+      TORCH_INTERNAL_ASSERT(maybe_address_record.has_value());
+      if (GpuLower::current()->caMap()->areMapped(
+              concrete_loop_domain,
+              maybe_address_record.value()->getConcreteSerialLoopId(),
+              IdMappingMode::LOOP)) {
+        // TODO:
+        //  The current restriction on the serial loop makes this ok
+        //   but should eventually use the f(i+1) - f(i) instead
+        //   of a one for the increment calculation.
+        loop_index_map[index_domain] = GpuLower::current()->kernel()->oneVal();
+      }
+    }
   }
 
   // Derive the halo extents from the loop indexing result.
@@ -267,7 +310,7 @@ IndexingParameters getGlobalIndexParameters(
   // Setup double buffer increment for producer case:
   // TODO: could unify these double buffer index calculation
   //  in follow ups.
-  if (index_producer) {
+  if (index_producer && !maybe_address_record.has_value()) {
     auto double_buffer_loop =
         GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
             loop_indexing.consumerTv(), loops, true);

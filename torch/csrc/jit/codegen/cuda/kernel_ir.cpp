@@ -140,6 +140,21 @@ AddressCompute::AddressCompute(
 
 AddressCompute::AddressCompute(
     IrBuilderPasskey passkey,
+    Val* address_tensor,
+    Val* data_tensor,
+    TensorIndex* increment_value)
+    : Expr(passkey, ExprType::AddressCompute),
+      op_type_(AddressCompute::AddressComputeOpType::GMEM_INCREMENT),
+      data_tensor_(data_tensor),
+      address_tensor_(address_tensor),
+      increment_value_(increment_value) {
+  TORCH_INTERNAL_ASSERT(
+      passkey.ir_container_->isA<kir::Kernel>(),
+      "IR type only valid for Kernel container.");
+}
+
+AddressCompute::AddressCompute(
+    IrBuilderPasskey passkey,
     TensorView* data_tv,
     Val* double_buffer_switch_index,
     Val* buffer_size_in_byte,

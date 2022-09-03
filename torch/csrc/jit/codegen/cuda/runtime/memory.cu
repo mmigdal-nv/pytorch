@@ -303,7 +303,7 @@ DEVICE_INLINE void cpAsync(
       byte_size == 4 || byte_size == 8 || byte_size == 16,
       "cp_async : unsupported byte size");
 
-  gmem_ptr += gmem_index;
+  // gmem_ptr += gmem_index;
   asm volatile(
       "{\n"
       "  .reg .pred p;\n"
@@ -313,7 +313,7 @@ DEVICE_INLINE void cpAsync(
       "l"(gmem_ptr),
       "n"(byte_size),
       "r"((int)predicate));
-  gmem_ptr -= gmem_index;
+  // gmem_ptr -= gmem_index;
 }
 
 // TODO: Might have a different category of sync if we want to build out this:

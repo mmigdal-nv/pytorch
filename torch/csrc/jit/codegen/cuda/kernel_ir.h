@@ -319,7 +319,8 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
     BASE_ADDRESS,
     INCREMENT,
     DOUBLE_BUFFER_SWITCH,
-    DOUBLE_BUFFER_UPDATE
+    DOUBLE_BUFFER_UPDATE,
+    GMEM_INCREMENT
   };
 
   explicit AddressCompute(
@@ -327,6 +328,13 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       AddressComputeOpType op_type,
       Val* address_tensor,
       Val* data_tensor);
+
+  // Interface for gmem increment
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      Val* address_tensor,
+      Val* data_tensor,
+      TensorIndex* increment_value = nullptr);
 
   // Interface for double buffer offset
   //   calculation:
@@ -382,6 +390,10 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
     return loop_index_;
   }
 
+  auto incrementValue() const {
+    return increment_value_;
+  }
+
  private:
   // The type of computation this op computes,
   //  currently only do compute address.
@@ -395,15 +407,15 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
   //  data tensor.
   Val* address_tensor_ = nullptr;
 
-  // Tensor that holds the value to increment (INCREMENT MODE only).
-  Val* inc_value_ = nullptr;
-
   // Double buffer switch and update parameters:
   Val* double_buffer_switch_index_ = nullptr;
   Val* buffer_size_in_byte_ = nullptr;
   int loop_offset_ = 0;
   int stage_number_ = 0;
   Val* loop_index_ = nullptr;
+
+  // Gmem increment parameters
+  kir::TensorIndex* increment_value_ = nullptr;
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is

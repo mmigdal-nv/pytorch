@@ -2508,6 +2508,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
                << gen(address_compute->addressTv()) << ","
                << gen(address_compute->loopIndex()) << ","
                << gen(address_compute->doubleBufferByteSize()) << ");\n";
+    } else if (
+        address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+      indent() << gen(address_compute->addressTv()) << "+="
+               << genTensorAddressIndex(
+                      address_compute->incrementValue(),
+                      address_compute->dataTv()->dtype())
+               << ";\n";
     } else {
       indent() << "//Base Address:::\n";
       indent() << gen(address_compute->addressTv());

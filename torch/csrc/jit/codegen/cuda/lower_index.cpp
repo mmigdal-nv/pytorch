@@ -933,6 +933,19 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
 
   auto address_record = maybe_address_record.value();
 
+  if (address_compute->opType() ==
+      kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+    pushBack(IrBuilder::create<kir::AddressCompute>(
+        Index::generateAddressTensorIndex(
+            for_loops_, address_compute->addressTv()->as<TensorView>()),
+        address_compute->dataTv(),
+        lowerSrcIndex(
+            address_record->dataTensor(),
+            address_record->indexReferenceTensor())
+            ->as<kir::TensorIndex>()));
+    return;
+  }
+
   Val* lowered_data_index = nullptr;
 
   if (address_record->isRead()) {
