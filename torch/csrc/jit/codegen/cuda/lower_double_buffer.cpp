@@ -150,6 +150,39 @@ bool requireEpilogue(const std::vector<Expr*>& exprs) {
   });
 }
 
+bool isGmemIncrement(Expr* expr) {
+  if (auto loop = dynamic_cast<kir::ForLoop*>(expr)) {
+    if (loop->body().exprs().size() != 1) {
+      return false;
+    }
+    return isGmemIncrement(loop->body().exprs()[0]);
+  } else if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+    return address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT;
+  }
+  return false;
+}
+
+kir::ForLoop* hoistGmemIncrement(kir::ForLoop* fl) {
+  auto hoisted_loop = IrBuilder::create<kir::ForLoop>(fl);
+
+  // insert all gmem increment exprs
+  for (auto expr : fl->body().exprs()) {
+    if (isGmemIncrement(expr)) {
+      hoisted_loop->body().push_back(expr);
+    }
+  }
+
+  // insert all non gmem increment exprs
+  for (auto expr : fl->body().exprs()) {
+    if (!isGmemIncrement(expr)) {
+      hoisted_loop->body().push_back(expr);
+    }
+  }
+
+  return hoisted_loop;
+}
+
 // Replicates double buffer loops for Prologue, Main, and
 // Epilogue. Prologue only copies the load expressions of double
 // buffered tensors, whereas Epilogue does any expression other than
@@ -261,6 +294,14 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       cloned_top_level_loop_->body().push_back(
           IrBuilder::create<kir::CpAsyncCommit>());
     }
+
+    if (loop_type_ == DoubleBufferLoopStage::Main &&
+        std::any_of(
+            double_buffer_loop_->body().exprs().begin(),
+            double_buffer_loop_->body().exprs().end(),
+            isGmemIncrement)) {
+      cloned_top_level_loop_ = hoistGmemIncrement(cloned_top_level_loop_);
+    }
   }
 
   void handle(kir::ForLoop* fl) final {
@@ -331,6 +372,20 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       // Only need the init expressions in circular init prolog stage
       if (ir_utils::isTensorScalarFillOp(expr)) {
         cloned_scopes_.back()->push_back(expr);
+      }
+    }
+
+    if (loop_type_ == DoubleBufferLoopStage::CircularInitProlog) {
+      if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+        if (address_compute->opType() ==
+            kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+          cloned_scopes_.back()->push_back(
+              IrBuilder::create<kir::AddressCompute>(
+                  address_compute->addressTv(),
+                  address_compute->dataTv(),
+                  address_compute->incrementValue(),
+                  true /* is_decrement */));
+        }
       }
     }
 

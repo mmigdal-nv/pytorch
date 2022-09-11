@@ -320,7 +320,8 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
     INCREMENT,
     DOUBLE_BUFFER_SWITCH,
     DOUBLE_BUFFER_UPDATE,
-    GMEM_INCREMENT
+    GMEM_INCREMENT,
+    GMEM_DECREMENT
   };
 
   explicit AddressCompute(
@@ -334,7 +335,8 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       IrBuilderPasskey passkey,
       Val* address_tensor,
       Val* data_tensor,
-      TensorIndex* increment_value = nullptr);
+      TensorIndex* increment_value = nullptr,
+      bool is_decrement = false);
 
   // Interface for double buffer offset
   //   calculation:
@@ -392,6 +394,10 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
 
   auto incrementValue() const {
     return increment_value_;
+  }
+
+  bool isDecrement() const {
+    return op_type_ == AddressComputeOpType::GMEM_DECREMENT;
   }
 
  private:

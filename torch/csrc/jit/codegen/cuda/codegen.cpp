@@ -2516,6 +2516,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
                       address_compute->incrementValue(),
                       address_compute->dataTv()->dtype())
                << ";\n";
+    } else if (
+        address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::GMEM_DECREMENT) {
+      indent() << gen(address_compute->addressTv()) << "-="
+               << genTensorAddressIndex(
+                      address_compute->incrementValue(),
+                      address_compute->dataTv()->dtype())
+               << ";\n";
     } else {
       indent() << "//Base Address:::\n";
       indent() << gen(address_compute->addressTv());

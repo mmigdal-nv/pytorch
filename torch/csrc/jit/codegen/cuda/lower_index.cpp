@@ -934,7 +934,9 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
   auto address_record = maybe_address_record.value();
 
   if (address_compute->opType() ==
-      kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+          kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT ||
+      address_compute->opType() ==
+          kir::AddressCompute::AddressComputeOpType::GMEM_DECREMENT) {
     pushBack(IrBuilder::create<kir::AddressCompute>(
         Index::generateAddressTensorIndex(
             for_loops_, address_compute->addressTv()->as<TensorView>()),
@@ -942,7 +944,8 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
         lowerSrcIndex(
             address_record->dataTensor(),
             address_record->indexReferenceTensor())
-            ->as<kir::TensorIndex>()));
+            ->as<kir::TensorIndex>(),
+        address_compute->isDecrement()));
     return;
   }
 
