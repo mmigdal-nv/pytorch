@@ -3013,6 +3013,36 @@ TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
   }
 }
 
+// Small repro for the replay fix needed for non-affine
+//  swizzle support.
+TEST_F(NVFuserTest, FusionSwizzleReplayFixRepro_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+  auto tv0 = makeConcreteTensor({32, 32});
+
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = set(tv1);
+  fusion.addOutput(tv2);
+
+  tv1->swizzle(Swizzle2DType::XOR, 0, 1);
+  tv2->split(0, 16);
+
+  auto replayed_domain = TransformReplay::replayPasC(tv1, tv2, -1).first;
+
+  auto id_ops = DependencyCheck::getAllExprsBetween(
+      {replayed_domain->getRootDomain().begin(),
+       replayed_domain->getRootDomain().end()},
+      {replayed_domain->domain().begin(), replayed_domain->domain().end()});
+
+  TORCH_INTERNAL_ASSERT(
+      std::none_of(
+          id_ops.begin(),
+          id_ops.end(),
+          [](Expr* expr) { return expr->isA<Swizzle2D>(); }),
+      "Swizzle op should be removed by backward replay.");
+}
+
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
 
 } // namespace jit
