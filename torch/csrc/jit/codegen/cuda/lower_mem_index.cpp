@@ -597,7 +597,7 @@ void AddressComputeInfo::makeAddressRecord(
 
     // TODO: re-enable index re-use in shared mem.
     if (is_shared_mem_access &&
-        isSeparable(reference_tv, ref_id, contig_merged_ids)) {
+        isSeparable(reference_tv, ref_id, contig_merged_ids, false, true)) {
       // This is an optimization step that will be built out.
       // It is related to the GPU memory indexing modes,
       //  and generally we should feel free to lift shared

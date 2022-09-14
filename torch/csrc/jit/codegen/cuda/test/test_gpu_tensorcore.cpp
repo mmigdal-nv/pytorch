@@ -2872,7 +2872,6 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck4warp_CUDA) {
         auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
         auto tref = atMatmul(
             inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
-        std::cout<<"mn size:"<<mn_size<<"k size: "<<k_size<<"\n";
         TORCH_CHECK(
             cg_outputs[0].allclose(tref, 0.0001, 0.0001),
             "error :",
@@ -2922,7 +2921,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
           params.double_buffer_options.double_buffer_smem_write = true;
           params.double_buffer_options.double_buffer_smem_read = true;
           params.double_buffer_options.smem_double_buffer_stage = 2;
-          
+
           scheduleMatmul(tv2, tv0, tv1, params);
 
           at::manual_seed(0);
@@ -2933,7 +2932,10 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
 
           FusionExecutor fe;
           NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-              8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+              8,
+              0,
+              fe.compileFusion(
+                  &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
           auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
           auto tref = atMatmul(
               inputs.first.to(at::kFloat),
@@ -2980,7 +2982,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
       params.double_buffer_options.double_buffer_smem_write = true;
       params.double_buffer_options.double_buffer_smem_read = true;
       params.double_buffer_options.smem_double_buffer_stage = 2;
-          
+
       scheduleMatmul(tv2, tv0, tv1, params);
 
       CompileOptions co;
@@ -2991,7 +2993,10 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
 
       FusionExecutor fe;
       NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-          8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+          8,
+          0,
+          fe.compileFusion(
+              &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
       auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
       auto tref = atMatmul(
           inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
