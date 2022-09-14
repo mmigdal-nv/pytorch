@@ -637,10 +637,14 @@ __device__ void checkBankConflict(
   }
 
   // Calculate lane_id
-  int lane_id =
-      index_utils::maskedOffset<true, true, true>(threadIdx, blockDim) % 32;
+  int lane_id = 0;
 
-  // Populate address within phase:
+  // Read laneid register directly with ptx.
+  asm("mov.u32 %0, %%laneid;" : "=r"(lane_id) :);
+
+  // Populate address within each phase:
+  // for more info on shared memory access phase see page 66 of:
+  // https://on-demand.gputechconf.com/gtc/2018/presentation/s81006-volta-architecture-and-performance-optimization.pdf
   for (int i = 0; i < phase_size; i++) {
     size_t shfl_value = 0;
     shfl_value = __shfl_down_sync(__activemask(), address, i);
@@ -650,7 +654,7 @@ __device__ void checkBankConflict(
     }
   }
 
-  // Check bank conflict at phase head.
+  // Check bank conflict at phase head, i.e. the first lane in each phase.
   if (lane_id % phase_size == 0) {
     for (int i = 0; i < phase_size; i++) {
       for (int j = 0; j < phase_size; j++) {
@@ -660,7 +664,7 @@ __device__ void checkBankConflict(
           size_t bank_idx_j = (address_warp[j] % 128) /
               vec_word_in_byte; // 128Byte per memory row.
 
-          if (bank_idx_i == bank_idx_j) {
+          if (bank_idx_i == bank_idx_j && address_warp[i] != address_warp[j]) {
             printf(
                 "call_id: %d @Thread %d, %d, %d:bank conflict between lane %d and lane %d, (%lu, %lu)\n",
                 call_id,
