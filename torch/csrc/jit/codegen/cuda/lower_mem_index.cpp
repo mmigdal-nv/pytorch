@@ -11,6 +11,103 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+// [Notes on memory index lifting]:
+// The memory index lifting pass tries re-associate the index math
+//  and pre-compute the heavy portion of the index math outside of
+//  inner loops to reduce register pressure and integer math strength.
+//
+// The optimization is based on 2 key observations:
+//  1. Memory instructions are able to take Immediate operands, i.e.
+//  compile-time
+// constants instead of registers, so the register usage can be saved: e.g.:
+//   load ... [R0]
+//   load ... [R1]
+//   load ... [R2]
+//   load ... [R3]
+//
+// would take 4 registers but when we have the opportunity to transform above
+// code into:
+//
+//   load ... [R0]
+//   load ... [R0+4]
+//   load ... [R0+8]
+//   load ... [R0+12]
+// The same sequence of instructions now use 1 register instead of 4.
+//
+// The optimization in this pass tries to convert code to the above pattern in a
+//  specific but very common family of cases (details see below).
+//
+// 2. Both register usage and math hotpaths tend to be confined within a serial
+// loop
+//  that's not unrolled, with the main loop in matmul kernels being a very
+//  popular example. So this pass focuses on optimizing the register usage by
+//  maximizing converting index math to the pattern mentioned above when there
+//  is a serial loop that's not unrolled.
+//
+// The following example shows the optimization pattern that this pass is trying
+// to do:
+//
+// Before:
+//
+// for tidx in ...      // parallel loop
+//  for i in 0...T.SIZE  // serial loop
+//   for j in 0..32      // unrolled loop 1
+//    for k in 0..8      // unrolled loop 2
+//      ... = T0[index(i, j, k, tidx)];
+//
+// After:
+//
+// alloc T1[32];
+// for tidx in ...      // parallel loop
+//   for j in 0..32      // unrolled loop
+//     T1[j] = index(0, j, 0, tidx);
+//
+// for tidx in ...      // parallel loop
+//  for i in 0...T.SIZE  // serial loop
+//   for j in 0..32      // unrolled loop 1
+//    for k in 0..8      // unrolled loop 2
+//      ... = T0[T1[j]+i*123+k*456];
+//
+// [Separability Analysis]:
+// A term "Separability" is introduced here to describe further detail into the
+//  above optimization.
+//
+// An loop/iterdomain `i` is separable in the index function index(i, j, k,
+// tidx,...) iff
+//  index(i, j, k, tidx,...) = index(0, j, k, tidx,...) + i * C, where C is a
+//  compile time constant integer.
+//
+// This property is needed for this optimization to be profitable as only
+// constant addition can be inlined
+//  into memory address expressions.
+//
+// An example of separable iterdomains:
+//                   Id0
+//                    |
+//                  split
+//                  /   |
+//                Id0o  Id0i (32)
+//                       |
+//                     split
+//                     /   |
+//                  Id0io  Id0ii(4)
+//
+// In this case Id0o, Id0io, Id0ii are all separable, as the indexing on Id0 can
+// be
+//  written as
+//     indexOf(Id0o)*32 + indexOf(Id0io)*4 + IndexOf(Id0ii)
+//
+// Another example involving non-separable iterdomains:
+//          Id0    Id1
+//           |     /
+//            merge
+//              |
+//             Id3
+//
+// Id3 is not separable as index on Id0, for example is:
+//  IndexOf(Id3) / Id1.extent, which cannot be rewritten as IndexOf(Id3) * C,
+//  with
+// C being a compile constant integer.
 AddressRecord::AddressRecord(
     TensorView* data_tv,
     TensorView* address_tv,
@@ -33,7 +130,6 @@ void AddressComputeInfo::build(Fusion* fusion) {
   for (auto expr : fusion->unordered_exprs()) {
     if (!ir_utils::isTvOp(expr)) {
       continue;
-      ;
     }
     for (auto consumer_tv :
          ir_utils::filterByType<TensorView>(expr->outputs())) {
@@ -56,6 +152,32 @@ void AddressComputeInfo::build(Fusion* fusion) {
 
 namespace {
 
+// Given a vector of root iterdomains and their contiguity
+// Returns the resulting intermediate iterdomains after all the contiguous
+//  merges. A contiguous merge is a merge expr that takes two consecutive
+//  iterdomains that are both contiguous, and thus producing another contiguous
+//  merged iterdomain as it's output.
+//
+// Example input: given the following tensor domain:
+//
+// contiguity = true, true, false, true
+//   Id0, Id1, Id2, Id3
+//    |   /     |
+//     merge    |
+//      |       |
+//     Id4      |
+//      |      /
+//        merge
+//         |
+//        Id5
+//
+// This function with arguments ({Id0, Id1, Id2, Id3}, {true, true, false,
+// true})
+//  returns:
+//    Id4, Id2, Id3, contig_set =  {Id4}
+// TODO:
+//  Similar analysis exist in contig finder and should consider unifying
+// the logic paths.
 std::pair<std::vector<IterDomain*>, std::unordered_set<IterDomain*>>
 getContigMergeFrontier(
     std::vector<IterDomain*> domains,
@@ -66,6 +188,7 @@ getContigMergeFrontier(
 
   TORCH_INTERNAL_ASSERT(domains.size() == contiguity.size());
 
+  // Keep track of the set of Id's that are contiguous
   for (auto idx : c10::irange(domains.size())) {
     if (contiguity[idx]) {
       contiguity_id_set.insert(domains[idx]);
@@ -78,6 +201,10 @@ getContigMergeFrontier(
 
   while (update) {
     update = false;
+
+    // Iterate over the current domain list, and
+    //  try to find 2 consecutive iterdomains that
+    //  are both contiguous and merged together.
     auto domain_it = domain_list.begin();
 
     while (domain_it != domain_list.end()) {
@@ -130,6 +257,9 @@ getContigMergeFrontier(
   return std::make_pair(result_domain, contiguity_id_set);
 }
 
+//! Utility function that returns a map from each iterdomain from a tensordomain
+//!  to its consumer, assuming that on this tensor domain each iterdomain has
+//!  a unique iterdomain expression that consumes it.
 std::unordered_map<IterDomain*, Expr*> getIdToUseMap(TensorDomain* td) {
   std::vector<Val*> all_id_vals{td->domain().begin(), td->domain().end()};
   auto all_inputs = InputsOf::outputs(td->fusion(), all_id_vals);
@@ -147,7 +277,14 @@ std::unordered_map<IterDomain*, Expr*> getIdToUseMap(TensorDomain* td) {
   return id_to_use_map;
 }
 
-// TODO: unify with contiguity pass
+//! Given a pair of data_tv and reference_tv, see [Note on data tensor and
+//! reference tensor]:
+//!  Returns the set of iterdomains resulting from all the contiguous merges on
+//!  the reference_tv's tensor domain.
+//! The reason for needing both data_tv and reference_tv is that contiguity is
+//! defined on data_tv
+//!  while the actual index math is defined on reference tv.
+//! TODO: unify with contiguity pass
 std::unordered_set<IterDomain*> getInitialContiguousRootIdsOnReferenceTv(
     const TensorView* data_tv,
     const TensorView* reference_tv) {
@@ -215,8 +352,20 @@ std::unordered_set<IterDomain*> getInitialContiguousRootIdsOnReferenceTv(
   return contig_ids;
 }
 
-// Get all the nodes merged with a sequence of merge ops.
-//  ordered by their inner/outer position at the ops.
+//! Returns all the nodes merged with a sequence of merge ops.
+//!  ordered by their inner/outer position at the ops.
+//! Example:
+//!  Id0   Id1
+//!   |    /   Id5  Id6
+//!   merge    |     /
+//!     |        merge
+//!    Id2        |
+//!     |        Id3
+//!      |       /
+//!        merge
+//!          |
+//!       Id4 (merged_id)
+//! This function returns {Id0, Id1, Id5, Id6}
 std::vector<IterDomain*> getFlattenedMergedIds(IterDomain* merged_id) {
   std::vector<IterDomain*> result;
 
@@ -235,8 +384,15 @@ std::vector<IterDomain*> getFlattenedMergedIds(IterDomain* merged_id) {
   return {merged_id};
 }
 
-// Get all the nodes merged with a sequence of merge ops.
-//  ordered by their inner/outer position at the ops.
+//! Get all the nodes merged with a sequence of merge ops.
+//!  ordered by their inner/outer position at the ops.
+//! Example: (split ops omitted)
+//!               Id0 (split_id)
+//!              /  |
+//!             Id1  Id2
+//!             / |
+//!           Id3 Id4
+//! This function returns {Id3, Id4, Id2}
 std::vector<IterDomain*> getFlattenedSplitIds(
     IterDomain* split_id,
     std::unordered_set<IterDomain*> stop_set = {}) {
@@ -272,7 +428,8 @@ std::vector<IterDomain*> getFlattenedSplitIds(
 }
 
 //! Returns the stride of the leading dimension given the vector of leaf
-//! iterdomains.
+//!  iterdomains following their order defined by their outer/inner position
+//!  as input/output of merge/split ops.
 c10::optional<int64_t> getMaybeLeadingStride(
     std::vector<IterDomain*> leaf_ids,
     IterDomain* leading_id = nullptr) {
@@ -304,6 +461,50 @@ c10::optional<int64_t> getMaybeLeadingStride(
   return result;
 }
 
+// Returns true if the given leaf (not checked) iterdomain,
+//  from the given tensorview's tensor domain is separable, as defined
+//  in [Note: Separability check]
+//
+// The analysis propagates backward, from the given leaf to the
+//  contig merged frontier. There are two specific patterns that
+//  this pass looks at, which are the ones that allows the index math
+//  involving the given iterdomain to be separated out and more importantly
+//  added to the rest, as memory index inlining is addition only so no need
+//  to look at other ways of hoisting and combining here:
+//
+// pattern 1: (split-only propagation)
+//       Id0 (root or contig merged id)
+//        |
+//      split
+//      /   |
+//    Id1   Id2(32)
+//            |
+//           split
+//           /   |
+//         Id3   Id4
+// In the above example {Id1, Id3, Id4} are separable.
+//
+// pattern 2: (merge-then-split propagation):
+//
+//  Id0(root)  Id1(32)
+//   |         /
+//      merge
+//       |
+//      Id2    Id3(16)
+//       |      /
+//        merge
+//          |
+//         Id4
+//          |
+//         split
+//         /  |
+//        Id5  Id6(32)
+//         |
+//       split
+//       /   |
+//     Id7   Id8(16)
+// In the case above, the leaf ids are {Id7, Id8, Id6},
+//   and Id7 is the one that's separable while the others are not.
 bool isSeparable(
     const TensorView* tv,
     IterDomain* id,
@@ -311,11 +512,21 @@ bool isSeparable(
     bool ignore_swizzle = false,
     bool require_divisible = false) {
   auto id_def = id->definition();
+
+  // Keep track of the id from the last iteration in the
+  //  traversal below.
   IterDomain* prev_id = nullptr;
+
+  // Traverse backward towards the root domains.
   while (id_def != nullptr) {
     if (auto split = dynamic_cast<Split*>(id_def)) {
-      // Traverse backward towards the root domains.
+      // When we hit a split, check for pattern 1
+
+      // Keep track of the current id to support pattern 2
+      //  checking.
       prev_id = id;
+
+      // move the id pointer up the graph
       id = split->in();
       id_def = id->definition();
 
@@ -325,7 +536,7 @@ bool isSeparable(
         return true;
       }
 
-      // Check for non-divisible split:
+      // Check that the split is divisible
       if (!id->extent()->isConstInt()) {
         return false;
       }
@@ -342,7 +553,7 @@ bool isSeparable(
         return false;
       }
     } else if (auto merge = dynamic_cast<Merge*>(id_def)) {
-      // Support only the simplest case for lifting across merge.
+      // When we hit a merge, check for pattern 2
 
       if (prev_id == nullptr) {
         // A merge on the leaf domain not yet supported.
@@ -383,6 +594,9 @@ bool isSeparable(
         id = id == swizzle_2d->outX() ? swizzle_2d->inX() : swizzle_2d->inY();
         id_def = id->definition();
       } else {
+        // When not ignored, swizzles are always assumed to be
+        //  not separable, i.e. they will take extra space in the pre-computed
+        //  tensor address space.
         return false;
       }
     }
@@ -393,6 +607,8 @@ bool isSeparable(
   return contig_merged_ids.count(id);
 }
 
+//! Traverse forward on the iterdomain's use chain and returns
+//!  true if a swizzle iterdomain op is found.
 bool isSwizzleProducer(IterDomain* id) {
   auto single_use = ir_utils::getMaybeSingleUse(id, ir_utils::isIterDomainOp);
   if (!single_use.has_value()) {
@@ -416,6 +632,36 @@ bool isSwizzleProducer(IterDomain* id) {
   return false;
 }
 
+//! Returns true if the given id is separable after taking the
+//!  possible swizzle ops on producer's tensor domain. See also
+//!  `IndexSwizzle` pass in index_compute.cpp.
+//! When indexing a swizzled producer, there is an additional forward
+//!  traversal that computes the swizzled address. This function is
+//!  used to ensure that the given id would not be involved in any
+//!  swizzle operation in this traversal and thus remains separable
+//!  after the producer swizzle pass. It will return false conservatively
+//!  whenever the forward path hits any swizzle op.
+//!
+//! `id` is assumed to be on consumer_tv's tensordomain.
+//!
+//!  The current iteration only looks for one specific pattern, and returns
+//!  false
+//!   for any domain that does not match:
+//!
+//!        consumer Id0(may not be root)  <-- exact mapped -->   producer
+//!        Id0(may not be root)
+//!               |                                                 |
+//!        ...  divisible splits ...                    ... divisible  splits
+//!           /           |                                      /          |
+//!          id          {consumer inner ids}    producer_outer_id  {inner ids}
+//! With the additional check that
+//!  1. Product of consumer inner ids' extents are integer multiple of product
+//!  of producer ids' extents.
+//!  2. Producer_outer_id is not a producer of any swizzle op down its use
+//!  chain.
+//! This check intuitively ensures tha increment on `id` "strides over" a
+//! integer multiple of swizzled
+//!  tiles on the producer data layout.
 bool isSeparableSmemSwizzledProducerIndex(
     const TensorView* producer_tv,
     const TensorView* consumer_tv,
@@ -439,13 +685,18 @@ bool isSeparableSmemSwizzledProducerIndex(
   }
 
   if (id->definition() == nullptr) {
-    // If id is in root domain this should be supported.
-    return true;
+    // Cannot derive much information from a root id.
+    return false;
   }
 
   if (auto split = dynamic_cast<Split*>(id->definition())) {
     auto exact_producer_it = exact_to_producer_id_map.find(
         ir_utils::caMapExactConcreteId(split->in()));
+
+    if (exact_producer_it == exact_to_producer_id_map.end()) {
+      // Returns early if no exact mapped id is found.
+      return false;
+    }
 
     // Find a tile split node that this needs to assume.
     while (exact_producer_it == exact_to_producer_id_map.end()) {
@@ -484,7 +735,10 @@ bool isSeparableSmemSwizzledProducerIndex(
 
     if (maybe_consumer_stride.has_value() &&
         maybe_producer_stride.has_value()) {
-      if (maybe_consumer_stride.value() >= maybe_producer_stride.value()) {
+      if (maybe_consumer_stride.value() >= maybe_producer_stride.value() &&
+          // Divisibility is required to ensure the increment is a multiple
+          //  of the swizzle period.
+          maybe_consumer_stride.value() % maybe_producer_stride.value() == 0) {
         // Only supports the case where the leading dimension maps to
         //  the leading dimension of the producer side.
         return true;
@@ -496,24 +750,6 @@ bool isSeparableSmemSwizzledProducerIndex(
   return false;
 }
 
-void validateSeparability(
-    const TensorView* reference_tv,
-    const std::vector<IterDomain*>& alloc_ids,
-    const std::unordered_set<IterDomain*>& contig_merged_ids) {
-  std::unordered_set<IterDomain*> alloc_id_set{
-      alloc_ids.begin(), alloc_ids.end()};
-
-  for (auto id : reference_tv->domain()->domain()) {
-    if (!alloc_id_set.count(id) && !id->isParallelized()) {
-      TORCH_INTERNAL_ASSERT(
-          isSeparable(reference_tv, id, contig_merged_ids),
-          "Unsupported lift address since",
-          id->toString(),
-          " cannot be separated");
-    }
-  }
-}
-
 } // namespace
 
 void AddressComputeInfo::makeAddressRecord(
@@ -522,11 +758,16 @@ void AddressComputeInfo::makeAddressRecord(
   // Signify if this is caching shared mem access,
   //  assume it'd be global access if other wise.
   bool is_shared_mem_access = data_tv->getMemoryType() == MemoryType::Shared;
+
+  // Signify if this is a producer indexing.
   bool is_data_read = data_tv != reference_tv;
 
   auto& ca_map = GpuLower::current()->caMap();
 
   // Get allocation ids for the lifted index.
+  //  These are the ids that we will need to allocate space for in the
+  // address tensor. Only serial, unrolled loops that are in-separable
+  // are allocated and materialized in the base index loop.
   std::deque<IterDomain*> alloc_ids;
 
   auto contig_merged_ids =
@@ -543,7 +784,7 @@ void AddressComputeInfo::makeAddressRecord(
     ref_ca_id = reference_tv->axis(reference_tv->getComputeAtPosition() - 1);
   } else if (data_tv->isFusionOutput()) {
     ref_ca_id = data_tv->axis(data_tv->getMaxProducerPosition() - 1);
-  } else if (data_tv != reference_tv) {
+  } else if (is_data_read) {
     bool found_ref_ca_id = false;
     for (auto id : reference_tv->domain()->domain()) {
       if (GpuLower::current()->caMap()->areMapped(
@@ -554,13 +795,15 @@ void AddressComputeInfo::makeAddressRecord(
       }
     }
 
-    TORCH_INTERNAL_ASSERT(found_ref_ca_id);
+    TORCH_INTERNAL_ASSERT(found_ref_ca_id, "unsupported case in index lifting");
   }
 
   // Serial domain which the cached indexing will
   //  be lifted out of.
   // TODO: some extra work to support
   //  lifting all the way to global scope.
+  // TODO: some extra work to lift index beyond
+  //  the compute at position.
   IterDomain* serial_id = nullptr;
 
   // compute id's to cache index on:
@@ -577,7 +820,7 @@ void AddressComputeInfo::makeAddressRecord(
       break;
     }
 
-    // Skip parallel dims as they do not
+    // Do not allocate parallel dims as they do not
     //  contribute to register lifetime.
     if (ref_id->isParallelized()) {
       ref_id_it++;
@@ -593,28 +836,29 @@ void AddressComputeInfo::makeAddressRecord(
       break;
     }
 
+    // Will require divisibility check to ensure separability across
+    //  complete swizzled tiles.
     bool require_divisible = !is_data_read && data_tv->hasSwizzleOp();
 
-    // TODO: re-enable index re-use in shared mem.
+    // TODO: Global memory lifting is not enabled here as their
+    //  lifetime management is much more complex and addressed in follow ups.
+    //  See internal doc, and will need to evaluate more internally in terms
+    //  of how explicit should the heuristic involving global memory should be
+    //  made.
     if (is_shared_mem_access &&
-        isSeparable(reference_tv, ref_id, contig_merged_ids, false, true)) {
-      // This is an optimization step that will be built out.
-      // It is related to the GPU memory indexing modes,
-      //  and generally we should feel free to lift shared
-      //  memory indexing variables as much as possible but
-      //  would generally want to cache global memory index
-      //  more.
-      // TODO: there are exceptions to this rule of thumb
-      //  and they could matter in extremely register limited
-      //  scenarios. Will be built out in follow ups.
+        isSeparable(reference_tv, ref_id, contig_merged_ids, false, require_divisible)) {
       if (
           // Checking reference tv is enough for non-swizzled producer.
-          // TODO: re-enable data write
-          (!is_data_read ||
-           (!data_tv->hasSwizzleOp() ||
-            // Check supported lifting in the case of swizzled producer.
-            isSeparableSmemSwizzledProducerIndex(
-                data_tv, reference_tv, ref_id, contig_merged_ids)))) {
+          (
+              // For data write, checking separability is enough.
+              !is_data_read ||
+              // For data read would need additionally check swizzles.
+              (!data_tv->hasSwizzleOp() ||
+               // Check supported lifting in the case of swizzled producer.
+               isSeparableSmemSwizzledProducerIndex(
+                   data_tv, reference_tv, ref_id, contig_merged_ids)))) {
+        // Skipping here means not allocating for this id as it is separable
+        //  and thus inlined.
         ref_id_it++;
         continue;
       }
@@ -627,6 +871,11 @@ void AddressComputeInfo::makeAddressRecord(
     ref_id_it++;
   }
 
+  // Continue searching back to locate the serial id to lift
+  //  the indices over.
+  // Current usage always assumes that there is always such serial
+  //  iterdomain, i.e. no support yet for lifting kernels with unrolled
+  //  loops only.
   while (ref_id_it != reference_tv->domain()->domain().rend() &&
          serial_id == nullptr) {
     auto ref_id = *ref_id_it;
@@ -642,8 +891,9 @@ void AddressComputeInfo::makeAddressRecord(
 
   std::vector<IterDomain*> alloc_ids_vec{alloc_ids.begin(), alloc_ids.end()};
 
-  // TODO: validate SMEM and GMEM are different, build them out.
-  // validateSeparability(data_tv, alloc_ids_vec, contig_merged_ids);
+  TORCH_INTERNAL_ASSERT(
+      isSeparable(reference_tv, serial_id, contig_merged_ids),
+      "The serial id is required to be separable for the index lifting to work.");
 
   // Create address record:
   auto address_tv = makeAddressTv(alloc_ids_vec, !is_shared_mem_access);

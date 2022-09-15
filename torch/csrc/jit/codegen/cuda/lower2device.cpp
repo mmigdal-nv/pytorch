@@ -344,6 +344,7 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   // Insert SyncThreads at end of for-loop to avoid WAR race condition
   const auto exprs_war_sync = insertWarThreadSynchronization(exprs_reuse_mem);
 
+  // Generate address pre-computation if applicable.
   const auto exprs_with_precompute_address =
       preComputeLiftedAddress(exprs_war_sync);
 
