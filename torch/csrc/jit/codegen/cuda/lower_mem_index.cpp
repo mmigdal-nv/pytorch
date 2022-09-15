@@ -846,7 +846,12 @@ void AddressComputeInfo::makeAddressRecord(
     //  of how explicit should the heuristic involving global memory should be
     //  made.
     if (is_shared_mem_access &&
-        isSeparable(reference_tv, ref_id, contig_merged_ids, false, require_divisible)) {
+        isSeparable(
+            reference_tv,
+            ref_id,
+            contig_merged_ids,
+            false,
+            require_divisible)) {
       if (
           // Checking reference tv is enough for non-swizzled producer.
           (

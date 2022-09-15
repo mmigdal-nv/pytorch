@@ -498,9 +498,8 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //! optimization that gets applied automatically.
   void liftWriteAddress() {
     TORCH_CHECK(
-        memory_type_ == MemoryType::Global ||
-            memory_type_ == MemoryType::Shared,
-        "cannot do address computation for local tensors");
+        memory_type_ == MemoryType::Shared,
+        "cannot do write address computation for global and local tensors");
     lift_write_address_ = true;
   }
 
