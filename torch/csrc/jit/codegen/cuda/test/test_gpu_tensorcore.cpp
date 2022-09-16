@@ -3016,32 +3016,37 @@ TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
     auto tv0 = makeContigTensor(2, DataType::Half);
     auto tv1 = makeContigTensor(2, DataType::Half);
 
-  TensorView* tv0 = makeContigTensor(1);
+    fusion.addInput(tv0);
+    fusion.addInput(tv1);
 
-  fusion.addInput(tv0);
-  auto tv1 = set(tv0);
-  auto tv2 = set(tv1);
-  auto tv3 = set(tv2);
-  fusion.addOutput(tv3);
+    auto tv2 = matmul(tv0, tv1, layout);
 
-  tv3->split(0, 32);
-  tv3->split(1, 4);
+    fusion.addOutput(tv2);
 
-  tv0->computeAt(tv3, 1);
-  tv2->computeAt(tv3, 2);
+    MatMulTileOptions gemm_tile;
+    gemm_tile.cta_tile = GemmTile(128, 128, 32);
+    gemm_tile.warp_tile = GemmTile(64, 64, 32);
+    gemm_tile.instruction_tile = GemmTile(16, 16, 16);
 
-  tv1->doubleBuffer();
-  tv2->doubleBuffer();
-  tv2->skewDoubleBuffer();
+    auto mma_builder =
+        MmaBuilder(MmaOptions::MacroType::Turing_16_16_16, gemm_tile)
+            .layout(layout);
 
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  at::Tensor t0 = at::randn({256}, options);
-  FusionExecutor fe;
+    MatmulParam params(mma_builder);
+    params.tile_sizes = gemm_tile;
+    scheduleMatmul(tv2, tv0, tv1, params);
 
-  fe.compileFusion(&fusion, {t0});
-  auto cg_outputs = fe.runFusion({t0});
+    at::manual_seed(0);
+    auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
-  testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
+    FusionExecutor fe;
+    NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
+        7, 5, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+    auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
+    auto tref = atMatmul(
+        inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
+    TORCH_CHECK(cg_outputs[0].allclose(tref, 0.0001, 0.0001));
+  }
 }
 
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
