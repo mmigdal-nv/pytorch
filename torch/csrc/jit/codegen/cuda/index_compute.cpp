@@ -1217,13 +1217,7 @@ indexMapFromTV(
       idx = loop->start();
     }
 
-    bool is_split_prolog =
-        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::UpperProlog ||
-        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::LowerProlog;
-    // The two conditions should never be true at the same time,
-    //  since the second condition implies that the double buffer
-    //  loop is within the current loop.
-    if (loop == double_buffer_loop && !is_split_prolog) {
+    if (loop == double_buffer_loop) {
       auto stage_depth =
           GpuLower::current()->doubleBufferInfo().getStageDepthFor(
               loop->iter_domain());
@@ -1922,6 +1916,9 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
         auto loop_index =
             db_loop->isTrivial() ? db_loop->start() : db_loop->index();
 
+        // Need to add the producer outer main loop index by 1
+        //  in the case of lower prolog, see the example in
+        // [Skew Double Buffer Loop Transformation]
         auto consumer_db_loop =
             gpu_lower->doubleBufferInfo().getDoubleBufferLoop(
                 consumer_tv, loops);
@@ -2268,12 +2265,7 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
       auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
           db_loop->iter_domain());
       bool is_circular_buffer_loop = stage_depth > 2;
-      bool is_prolog =
-          db_loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Prolog ||
-          db_loop->doubleBufferLoopStage() ==
-              DoubleBufferLoopStage::UpperProlog ||
-          db_loop->doubleBufferLoopStage() ==
-              DoubleBufferLoopStage::LowerProlog;
+      bool is_prolog = isProlog(db_loop->doubleBufferLoopStage());
 
       Val* db_switch_index = nullptr;
 

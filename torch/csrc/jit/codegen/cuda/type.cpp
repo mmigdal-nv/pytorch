@@ -1181,6 +1181,20 @@ size_t dataTypeSize(DataType type, DataType index_type) {
   return dataTypeSize(type);
 }
 
+bool isProlog(DoubleBufferLoopStage stage) {
+  switch (stage) {
+    case DoubleBufferLoopStage::Prolog:
+    case DoubleBufferLoopStage::UpperProlog:
+    case DoubleBufferLoopStage::LowerProlog:
+      return true;
+
+    default:
+      return false;
+  }
+
+  return false;
+}
+
 TORCH_CUDA_CU_API std::ostream& operator<<(
     std::ostream& os,
     const DoubleBufferLoopStage loop_stage) {
