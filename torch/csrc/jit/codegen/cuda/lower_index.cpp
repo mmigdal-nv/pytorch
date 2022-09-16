@@ -872,10 +872,13 @@ void IndexLowering::handle(const kir::CpAsyncCommit* commit) {
 void IndexLowering::handle(const kir::AddressCompute* address_compute) {
   // Logic for base address computation
   auto address_tv = address_compute->addressTv();
+
+  // Unpack additional info related to this address pre-computaion op.
   auto maybe_address_record =
       GpuLower::current()->addressComputeInfo().getMaybeRecordForAddressTv(
           address_tv->as<TensorView>());
   TORCH_INTERNAL_ASSERT(maybe_address_record.has_value());
+
   auto address_record = maybe_address_record.value();
 
   Val* lowered_data_index = nullptr;
@@ -892,9 +895,6 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
       Index::generateAddressTensorIndex(
           for_loops_, address_tv->as<TensorView>()),
       lowered_data_index));
-
-  // TODO(kir): remove the need for const_cast
-  // TORCH_INTERNAL_ASSERT(false, "not implemented");
 }
 
 void IndexLowering::generate(const std::vector<Expr*>& exprs) {

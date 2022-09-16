@@ -25736,7 +25736,6 @@ TEST_F(NVFuserTest, FusionSimpleMemHoisting_CUDA) {
   tv2->liftWriteAddress();
   tv2->liftReadAddress();
   tv0->liftReadAddress();
-  tv3->liftWriteAddress();
 
   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
 
