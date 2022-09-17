@@ -517,11 +517,7 @@ class TORCH_CUDA_CU_API TensorView : public Val {
 
   //! Scheduler primitive to enable skew double buffer loop transform.
   //!  see also [Skew Double Buffer Loop Transformation]
-  void skewDoubleBuffer() {
-    TORCH_INTERNAL_ASSERT(
-        is_double_buffered_, "can only skew double buffered tensor");
-    skew_double_buffer_loop_ = true;
-  }
+  void skewDoubleBuffer();
 
   //! Returns true if skew double buffer loop transform is enabled
   //!  for this tv.
