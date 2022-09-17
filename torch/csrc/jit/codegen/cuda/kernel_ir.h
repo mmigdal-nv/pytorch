@@ -285,6 +285,8 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
   explicit CpAsyncCommit(IrBuilderPasskey passkey);
 };
 
+//! An Expression type that handles pre-computation of memory address
+//!  that are not inlined.
 class TORCH_CUDA_CU_API AddressCompute final : public Expr {
  public:
   enum class AddressComputeOpType { BASE_ADDRESS };

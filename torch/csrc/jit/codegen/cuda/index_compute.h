@@ -378,6 +378,16 @@ class Index {
       kir::ForLoop* unswitch_or_vec_loop,
       bool padding_predicate);
 
+  //! Generates the tensor index that accesses the pre-computed
+  //!  base address stored in address tv.
+  //! Eg.
+  //!   for i in 0..16:
+  //!      T0[i] = ...; // T0 is the address tv
+  //!   for i in 0..32:
+  //!     for j in 0..16:
+  //!      ... = T1[i*16 + T0[j]]
+  //!   The "T0[j]" part is what this function tries to generate.
+  //! See also [Note on memory index lifting] in lower_mem_index.cpp
   static kir::TensorIndex* generateAddressTensorIndex(
       const std::vector<kir::ForLoop*>& for_loops,
       TensorView* address_tv);

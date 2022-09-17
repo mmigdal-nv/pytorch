@@ -2803,9 +2803,15 @@ TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
     at::manual_seed(0);
     auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
+    CompileOptions co;
+    co.index_mode = KernelIndexMode::INT32;
+
     FusionExecutor fe;
     NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-        8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+        8,
+        0,
+        fe.compileFusion(
+            &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
     auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
     auto tref = atMatmul(
         inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -2854,13 +2860,26 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck4warp_CUDA) {
         at::manual_seed(0);
         auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
+        CompileOptions co;
+        co.index_mode = KernelIndexMode::INT32;
+
         FusionExecutor fe;
         NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-            8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+            8,
+            0,
+            fe.compileFusion(
+                &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
         auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
         auto tref = atMatmul(
             inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
-        TORCH_CHECK(cg_outputs[0].allclose(tref, 0.0001, 0.0001));
+        TORCH_CHECK(
+            cg_outputs[0].allclose(tref, 0.0001, 0.0001),
+            "error :",
+            (cg_outputs[0] - tref).abs().max(),
+            "tile dim:",
+            mn_size,
+            " ",
+            k_size);
       }
     }
   }
@@ -2900,14 +2919,23 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
           params.tile_sizes = gemm_tile;
           params.async_gmem_load_operands = true;
           params.double_buffer_options.double_buffer_smem_write = true;
+          params.double_buffer_options.double_buffer_smem_read = true;
+          params.double_buffer_options.smem_double_buffer_stage = 2;
+
           scheduleMatmul(tv2, tv0, tv1, params);
 
           at::manual_seed(0);
           auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
+          CompileOptions co;
+          co.index_mode = KernelIndexMode::INT32;
+
           FusionExecutor fe;
           NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-              8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+              8,
+              0,
+              fe.compileFusion(
+                  &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
           auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
           auto tref = atMatmul(
               inputs.first.to(at::kFloat),
@@ -2952,14 +2980,23 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
       params.tile_sizes = gemm_tile;
       params.async_gmem_load_operands = true;
       params.double_buffer_options.double_buffer_smem_write = true;
+      params.double_buffer_options.double_buffer_smem_read = true;
+      params.double_buffer_options.smem_double_buffer_stage = 2;
+
       scheduleMatmul(tv2, tv0, tv1, params);
+
+      CompileOptions co;
+      co.index_mode = KernelIndexMode::INT32;
 
       at::manual_seed(0);
       auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
       FusionExecutor fe;
       NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-          8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+          8,
+          0,
+          fe.compileFusion(
+              &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
       auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
       auto tref = atMatmul(
           inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -2968,6 +3005,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
   }
 }
 
+// Matmul test for Turing MMA: across supported layouts
 TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
@@ -3009,38 +3047,6 @@ TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
         inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
     TORCH_CHECK(cg_outputs[0].allclose(tref, 0.0001, 0.0001));
   }
-}
-
-TEST_F(NVFuserTest, FusionSimpleSkewDoubleBuffer_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  TensorView* tv0 = makeContigTensor(1);
-
-  fusion.addInput(tv0);
-  auto tv1 = set(tv0);
-  auto tv2 = set(tv1);
-  auto tv3 = set(tv2);
-  fusion.addOutput(tv3);
-
-  tv3->split(0, 32);
-  tv3->split(1, 4);
-
-  tv0->computeAt(tv3, 1);
-  tv2->computeAt(tv3, 2);
-
-  tv1->doubleBuffer();
-  tv2->doubleBuffer();
-  tv2->skewDoubleBuffer();
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  at::Tensor t0 = at::randn({256}, options);
-  FusionExecutor fe;
-
-  fe.compileFusion(&fusion, {t0});
-  auto cg_outputs = fe.runFusion({t0});
-
-  testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
 }
 
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD

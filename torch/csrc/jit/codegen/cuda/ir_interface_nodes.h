@@ -474,6 +474,13 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     return circular_buffer_stage_;
   }
 
+  //! A scheduler primitive signifying that part of the read
+  //!  index math of this tensor would need to be pre-computed.
+  //! See also [Note on memory index lifting] in lower_mem_index.cpp
+  //! FIXME:
+  //!   This is currently formulated as a scheduler primitive to
+  //! unblock matmul performance. It should ideally be a generic
+  //! optimization that gets applied automatically.
   void liftReadAddress() {
     TORCH_CHECK(
         memory_type_ == MemoryType::Global ||
@@ -482,28 +489,38 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     lift_read_address_ = true;
   }
 
+  //! A scheduler primitive signifying that part of the write
+  //!  index math of this tensor would need to be pre-computed.
+  //! See also [Note on memory index lifting] in lower_mem_index.cpp
+  //! FIXME:
+  //!   This is currently formulated as a scheduler primitive to
+  //! unblock matmul performance. It should ideally be a generic
+  //! optimization that gets applied automatically.
   void liftWriteAddress() {
     TORCH_CHECK(
-        memory_type_ == MemoryType::Global ||
-            memory_type_ == MemoryType::Shared,
-        "cannot do address computation for local tensors");
+        memory_type_ == MemoryType::Shared,
+        "cannot do write address computation for global and local tensors");
     lift_write_address_ = true;
   }
 
+  //! Returns true if the read index of this tensor
+  //!  should be partially pre-computed.
   bool shouldLiftReadAddress() const {
     return lift_read_address_;
   }
 
+  //! Returns true if the write index of this tensor
+  //!  should be partially pre-computed.
   bool shouldLiftWriteAddress() const {
     return lift_write_address_;
   }
 
-  void skewDoubleBuffer() {
-    TORCH_INTERNAL_ASSERT(
-        is_double_buffered_, "can only skew double buffered tensor");
-    skew_double_buffer_loop_ = true;
-  }
+  //! Scheduler primitive to enable skew double buffer loop transform.
+  //!  see also [Skew Double Buffer Loop Transformation]
+  void skewDoubleBuffer();
 
+  //! Returns true if skew double buffer loop transform is enabled
+  //!  for this tv.
   bool shouldSkewDoubleBuffer() const {
     return skew_double_buffer_loop_;
   }

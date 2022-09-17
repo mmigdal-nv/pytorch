@@ -506,6 +506,10 @@ BasicAllocInfo getAllocInformation(
     if (tv->isDoubleBuffered() || tv->isCircularBuffered()) {
       auto double_buffer_alloc_axis =
           gpu_lower->doubleBufferInfo().getDoubleBufferAxis(tv);
+      // In the case of skewed double buffer, the upper prolog
+      //  component requires that the consumer tv is allocated
+      //  outside of the outer main loop. Details see
+      //  [Skew Double Buffer Loop Transformation]
       if (tv->shouldSkewDoubleBuffer()) {
         auto concrete_outer_alloc_axis =
             gpu_lower->doubleBufferInfo().nestLiftingMap().at(

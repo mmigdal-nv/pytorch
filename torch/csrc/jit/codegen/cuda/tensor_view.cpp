@@ -1163,6 +1163,34 @@ void TensorView::circularBuffer(unsigned int stage) {
   circular_buffer_stage_ = stage;
 }
 
+namespace {
+
+void validateSkewDoubleBuffer(TensorView* tv) {
+  TORCH_CHECK(tv->isDoubleBuffered(), "can only skew double buffered tensor");
+
+  TORCH_CHECK(
+      tv->definition() != nullptr && tv->definition()->inputs().size() > 0,
+      "cannot skew double buffer input tensor");
+
+  auto producer = tv->definition()->input(0);
+
+  TORCH_CHECK(producer != nullptr, "invalid producer op");
+  auto producer_tv = dynamic_cast<TensorView*>(producer);
+
+  TORCH_CHECK(producer_tv != nullptr, "invalid producer val");
+
+  TORCH_CHECK(
+      producer_tv->isDoubleBuffered() || producer_tv->isCircularBuffered(),
+      "Producer TV has to be double buffered or circular buffered to skew double buffer loop");
+}
+
+} // namespace
+
+void TensorView::skewDoubleBuffer() {
+  validateSkewDoubleBuffer(this);
+  skew_double_buffer_loop_ = true;
+}
+
 bool TensorView::isEmptyTensor() const {
   auto& root_domain = getMaybeRFactorDomain();
   return std::all_of(

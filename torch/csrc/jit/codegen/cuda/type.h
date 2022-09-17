@@ -337,6 +337,10 @@ enum class DoubleBufferLoopStage {
 
 enum class PredicatePeelStage { NoApplicable, Prolog, Main };
 
+//! Returns true if the given stage is a prolog stage
+//!  for some double buffered or circular buffered loop.
+bool isProlog(DoubleBufferLoopStage stage);
+
 //! Supported swizzle types,
 //!  corresponds to swizzles functions on the runtime cuda
 //!  naming it swizzle_2d to reserve the options to have a swizzle_1d.
