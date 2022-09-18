@@ -23024,9 +23024,6 @@ TEST_F(NVFuserTest, FusionPredicatePeeling1_CUDA) {
   tv2->axis(2)->parallelize(ParallelType::TIDy);
   tv2->peelPredicatedLoop(0);
 
-  fusion.printMath();
-  fusion.printKernel();
-
   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
   at::Tensor t0 = at::randn({m, n}, options);
 

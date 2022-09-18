@@ -433,6 +433,8 @@ struct LoopTransformInfo {
   DoubleBufferLoopStage double_buffer_loop_stage =
       DoubleBufferLoopStage::NotApplicable;
 
+  //! Tracks the predicate peeling stage of this loop,
+  //!  see [Predicate Peeling].
   PredicatePeelStage predicate_peel_stage = PredicatePeelStage::NoApplicable;
 
   //! Tracks if this for loop is for base index calculation for

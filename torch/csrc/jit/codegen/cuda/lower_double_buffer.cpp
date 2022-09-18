@@ -207,6 +207,7 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
           double_buffer_loop_->stop(),
           SimplifyingIrBuilder::create<Int>(stage_depth - 1));
     } else if (loop_type_ == DoubleBufferLoopStage::CircularInitProlog) {
+      // See [Predicate Peeling Interaction with Circular Buffering]
       TORCH_INTERNAL_ASSERT(start->isZeroInt());
       start = SimplifyingIrBuilder::create<Int>(stage_depth - 1);
       stop = SimplifyingIrBuilder::create<Int>(stage_depth);
@@ -305,7 +306,9 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
   //! Returns true if the expression is an initialization expr that
   //!  can be omitted in main loop.
+  //! See [Predicate Peeling Interaction with Circular Buffering]
   bool canOmitInitInMainLoop(Expr* expr, kir::ForLoop* double_buffer_loop) {
+    // Check that this is an initialization for cp.async.
     if (!ir_utils::isCpAsyncInit(expr) ||
         !GpuLower::current()->predicatePeelingInfo().shouldPeelLoop(
             double_buffer_loop)) {
@@ -314,6 +317,9 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
     auto out_tv = ir_utils::getTvOutput(expr);
 
+    // Check that the double buffer loop is the main stage of
+    //  the loop defining out_tv as there might be multiple
+    //  loops that realize double buffers.
     bool db_loop_found = false;
     auto& ca_map = GpuLower::current()->caMap();
 
@@ -325,6 +331,13 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       return false;
     }
 
+    // This optimization only applies when all the loops on the
+    //  inner side of the double buffer main loop are either
+    //  constant unrolled or parallel.
+    // TODO:
+    //  Buffer alias and broadcast resolution might still
+    // break this. These are not showing in matmul kernels but
+    // would need to build out support for general safty usage.
     for (auto id : out_tv->domain()->domain()) {
       if (db_loop_found) {
         auto loop_concrete_id =
@@ -332,11 +345,6 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
         if (!loop_concrete_id->isParallelized() &&
             !loop_concrete_id->extent()->isConstInt()) {
-          // If all the loops on the right of the peeled double buffer loop are
-          //  either parallel or unrolled. Should not need to
-
-          // TODO: also check broadcast resolution, and predicate removal here,
-          //  for general safety.
           return false;
         }
       }
@@ -346,11 +354,9 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
               id, double_buffer_loop->iter_domain(), IdMappingMode::LOOP);
     }
 
-    TORCH_INTERNAL_ASSERT(
-        db_loop_found,
-        "Double buffer axis not on tv's tensor domain: ",
-        out_tv->toString());
-    return true;
+    // Only when double buffer loop was found on out_tv could useful
+    //  information have been inferred by this function.
+    return db_loop_found;
   }
 
  private:

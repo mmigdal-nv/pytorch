@@ -1621,6 +1621,8 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
       if (auto tile_entry =
               gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
                   loops, root_dom[i])) {
+        // Add the "predicate peeling offset", see [Predicate Peeling]
+        //  to the tensor index if this root domain is predicate peeled.
         if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog &&
             !tile_entry.value()
                  .for_loop->loopTransformInfo()
@@ -2129,6 +2131,8 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
       if (auto tile_entry =
               gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
                   loops, root_dom[i])) {
+        // Add the "predicate peeling offset", see [Predicate Peeling]
+        //  to the tensor index if this root domain is predicate peeled.
         if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog) {
           root_ind = SimplifyingIrBuilder::subExpr(
               root_ind,
@@ -3213,6 +3217,8 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
         gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
             loops, contig_id);
 
+    // Check if this predicate for this contig_id is being generated
+    //  in predicate peeling prolog. See also [Predicate Peeling].
     bool has_peeled_prolog = maybe_tiled_entry.has_value() &&
         maybe_tiled_entry.value().peel_stage == PredicatePeelStage::Prolog;
 
@@ -3228,29 +3234,36 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
       auto stop_pred = SimplifyingIrBuilder::ltExpr(
                            offsetted_stop_index, contig_id->extent())
                            ->as<Bool>();
-      auto maybe_tiled_entry =
-          gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
-              loops, contig_id);
 
+      // Modifying predicate math for predicate peeled loop:
+      //  detailed definition see [Predicate Peeling]
       if (maybe_tiled_entry.has_value()) {
         auto tile_entry = maybe_tiled_entry.value();
         if (tile_entry.peel_stage == PredicatePeelStage::Prolog) {
+          // In predicate peeled prolog, the stop predicate is
+          //  stop_index < tile_residue
           stop_pred = SimplifyingIrBuilder::ltExpr(
                           offsetted_stop_index,
-                          PredicatePeeling::getSplitTileOffset(
+                          PredicatePeeling::getPrologPredicateOffset(
                               contig_id, tile_entry.inner_factor))
                           ->as<Bool>();
         } else if (
+            // Handle the condition where the predicate peeled
+            //  iterdomain is double/circular buffered.
             tile_entry.for_loop->doubleBufferLoopStage() ==
                 DoubleBufferLoopStage::Main &&
-            // TODO: need to unify the double buffer index/predicate calculation
-            // TODO: need to update this part as well in double buffer extension
-            //        for turing/volta staging regs.
             db_axis != nullptr &&
             GpuLower::current()->caMap()->areMapped(
                 db_axis,
                 tile_entry.for_loop->iter_domain(),
                 IdMappingMode::LOOP)) {
+          // When the predicate peeled loop is double buffered
+          //  or circular buffered, the producer index is skewed
+          //  ahead of the main loop by (stage_depth-1). So on the
+          //  predicate peeled main loop side, instead of just removing
+          //  the predicate for this contig_id, just re-write it to
+          //  (loop_index + stage_depth) < loop_stop, which should
+          //  be thread uniform and very cheap to evaluate.
           auto db_index = SimplifyingIrBuilder::addExpr(
               tile_entry.for_loop->index(),
               IrBuilder::create<Int>(
@@ -3261,6 +3274,9 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
                           db_index, tile_entry.for_loop->stop())
                           ->as<Bool>();
         } else {
+          // If the predicate peeled loop is not double buffered
+          //  then in the main stage of the predicate peeled loop
+          //  this predicate can just be omitted.
           stop_pred = gpu_lower->kernel()->trueVal();
         }
       }

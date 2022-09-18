@@ -549,9 +549,14 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   friend TORCH_CUDA_CU_API void groupReductions(
       const std::vector<TensorView*>&);
 
+  //! A scheduler primitive requesting predicate peeling transform
+  //!  on the loop generated corresponding to `axis_id`.
+  //! See [Predicate Peeling].
   void peelPredicatedLoop(int axis_id);
 
-  const auto& peeledSerialId() const {
+  //! Returns the iterdomain corresponding to the loop that will
+  //!  be using the predicate peeling transform.
+  auto peeledSerialId() const {
     return peeled_serial_id_;
   }
 
@@ -593,7 +598,10 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //! Indicates the circular buffering stage depth if applicable.
   unsigned int circular_buffer_stage_ = 0;
 
-  std::vector<IterDomain*> peeled_serial_id_;
+  //! Keeps track of the iterdomain that will use predicate
+  //!  peeling transform on the corresponding loop.
+  IterDomain* peeled_serial_id_ = nullptr;
+
   // special handling for CPU based zero-dim tensors (i.e. CPU Tensors that only
   // have one value). This is only used if on an input value, otherwise ignored.
   // This is important as special handling because these "scalars" should be

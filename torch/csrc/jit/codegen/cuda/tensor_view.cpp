@@ -222,8 +222,8 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
   for (const auto id : src->axesToSwizzle()) {
     axes_to_swizzle_.push_back(ir_cloner->clone(id));
   }
-  for (const auto id : src->peeled_serial_id_) {
-    peeled_serial_id_.push_back(ir_cloner->clone(id));
+  if (src->peeled_serial_id_ != nullptr) {
+    peeled_serial_id_ = ir_cloner->clone(src->peeled_serial_id_);
   }
 }
 
@@ -1218,7 +1218,7 @@ void TensorView::peelPredicatedLoop(int axis_id) {
   auto id = axis(axis_id);
   TORCH_CHECK(
       PredicatePeeling::supportedPeelingLoop(id), "unsupported loop peeling");
-  peeled_serial_id_.push_back(id);
+  peeled_serial_id_ = id;
 }
 
 TensorViewBuilder& TensorViewBuilder::ndims(size_t ndims) {
