@@ -295,6 +295,8 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
   explicit CpAsyncCommit(IrBuilderPasskey passkey);
 };
 
+//! An Expression type that handles pre-computation of memory address
+//!  that are not inlined.
 class TORCH_CUDA_CU_API AddressCompute final : public Expr {
  public:
   enum class AddressComputeOpType { BASE_ADDRESS, INCREMENT };
@@ -444,6 +446,8 @@ struct LoopTransformInfo {
   DoubleBufferLoopStage double_buffer_loop_stage =
       DoubleBufferLoopStage::NotApplicable;
 
+  //! Tracks the predicate peeling stage of this loop,
+  //!  see [Predicate Peeling].
   PredicatePeelStage predicate_peel_stage = PredicatePeelStage::NoApplicable;
 
   //! Tracks if this for loop is for base index calculation for

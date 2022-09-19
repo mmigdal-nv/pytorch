@@ -215,10 +215,15 @@ class TORCH_CUDA_CU_API DoubleBufferInfo {
   //!  the number of stages will be 2 in the case of double buffer loop.
   unsigned int getStageDepthFor(IterDomain* circular_buffered_id);
 
+  //! Keeps track of the inner_db_loop,outer_db_loop pair
+  //!  that requires skew double buffer transform, see also
+  //!  [Skew Double Buffer Loop Transformation]
   const auto& nestLiftingMap() const {
     return concrete_skewed_double_buffer_loop_map_;
   }
 
+  //! Returns true if db_loop is the lower prolog part after
+  //!  skew double buffer transform within the given outer loop.
   bool isLowerPrologWithin(IterDomain* db_loop, IterDomain* outer_loop);
 
  private:

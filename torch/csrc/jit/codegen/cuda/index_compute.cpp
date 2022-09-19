@@ -310,18 +310,36 @@ Val* getProducerIndexWithPartialSplit(
       producer_index, SimplifyingIrBuilder::create<Int>(diff_eval.value()));
 }
 
+//! See [Note on memory index lifting] in lower_mem_index.cpp:
+//!  Returns true if there is a lifted component of this index computation
+//! that was pre-computed earlier on the same kernel.
+//!
+//! \param data_tv: the tensor holding the data that the indexing math is
+//!   indexing into.
+//! \param reference_tv: the tensorview supplying the loop information for
+//!   indexing purpose, i.e. consumer_tv if data_tv is producer, or data_tv
+//!   it self in the case of consumer indexing.
+//! \param loops: The current loop nest that the indexing math is operating at.
 bool shouldUseLiftedAddress(
     const TensorView* data_tv,
     const TensorView* reference_tv,
     const std::vector<kir::ForLoop*>& loops) {
+  // Check if there's any record in gpu lower signifying this index
+  //  math has been lifted.
   auto maybe_address_record =
       GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
           data_tv, reference_tv);
   if (maybe_address_record.has_value()) {
     auto serial_id = maybe_address_record.value()->getConcreteSerialLoopId();
     return std::any_of(loops.begin(), loops.end(), [serial_id](auto loop) {
-      // TODO: use loop attribute to detect
-      //  address calculation loop.
+      // 1. We should not use the lifted index math in the case of base index
+      //  loop, which is the place where we are pre-computing the lifted
+      //  components.
+      // 2. The serial id on the index record is essential in the index lifitng
+      // pass
+      //  and the lifted component is valid only if we are indexing an
+      //  expression within the serial loop, or a loop that's mapped with the
+      //  serial loop.
       return !loop->isBaseIndexLoop() &&
           GpuLower::current()->caMap()->areMapped(
               loop->iter_domain(), serial_id, IdMappingMode::LOOP);
@@ -1199,13 +1217,7 @@ indexMapFromTV(
       idx = loop->start();
     }
 
-    bool is_split_prolog =
-        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::UpperProlog ||
-        loop->doubleBufferLoopStage() == DoubleBufferLoopStage::LowerProlog;
-    // The two conditions should never be true at the same time,
-    //  since the second condition implies that the double buffer
-    //  loop is within the current loop.
-    if (loop == double_buffer_loop && !is_split_prolog) {
+    if (loop == double_buffer_loop) {
       auto stage_depth =
           GpuLower::current()->doubleBufferInfo().getStageDepthFor(
               loop->iter_domain());
@@ -1336,6 +1348,8 @@ Val* hoistConsumerIndex(
       consumer_root_id, consumer_tv, consumer_indexing, index);
 
   if (!maybe_hoisted_consumer_id.has_value() ||
+      // Turning off the common index hoisting pass if the
+      //   tensor view has its own lifted pre-computed indexing.
       consumer_tv->shouldLiftWriteAddress()) {
     return index;
   }
@@ -1383,6 +1397,8 @@ Val* hoistProducerIndex(
       producer_root_id, producer_tv, producer_indexing, index);
 
   if (!maybe_indexed_producer_id.has_value() ||
+      // Turning off the common index hoisting pass if the
+      //   tensor view has its own lifted pre-computed indexing.
       producer_tv->shouldLiftReadAddress()) {
     return index;
   }
@@ -1605,6 +1621,8 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
       if (auto tile_entry =
               gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
                   loops, root_dom[i])) {
+        // Add the "predicate peeling offset", see [Predicate Peeling]
+        //  to the tensor index if this root domain is predicate peeled.
         if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog &&
             !tile_entry.value()
                  .for_loop->loopTransformInfo()
@@ -1750,8 +1768,7 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
 
   auto producer_swizzled_index = index_swizzle;
 
-  // TODO: add validation pass:
-  //  swizzle should be lifted when lifting read index is
+  // Swizzle should be lifted when lifting read index is
   // specified. So would not need to compute the swizzle again
   // on the inlined part of tensor index.
   if (producer_tv->hasSwizzleOp() && !should_use_lifted_address) {
@@ -1898,12 +1915,15 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
     auto db_loop = gpu_lower->doubleBufferInfo().getDoubleBufferLoop(
         producer_tv, loops, true);
     if (db_loop != nullptr) {
-      // TODO: add loop attribute to note it is not
-      //  in an address calculation loop:
+      // No need to compute double buffer index in the address compute loop
+      //  as they have been handled with addtional offsets.
       if (!db_loop->isBaseIndexLoop()) {
         auto loop_index =
             db_loop->isTrivial() ? db_loop->start() : db_loop->index();
 
+        // Need to add the producer outer main loop index by 1
+        //  in the case of lower prolog, see the example in
+        // [Skew Double Buffer Loop Transformation]
         auto consumer_db_loop =
             gpu_lower->doubleBufferInfo().getDoubleBufferLoop(
                 consumer_tv, loops);
@@ -2086,6 +2106,8 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
       if (auto tile_entry =
               gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
                   loops, root_dom[i])) {
+        // Add the "predicate peeling offset", see [Predicate Peeling]
+        //  to the tensor index if this root domain is predicate peeled.
         if (tile_entry.value().peel_stage != PredicatePeelStage::Prolog) {
           root_ind = SimplifyingIrBuilder::subExpr(
               root_ind,
@@ -2106,6 +2128,12 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
   TORCH_INTERNAL_ASSERT(
       strided_inds.size() == consumer_tv->getMaybeRFactorDomain().size());
 
+  // TODO:
+  //  Cannot yet lift global consumer indices in matmul kernels as it is
+  // not within the main loop, which also means it's not as important to
+  // lift.
+  //  Would definitely need to enable lifting on this path since there might
+  // be cases where global memory is written in a not unrolled serial loop.
   return strided_inds;
 }
 
@@ -2132,7 +2160,11 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
       consumer_indexing.zeroDomains(),
       consumer_indexing.zeroMergedIn());
 
-  index_swizzle.run();
+  // Do not need to run swizzle again if the lifted indices path is
+  //  used. They are guaranteed to be in the lifted components.
+  if (!shouldUseLiftedAddress(consumer_tv, consumer_tv, loops)) {
+    index_swizzle.run();
+  }
 
   const auto& index_map = index_swizzle.indexMap();
   const auto& extent_map = consumer_indexing.extentMap();
@@ -2229,20 +2261,13 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
     TORCH_INTERNAL_ASSERT(
         db_loop != nullptr, "double buffer loop not materialized.");
 
-    // TODO: add loop attribute to note it is not
-    //  in an address calculation loop:
+    // Do not need to calculate db switch index if the loop is used for
+    //  precomputing the lifted components of the indices.
     if (!db_loop->isBaseIndexLoop()) {
       auto stage_depth = gpu_lower->doubleBufferInfo().getStageDepthFor(
           db_loop->iter_domain());
       bool is_circular_buffer_loop = stage_depth > 2;
-      bool is_prolog =
-          db_loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Prolog ||
-          db_loop->doubleBufferLoopStage() ==
-              DoubleBufferLoopStage::UpperProlog ||
-          db_loop->doubleBufferLoopStage() ==
-              DoubleBufferLoopStage::LowerProlog ||
-          db_loop->doubleBufferLoopStage() ==
-              DoubleBufferLoopStage::CircularInitProlog;
+      bool is_prolog = isProlog(db_loop->doubleBufferLoopStage());
 
       Val* db_switch_index = nullptr;
 
@@ -2298,8 +2323,7 @@ std::vector<Val*> Index::getProducerStridedIndices(
         getNonGlobalProducerStridedIndices(producer, consumer, loops);
   }
 
-  // TODO: this check is becoming not very precise.
-  //  Could probably write a dedicated validation for the index.
+  // This check doesn't apply in lifted index path.
   TORCH_INTERNAL_ASSERT(
       producer->shouldLiftReadAddress() ||
           strided_indices.size() == producer->getMaybeRFactorDomain().size() ||
@@ -3180,6 +3204,8 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
         gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
             loops, contig_id);
 
+    // Check if this predicate for this contig_id is being generated
+    //  in predicate peeling prolog. See also [Predicate Peeling].
     bool has_peeled_prolog = maybe_tiled_entry.has_value() &&
         maybe_tiled_entry.value().peel_stage == PredicatePeelStage::Prolog;
 
@@ -3195,29 +3221,36 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
       auto stop_pred = SimplifyingIrBuilder::ltExpr(
                            offsetted_stop_index, contig_id->extent())
                            ->as<Bool>();
-      auto maybe_tiled_entry =
-          gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
-              loops, contig_id);
 
+      // Modifying predicate math for predicate peeled loop:
+      //  detailed definition see [Predicate Peeling]
       if (maybe_tiled_entry.has_value()) {
         auto tile_entry = maybe_tiled_entry.value();
         if (tile_entry.peel_stage == PredicatePeelStage::Prolog) {
+          // In predicate peeled prolog, the stop predicate is
+          //  stop_index < tile_residue
           stop_pred = SimplifyingIrBuilder::ltExpr(
                           offsetted_stop_index,
-                          PredicatePeeling::getSplitTileOffset(
+                          PredicatePeeling::getPrologPredicateOffset(
                               contig_id, tile_entry.inner_factor))
                           ->as<Bool>();
         } else if (
+            // Handle the condition where the predicate peeled
+            //  iterdomain is double/circular buffered.
             tile_entry.for_loop->doubleBufferLoopStage() ==
                 DoubleBufferLoopStage::Main &&
-            // TODO: need to unify the double buffer index/predicate calculation
-            // TODO: need to update this part as well in double buffer extension
-            //        for turing/volta staging regs.
             db_axis != nullptr &&
             GpuLower::current()->caMap()->areMapped(
                 db_axis,
                 tile_entry.for_loop->iter_domain(),
                 IdMappingMode::LOOP)) {
+          // When the predicate peeled loop is double buffered
+          //  or circular buffered, the producer index is skewed
+          //  ahead of the main loop by (stage_depth-1). So on the
+          //  predicate peeled main loop side, instead of just removing
+          //  the predicate for this contig_id, just re-write it to
+          //  (loop_index + stage_depth) < loop_stop, which should
+          //  be thread uniform and very cheap to evaluate.
           auto db_index = SimplifyingIrBuilder::addExpr(
               tile_entry.for_loop->index(),
               IrBuilder::create<Int>(
@@ -3228,6 +3261,9 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
                           db_index, tile_entry.for_loop->stop())
                           ->as<Bool>();
         } else {
+          // If the predicate peeled loop is not double buffered
+          //  then in the main stage of the predicate peeled loop
+          //  this predicate can just be omitted.
           stop_pred = gpu_lower->kernel()->trueVal();
         }
       }
@@ -3268,7 +3304,6 @@ kir::TensorIndex* Index::generateAddressTensorIndex(
   Val* local_stride = address_tv->fusion()->oneVal();
 
   // Double buffer loop used to handle double buffer read access
-  // TODO: add test case for double buffer write
   auto double_buffer_loop =
       GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
           address_record->indexReferenceTensor(), for_loops, true);
@@ -3288,6 +3323,8 @@ kir::TensorIndex* Index::generateAddressTensorIndex(
       auto index = loop->isTrivial() ? loop->start() : loop->index();
 
       // Double buffer read access:
+      //  Need to advance the read index of the double buffer
+      // loop the same way as in other places.
       if (loop == double_buffer_loop && !is_address_calculation) {
         auto stage_depth =
             GpuLower::current()->doubleBufferInfo().getStageDepthFor(
@@ -3297,7 +3334,7 @@ kir::TensorIndex* Index::generateAddressTensorIndex(
         //  up.
         TORCH_INTERNAL_ASSERT(
             address_record->isRead(),
-            "unrolled double buffer write support not yet enabled");
+            "index lifting in unrolled double buffer write support not yet enabled");
         index = SimplifyingIrBuilder::addExpr(
             index, SimplifyingIrBuilder::create<Int>(stage_depth - 1));
       }

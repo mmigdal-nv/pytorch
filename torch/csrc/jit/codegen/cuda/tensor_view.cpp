@@ -222,8 +222,8 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
   for (const auto id : src->axesToSwizzle()) {
     axes_to_swizzle_.push_back(ir_cloner->clone(id));
   }
-  for (const auto id : src->peeled_serial_id_) {
-    peeled_serial_id_.push_back(ir_cloner->clone(id));
+  if (src->peeled_serial_id_ != nullptr) {
+    peeled_serial_id_ = ir_cloner->clone(src->peeled_serial_id_);
   }
 }
 
@@ -1163,6 +1163,34 @@ void TensorView::circularBuffer(unsigned int stage) {
   circular_buffer_stage_ = stage;
 }
 
+namespace {
+
+void validateSkewDoubleBuffer(TensorView* tv) {
+  TORCH_CHECK(tv->isDoubleBuffered(), "can only skew double buffered tensor");
+
+  TORCH_CHECK(
+      tv->definition() != nullptr && tv->definition()->inputs().size() > 0,
+      "cannot skew double buffer input tensor");
+
+  auto producer = tv->definition()->input(0);
+
+  TORCH_CHECK(producer != nullptr, "invalid producer op");
+  auto producer_tv = dynamic_cast<TensorView*>(producer);
+
+  TORCH_CHECK(producer_tv != nullptr, "invalid producer val");
+
+  TORCH_CHECK(
+      producer_tv->isDoubleBuffered() || producer_tv->isCircularBuffered(),
+      "Producer TV has to be double buffered or circular buffered to skew double buffer loop");
+}
+
+} // namespace
+
+void TensorView::skewDoubleBuffer() {
+  validateSkewDoubleBuffer(this);
+  skew_double_buffer_loop_ = true;
+}
+
 bool TensorView::isEmptyTensor() const {
   auto& root_domain = getMaybeRFactorDomain();
   return std::all_of(
@@ -1190,7 +1218,7 @@ void TensorView::peelPredicatedLoop(int axis_id) {
   auto id = axis(axis_id);
   TORCH_CHECK(
       PredicatePeeling::supportedPeelingLoop(id), "unsupported loop peeling");
-  peeled_serial_id_.push_back(id);
+  peeled_serial_id_ = id;
 }
 
 TensorViewBuilder& TensorViewBuilder::ndims(size_t ndims) {
