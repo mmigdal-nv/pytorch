@@ -541,13 +541,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       code_ << "*(volatile " << ti->getDataType().value() << "*)&";
     }
 
-    if (ti->hasBaseAddress()) {
-      // WAR path to generate a tensor index with pointer content.
-      code_ << "reinterpret_cast<" << ti->view()->dtype() << "*>("
-            << gen(ti->baseAddress()) << ")"
-            << "[" << genTensorIndex(ti) << "]";
-      return;
-    }
     code_ << varName(ti->view()) << "[" << genTensorIndex(ti) << "]";
   }
 
@@ -715,6 +708,10 @@ class CudaKernelGenerator : private OptOutConstDispatch {
             auto ti = uop->out()->as<kir::TensorIndex>();
             // Special case branch for smem reset
             // FIXME: only support filling zero at the moment:
+            //  could possibly extend.
+            TORCH_INTERNAL_ASSERT(
+                uop->in()->isZero(), "only support filling zero in smem reset");
+
             indent() << "smemReset<" << ti->view()->dtype() << ","
                      << vector_word_size << ">(" << gen(ti->baseAddress())
                      << "+" << genTensorAddressIndex(ti, ti->view()->dtype())

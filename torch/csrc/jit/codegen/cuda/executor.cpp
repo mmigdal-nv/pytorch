@@ -1101,8 +1101,6 @@ void FusionExecutor::compileRtc(
     const std::string& code,
     const std::string& name,
     bool structured) {
-  options_ = CompileOptions();
-  options_.index_mode = KernelIndexMode::INT32;
   FUSER_PERF_SCOPE("ExecutorRunFusion::compileRtc");
   std::string scode;
   if (!structured) {
@@ -1111,6 +1109,7 @@ void FusionExecutor::compileRtc(
     scode = code;
   }
   fusion_id_ = 1;
+  options_ = CompileOptions();
 
   std::tie(compiled_kernel_, last_compiler_log_) =
       executor_utils::nvrtcCompile(scode, name, fusion_id_);

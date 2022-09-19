@@ -284,6 +284,9 @@ class TORCH_CUDA_CU_API Val : public Statement {
   bool isZeroInt() const;
   bool isOneInt() const;
 
+  // Check zero supporting both int or double.
+  bool isZero() const;
+
   // Returns the Expr that this value is an output of, returns nullptr if none
   // was found
   Expr* definition() const {
