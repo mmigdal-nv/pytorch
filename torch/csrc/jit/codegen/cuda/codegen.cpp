@@ -524,6 +524,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         index << " + ";
       }
       index << genInline(ti->uniformAddress());
+      first = false;
     }
 
     if (first) {

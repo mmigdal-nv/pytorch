@@ -542,6 +542,10 @@ struct LoopTransformInfo {
   //!  lifted memory address.
   bool is_base_index_loop = false;
 
+  //! Tracks if this for loop is for calculating inductive variable
+  //!  increments.
+  bool is_increment_loop = false;
+
   //! Setter API
   LoopTransformInfo& doubleBufferStage(DoubleBufferLoopStage stage) {
     double_buffer_loop_stage = stage;
@@ -557,6 +561,12 @@ struct LoopTransformInfo {
   //! Setter API
   LoopTransformInfo& predicatePeelStage(PredicatePeelStage stage) {
     predicate_peel_stage = stage;
+    return *this;
+  }
+
+  // ! Setter API
+  LoopTransformInfo& incrementLoop() {
+    is_increment_loop = true;
     return *this;
   }
 };

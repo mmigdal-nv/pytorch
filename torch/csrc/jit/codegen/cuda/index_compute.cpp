@@ -1623,7 +1623,7 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
                   loops, root_dom[i])) {
         // Add the "predicate peeling offset", see [Predicate Peeling]
         //  to the tensor index if this root domain is predicate peeled.
-        
+
         // Incremental mode should add offset at prolog,
         //  inline mode should be all instances except prolog.
         bool is_increment =
