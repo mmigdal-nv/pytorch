@@ -148,6 +148,11 @@ bool isCpAsyncOp(const Expr* expr) {
 }
 
 bool isTensorScalarFillOp(const Expr* expr) {
+  // Check that this expression outputs to tensor
+  if (getTvOutput(expr) == nullptr) {
+    return false;
+  }
+
   // Check that the input is a single scalar.
   if (expr->inputs().size() == 1 && expr->input(0)->isScalar()) {
     // All load store op with a single scalar input
@@ -333,7 +338,9 @@ std::unordered_map<ParallelType, IterDomain*, TypeHash> getParallelDomains(
 }
 
 bool isCpAsyncInit(const Expr* expr) {
-  return isTensorScalarFillOp(expr) &&
+  return
+
+      isTensorScalarFillOp(expr) &&
       // FIXME:
       //  We'd need to add a flag to all the init
       //   exprs so we could robustly detect initialization
