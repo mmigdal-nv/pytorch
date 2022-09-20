@@ -842,12 +842,18 @@ TEST_F(NVFuserTest, FusionAmpereMatmulRegDoubleBuffer_CUDA) {
       params.double_buffer_options.double_buffer_smem_read = true;
       scheduleMatmul(tv2, tv0, tv1, params);
 
+      CompileOptions co;
+      co.index_mode = KernelIndexMode::INT32;
+
       at::manual_seed(0);
       auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
       FusionExecutor fe;
       NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
-          8, 0, fe.compileFusion(&fusion, {inputs.first, inputs.second}));
+          8,
+          0,
+          fe.compileFusion(
+              &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
       auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
       auto tref = atMatmul(
           inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);

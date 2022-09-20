@@ -469,6 +469,10 @@ class TORCH_CUDA_CU_API TensorView : public Val {
 
   // Returns the depth of circular buffering if applicable.
   unsigned int circularBufferDepth() const {
+    if (is_double_buffered_) {
+      // Double buffering is circular buffering with stage 2.
+      return 2;
+    }
     TORCH_INTERNAL_ASSERT(
         is_circular_buffered_, toString(), "not circular buffered");
     return circular_buffer_stage_;

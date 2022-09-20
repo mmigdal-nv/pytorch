@@ -330,14 +330,14 @@ DEVICE_INLINE void doubleBufferUpdate(
       (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
       ? buffer_size * (-number_of_stage + 1)
       : buffer_size;
-  data_buffer += increment;
+  data_buffer += (unsigned)increment;
 }
 
 // Update double buffer offset value for smem double buffered tensors.
 // See [Uniform Double Buffer Offset]
 template <int number_of_stage, int loop_offset>
 DEVICE_INLINE void doubleBufferSwitch(
-    nvfuser_index_t& buffer_offset,
+    int& buffer_offset,
     const nvfuser_index_t& loop_index,
     nvfuser_index_t buffer_size) {
   constexpr nvfuser_index_t offset =
@@ -348,7 +348,7 @@ DEVICE_INLINE void doubleBufferSwitch(
       (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
       ? buffer_size * (-number_of_stage + 1)
       : buffer_size;
-  buffer_offset += increment;
+  buffer_offset += (int)increment;
 }
 
 // Reset smem space to zero
