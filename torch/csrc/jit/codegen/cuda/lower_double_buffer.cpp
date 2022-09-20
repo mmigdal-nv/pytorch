@@ -163,6 +163,36 @@ bool isGmemIncrement(Expr* expr) {
   return false;
 }
 
+//! Hoists the gmem increment ops to the beginning of the loop
+//!  within the scope of the given loop.
+//! Note: [Gmem Increment Hoisting]
+//!
+//! This optimization is very useful when inplace increment
+//!  is used on the global memory pointers.
+//! Before this optimization, the code would look like:
+//!
+//!  for i in ... // main loop
+//!    load.global ... [ptr]
+//!    // Here we actually have an anti-dependency (WAR) on
+//!    //  the register holding ptr and could result in
+//!    //  non-ideal performance when we do not have enough
+//!    //  instructions to put between the load and the increment.
+//!    // depending on how many other instructions we have
+//!    //   within this loop.
+//!    ptr += increment_value
+//!
+//! After this transformation, the code looks like:
+//!  ptr -=increment_value // a naive way to compensate
+//!                        //  for the first iter.
+//!  for i in ... // main loop
+//!    ptr += increment_value
+//!    // This is actually ok as integer instructions
+//!    //   are usually much faster than memory.
+//!    load.global ... [ptr]
+//!
+//! This function hoists the pointer increments, in the given
+//!  loop, assuming that the decrements have been inserted
+//!  on the CircularInitProlog stage.
 kir::ForLoop* hoistGmemIncrement(kir::ForLoop* fl) {
   auto hoisted_loop = IrBuilder::create<kir::ForLoop>(fl);
 
@@ -265,15 +295,32 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
       for (auto load : double_buffer_load_exprs_) {
         if (auto tv_out = ir_utils::getTvOutput(load)) {
+          // calculate the switching size
+          auto switch_size = db_info.getOriginalAllocSize(tv_out);
+          auto switch_size_in_byte = SimplifyingIrBuilder::mulExpr(
+              switch_size,
+              SimplifyingIrBuilder::create<Int>(dataTypeSize(tv_out->dtype())));
+
+          // insert db switch expressions:
+          // Note:[Uniform Double Buffer Offset]
+          // This modification is to encourage usage of uniform registers on
+          // sm75+ when
+          //  accessing shared memory double buffered tensors.
+          // The code before transformation:
+          //   for i in ... // double buffer loop
+          //     ... = ld.shared [... + (i%5) * double_buffer_size]
+          // The above code doesn't explictly specify that the double buffer
+          // switch
+          //  component is uniform. The following transformed code makes it
+          //  explicit:
+          //   for i in ... // double buffer loop
+          //     ... = ld.shared [... + switch_index]
+          //     doubleBufferSwitch(switch_index);
+          //  So that the double buffer indices are all placed in uniform reg.
+
           auto maybe_read_index = db_info.getReadSwitchIndex(tv_out);
           if (maybe_read_index.has_value()) {
-            // insert db switch:
-            auto switch_size = db_info.getOriginalAllocSize(tv_out);
-            auto switch_size_in_byte = SimplifyingIrBuilder::mulExpr(
-                switch_size,
-                SimplifyingIrBuilder::create<Int>(
-                    dataTypeSize(tv_out->dtype())));
-
+            // Instantiate and insert the update operator.
             auto address_compute =
                 SimplifyingIrBuilder::create<kir::AddressCompute>(
                     tv_out,
@@ -295,11 +342,23 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
           IrBuilder::create<kir::CpAsyncCommit>());
     }
 
+    // Hoist the address increment in the double buffer main
+    // loop, see also [Gmem Increment Hoisting]
     if (loop_type_ == DoubleBufferLoopStage::Main &&
         std::any_of(
             double_buffer_loop_->body().exprs().begin(),
             double_buffer_loop_->body().exprs().end(),
-            isGmemIncrement)) {
+            isGmemIncrement) &&
+        // FIXME:
+        // Below is current condition that is required for gmem increment
+        //  hoisting because the gmem decrement is currently placed in
+        //  CircularInitProlog which requires predicate peeling to
+        //  be generated.
+        // To fix this should probably dedicate another double buffer
+        //  loop stage, maybe GmemPointerDecrement, that is reserved
+        //  for placing the gmem decrement before the main loop stage.
+        GpuLower::current()->predicatePeelingInfo().shouldPeelLoop(
+            double_buffer_loop_)) {
       cloned_top_level_loop_ = hoistGmemIncrement(cloned_top_level_loop_);
     }
   }
@@ -376,6 +435,8 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
     }
 
     if (loop_type_ == DoubleBufferLoopStage::CircularInitProlog) {
+      // Convert the address compute ops to decrement in the circular
+      //  buffer init prolog, see [Gmem Increment Hoisting].
       if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
         if (address_compute->opType() ==
             kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
@@ -389,12 +450,21 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       }
     }
 
-    // Need the double buffer update expr in prologs too.
+    // Include the double buffer update expressions in prologs too as
+    //  prolog does write into the double buffered space.
     if (loop_type_ == DoubleBufferLoopStage::Prolog) {
       if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
         if (address_compute->opType() ==
             kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE) {
-          cloned_scopes_.back()->push_back(expr);
+          if (std::any_of(
+                  double_buffer_load_exprs_.begin(),
+                  double_buffer_load_exprs_.end(),
+                  [address_compute](Expr* expr) {
+                    return ir_utils::getTvOutput(expr)->sameAs(
+                        address_compute->dataTv());
+                  })) {
+            cloned_scopes_.back()->push_back(expr);
+          }
         }
       }
     }
@@ -599,20 +669,31 @@ class DoubleBufferInserter : private kir::ExprMutator {
   void insert(
       kir::ForLoop* double_buffer_loop,
       const std::vector<Expr*>& loads) {
-    // Insert double buffer read switch index
+    // Allocate read switching index if they need to be updated
+    //  independently. see [Uniform Double Buffer Offset]
     for (auto load : loads) {
       if (auto load_output = dynamic_cast<TensorView*>(load->output(0))) {
+        auto uses = load_output->fusion()->unordered_uses(load_output);
         if (load_output->getMemoryType() == MemoryType::Shared &&
             (load_output->isDoubleBuffered() ||
              load_output->isCircularBuffered()) &&
-            load_output->shouldLiftReadAddress()) {
+            load_output->shouldLiftReadAddress() &&
+            // TODO: read switch index is only enabled for ldmatrix
+            //  at the moment.
+            // Would need to extend the ld.shared usage to directly
+            //  take pointers to use this in other cases.
+            std::all_of(uses.begin(), uses.end(), ir_utils::isLdMatrixOp)) {
           auto switch_val = IrBuilder::create<Int>();
           switch_val->to32b();
 
+          // Record the read switch indexing variable so it can be
+          //  used in the indexing pass.
           // TODO: maybe want to do this in id graph instead
           GpuLower::current()->doubleBufferInfo().setReadSwitchIndex(
               load_output, switch_val);
 
+          // Place allocation for the switching variable before the
+          //  double buffer loop.
           auto index_alloc = IrBuilder::create<kir::Allocate>(
               switch_val,
               MemoryType::Local,

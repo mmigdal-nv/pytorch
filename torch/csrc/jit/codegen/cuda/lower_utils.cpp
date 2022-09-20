@@ -750,6 +750,21 @@ bool supportInlinePredicate(Expr* expr) {
   return false;
 }
 
+bool useDirectSmemAddress(const TensorView* tv) {
+  // Not applicable for any indexing that's not
+  //  lifted.
+  if (!tv->shouldLiftWriteAddress() ||
+      tv->getMemoryType() != MemoryType::Shared) {
+    return false;
+  }
+
+  auto expr = tv->definition();
+  // Direct usage of smem address should be avoided at all cost,
+  //  so only allowing this very specific case where this is the
+  //  necessary step to take to get efficient indexing code.
+  return expr != nullptr && ir_utils::isCpAsyncOp(expr);
+}
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

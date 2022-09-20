@@ -277,6 +277,10 @@ struct TORCH_CUDA_CU_API IterDomainDependencySorter {
 //!  as an inline argument.
 bool supportInlinePredicate(Expr* expr);
 
+//! Returns true if the consumer indexing of this tensor directly
+//!  uses shared mem address.
+bool useDirectSmemAddress(const TensorView* tv);
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

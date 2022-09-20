@@ -122,6 +122,12 @@ void IndexLowering::handle(const UnaryOp* uop) {
   const auto in = lowerSrcIndex(uop->in(), uop->out());
   const auto out = lowerDstIndex(uop->out());
 
+  // Convert the output index to direct shared memory
+  //  address usage if this unary op is initialization
+  //  for cp.async op. see [Lifting smem address decoding for cp.async]
+  // In order to use the same register for indexing the init
+  //  expression as well, the init expr also needs to
+  //  directly use the shared memory address.
   if (ir_utils::isCpAsyncInit(uop)) {
     auto out_tv = ir_utils::getTvOutput(uop);
     if (out_tv->shouldLiftWriteAddress()) {
@@ -881,7 +887,8 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
   // Logic for double buffer switching:
   if (address_compute->opType() ==
       kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH) {
-    // no indexing is needed, just forward through.
+    // no indexing is needed, just forward through the expression and
+    //  attach the loop index corresponding to the double buffer loop.
     auto db_loop = GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
         address_compute->dataTv()->as<TensorView>(), for_loops_, false);
     TORCH_INTERNAL_ASSERT(db_loop != nullptr);
@@ -898,6 +905,7 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
   } else if (
       address_compute->opType() ==
       kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE) {
+    // Unpack the double buffer loop and double buffer allocation component
     auto db_loop = GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
         address_compute->dataTv()->as<TensorView>(), for_loops_, false);
     TORCH_INTERNAL_ASSERT(db_loop != nullptr);
@@ -907,6 +915,7 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
         ? address_compute->stageNumber() - 1
         : 0;
 
+    // Generate index into the address tensor to update.
     auto indexed_address_tv = Index::generateAddressTensorIndex(
         for_loops_, address_compute->addressTv()->as<TensorView>());
 
@@ -919,8 +928,6 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
         db_index));
     return;
   }
-
-  // Logic for double buffer updating:
 
   // Logic for base address computation
   auto address_tv = address_compute->addressTv();
@@ -937,6 +944,9 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
           kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT ||
       address_compute->opType() ==
           kir::AddressCompute::AddressComputeOpType::GMEM_DECREMENT) {
+    // GMEM_INCREMENT/DECREMENT is only used on global producer tv
+    //  currently, so only lowering source index for the address tensor
+    //  to compute the amount of increment.
     pushBack(IrBuilder::create<kir::AddressCompute>(
         Index::generateAddressTensorIndex(
             for_loops_, address_compute->addressTv()->as<TensorView>()),
@@ -951,6 +961,8 @@ void IndexLowering::handle(const kir::AddressCompute* address_compute) {
 
   Val* lowered_data_index = nullptr;
 
+  // This is the base address generation logic, lowering src/dst indexing
+  //  math based on if this record is read or write.
   if (address_record->isRead()) {
     lowered_data_index = lowerSrcIndex(
         address_record->dataTensor(), address_record->indexReferenceTensor());

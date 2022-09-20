@@ -131,6 +131,22 @@ void AddressComputeInfo::build(Fusion* fusion) {
     if (!ir_utils::isTvOp(expr)) {
       continue;
     }
+
+    if (ir_utils::isCpAsyncOp(expr)) {
+      auto in_tv = ir_utils::getTvInput(expr);
+      auto out_tv = ir_utils::getTvOutput(expr);
+
+      // FIXME:
+      //  It'd take 2 more variants of the resource string for cp.async
+      //   to support lifting one of the producer/consumer indices. As
+      //   the eventual goal of these analysis is to be turned on generically,
+      //   the use case for lifting one of the components is limited so
+      //   not prioritizing.
+      TORCH_INTERNAL_ASSERT(
+          in_tv->shouldLiftReadAddress() == out_tv->shouldLiftWriteAddress(),
+          "For cp.async op only support either lifting both producer and consumer indexing or neither.");
+    }
+
     for (auto consumer_tv :
          ir_utils::filterByType<TensorView>(expr->outputs())) {
       if (consumer_tv->shouldLiftWriteAddress()) {
@@ -968,6 +984,17 @@ TensorView* AddressComputeInfo::makeAddressTv(
     bool is_predicate_index,
     bool is_cpasync_write) {
   DataType dtype = is_predicate_index ? DataType::Index : DataType::Pointer;
+
+  // Note: [Lifting smem address decoding for cp.async]
+  // A trick that saves register usage.
+  // Before:
+  //  char* smem_ptr;
+  //  for i in ... // main loop
+  //    cp.async [smem_ptr + 123], ...
+  // After:
+  //  unsigned smem_address = toSmem(smem_ptr);
+  //  for i in ... // main loop
+  //    cp.async [smem_addres+123], ...
   if (is_cpasync_write) {
     dtype = DataType::SmemAddress;
   }
@@ -1078,10 +1105,44 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
 
       auto data_tensor = insertion_info.address_compute_record->dataTensor();
 
-      // Insert double buffer increment
+      // Insert double buffer increment:
+      // Note: [Inplace Double Buffer Update]:
+      //
+      // The trick used in [Uniform Double Buffer Offset] should be the default
+      //  method of handling double buffer switching index when trying to save
+      //  general purpose registers. But there are 2 exceptions:
+      //   1. On sm70 or below, there are no unifrom regs to use.
+      //   2. With cp.async, the consumer shared memory buffer currently
+      // does not provide access to the uniform reg operand so we could not use
+      // it. (will be actively discussed internally)
+      //
+      // To still avoid using too many registers on double buffered access,
+      //  another code gen trick is used here, to enable near term progress:
+      // The code before transformation:
+      //   for i in ... // double buffer loop
+      //     ... = ld.shared [... + (i%5) * double_buffer_size]
+      // The code after transformation:
+      //   R0 = ...
+      //   for i in ... // double buffer loop
+      //     ... = ld.shared [R0]
+      //     doubleBufferUpdate(R0);
+      // This way essentially the double buffer offset is calculated inplace
+      //  into R0 in each double buffer loop iteration. Note that comparing with
+      //  [Uniform Double Buffer Offset] this method uses more instructions as
+      //  all of the pointers will need to be updated, while using uniform regs
+      //  will only need to update the uniform switch index.
+
+      // FIXME: should move this logic into lower_double_buffer.cpp.
+      //  will need to formulate into a separate pass as it needs to
+      //  clone the loop nest.
       if ((data_tensor->isDoubleBuffered() ||
            data_tensor->isCircularBuffered()) &&
-          insertion_info.address_compute_record->isWrite()) {
+          insertion_info.address_compute_record->isWrite() &&
+          // Only have support doubleBufferUpdate for
+          //  direct smem access for now.
+          // FIXME:
+          //   Would need to extend to use this on Volta.
+          useDirectSmemAddress(data_tensor)) {
         // Insert double buffer index update if it is a double buffered write:
         // The insertion info loop nest starts with the serial loop,
         //  in the double buffer update we need to insert into the original
@@ -1090,8 +1151,11 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
             std::next(insertion_info.loop_nest.begin()),
             insertion_info.loop_nest.end());
 
+        // Clone the loop nest containing the double buffered write
+        //  expression for the consumer index update.
         auto db_outer_inner = scope_utils::makeLoopNest(db_loop_nest);
 
+        // Calculate the double buffer size.
         auto& db_info = GpuLower::current()->doubleBufferInfo();
 
         auto db_size_in_byte = SimplifyingIrBuilder::mulExpr(
@@ -1099,6 +1163,8 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
             SimplifyingIrBuilder::create<Int>(
                 dataTypeSize(data_tensor->dtype())));
 
+        // Create the double buffer update expression and insert
+        //  them at the end of the double buffer loop.
         auto update_expr = SimplifyingIrBuilder::create<kir::AddressCompute>(
             insertion_info.address_compute_record->addressTensor(),
             db_size_in_byte,
@@ -1111,13 +1177,30 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
       }
 
       // Insert gmem increment:
+      // Note [Gmem address increment]:
+      //  This is a trick that helps lifting some instructions out of main
+      // loop.
+      // The code before this transformation:
+      //   R0 = ...
+      //   for i in ... // The serial loop on index lifting record
+      //     x = ld.global [i*123 + R0]
+      // The code after transformation:
+      //   R0 = ...
+      //   for i in ... // The serial loop on index lifting record
+      //     x = ld.global [R0]
+      //     R0+=123;
+      // Note that [Separability Analysis] will be checked on the serial
+      //  loop when creating these address records so doing this transformation
+      //  on the serial loop index variable is safe.
       if (data_tensor->getMemoryType() == MemoryType::Global &&
           insertion_info.address_compute_record->isRead()) {
+        // Create the loopnest to contain the increment expression.
         auto increment_loop_vector =
             createIncrementLoop(insertion_info.loop_nest);
         auto increment_loop_outer_inner =
             scope_utils::makeLoopNest(increment_loop_vector);
 
+        // Create the increment expression.
         auto inc_expr = SimplifyingIrBuilder::create<kir::AddressCompute>(
             insertion_info.address_compute_record->addressTensor(),
             insertion_info.address_compute_record->dataTensor());
@@ -1158,6 +1241,8 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
         original_loop->loopTransformInfo().baseIndexLoop());
   }
 
+  // Utility to create the loop nest for gmem increment,
+  //  see [Gmem address increment].
   std::vector<kir::ForLoop*> createIncrementLoop(
       std::vector<kir::ForLoop*> address_compute_loop_vector) {
     std::vector<kir::ForLoop*> loop_nest_to_clone(

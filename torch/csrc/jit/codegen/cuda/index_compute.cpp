@@ -1625,7 +1625,7 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
         //  to the tensor index if this root domain is predicate peeled.
 
         // Incremental mode should add offset at prolog,
-        //  inline mode should be all instances except prolog.
+        // See Note [Predicate Peeing interaction with Incremental Offset]
         bool is_increment =
             std::any_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
               return fl->loopTransformInfo().is_increment_loop;
@@ -1935,6 +1935,16 @@ std::vector<Val*> Index::getNonGlobalProducerStridedIndices(
             GpuLower::current()->doubleBufferInfo().getReadSwitchIndex(
                 producer_tv);
 
+        // The double buffer switching indices are now applied in two
+        //  different ways, depending on if the index is lifted or not.
+        //
+        // When lifted, the double buffer switching index is computed
+        //  separately as a "double buffer offset" and added to the
+        //  uniform section of the tensor index.
+        // When not lifted, the behavior stays the same as before
+        //  i.e. they are computed inline.
+        // See also:
+        //  [Double Buffer Uniform Offset].
         if (!maybe_read_offset.has_value()) {
           auto loop_index =
               db_loop->isTrivial() ? db_loop->start() : db_loop->index();
@@ -2277,7 +2287,8 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
   if ((consumer_tv->isDoubleBuffered() || consumer_tv->isCircularBuffered())
       // Lifted address case the double buffer offset is
       //   computed inplace into the write address buffer.
-      && !consumer_tv->shouldLiftWriteAddress()) {
+      // See [Inplace double buffer update]
+      && !useDirectSmemAddress(consumer_tv)) {
     auto db_loop =
         gpu_lower->doubleBufferInfo().getDoubleBufferLoop(consumer_tv, loops);
     TORCH_INTERNAL_ASSERT(
@@ -2367,6 +2378,10 @@ kir::TensorIndex* Index::getProducerIndex(
     const std::vector<kir::ForLoop*>& loops) {
   auto strided_indices = getProducerStridedIndices(producer, consumer, loops);
 
+  // Insert base address and uniform components into the tensor
+  //  index object directly to support separating them on the
+  //  code gen interface.
+  // See also: [Pointer Addressing In Lifted Indices]
   if (shouldUseLiftedAddress(producer, consumer, loops)) {
     auto maybe_address_record =
         GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(
@@ -2414,6 +2429,10 @@ kir::TensorIndex* Index::getConsumerIndex(
     const std::vector<kir::ForLoop*>& loops) {
   auto strided_indices = getConsumerStridedIndices(consumer, loops);
 
+  // Insert base address and uniform components into the tensor
+  //  index object directly to support separating them on the
+  //  code gen interface.
+  // See also: [Pointer Addressing In Lifted Indices]
   if (shouldUseLiftedAddress(consumer, consumer, loops)) {
     auto maybe_address_record =
         GpuLower::current()->addressComputeInfo().getMaybeLiftedAddress(

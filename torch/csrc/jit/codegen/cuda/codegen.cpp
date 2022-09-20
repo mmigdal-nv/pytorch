@@ -504,6 +504,9 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return index.str();
   }
 
+  // Generate the tensor index that are directly added
+  //  to a base address pointer. So all the components
+  //  are computed in units of bytes.
   std::string genTensorAddressIndex(
       const kir::TensorIndex* ti,
       DataType dtype) {
@@ -514,11 +517,17 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         if (!first) {
           index << " + ";
         }
+
+        // Multiply all the components here by the size of the data
+        //  type to get byte offset.
         index << "(" << genInline(ind) << ")*" << dataTypeSize(dtype);
         first = false;
       }
     }
 
+    // If there is a uniform component in this tensor index,
+    //  just add them too.
+    // See also, [Double Buffer Uniform Offset].
     if (ti->uniformAddress() != nullptr) {
       if (!first) {
         index << " + ";
@@ -539,6 +548,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         kernel_->summary().sync_map.needsRawSync(ti->view()).hasBID();
     if (is_volatile) {
       code_ << "*(volatile " << ti->getDataType().value() << "*)&";
+    }
+
+    if (ti->hasBaseAddress()) {
+      // WAR path to generate a tensor index with pointer content.
+      code_ << "reinterpret_cast<" << ti->view()->dtype() << "*>("
+            << gen(ti->baseAddress()) << ")"
+            << "[" << genTensorIndex(ti) << "]";
+      return;
     }
 
     code_ << varName(ti->view()) << "[" << genTensorIndex(ti) << "]";
@@ -576,6 +593,12 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return ss.str();
   }
 
+  //! Generates the given value as a pointer address as
+  //!  either:
+  //!  1. hosted_base_ptr + address_index
+  //!  2. &Tensor[index]
+  //!  depending on if the given index value carries
+  //! a hoisted component or not.
   std::string genMaybeHoistedPointer(const Val* val) {
     auto ti = dynamic_cast<const kir::TensorIndex*>(val);
     TORCH_INTERNAL_ASSERT(ti != nullptr, "only support tensor index input");
@@ -705,6 +728,11 @@ class CudaKernelGenerator : private OptOutConstDispatch {
           } else if (
               uop->out()->isA<kir::TensorIndex>() &&
               uop->out()->as<kir::TensorIndex>()->useSmemAddress()) {
+            // A special resource string "smemReset" is used if
+            //  the unary op writes to the shared memory using
+            //  the lifted 32b shared mem pointer.
+            // This mode is reserved for resetting shared memory
+            //  space at the moment currently.
             auto ti = uop->out()->as<kir::TensorIndex>();
             // Special case branch for smem reset
             // FIXME: only support filling zero at the moment:
@@ -2491,6 +2519,13 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void handle(const kir::AddressCompute* address_compute) final {
+    // FIXME:
+    //  All the global/shared memory address/offset manipulations
+    // to reduce register usage are currently lumped into this single
+    // kernel IR operator.
+    //
+    // If there's any need to commit to the current codegen tweaks
+    //  longer, could consider separating them into more IR nodes.
     if (address_compute->opType() ==
         kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH) {
       indent() << "doubleBufferSwitch<" << address_compute->stageNumber() << ","

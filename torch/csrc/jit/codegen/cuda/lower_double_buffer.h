@@ -226,12 +226,16 @@ class TORCH_CUDA_CU_API DoubleBufferInfo {
   //!  skew double buffer transform within the given outer loop.
   bool isLowerPrologWithin(IterDomain* db_loop, IterDomain* outer_loop);
 
+  //! Record the allocated double buffer switching index,
+  //!  see [Uniform Double Buffer Offset]
   void setReadSwitchIndex(TensorView* db_tv, Val* switch_index) {
     TORCH_INTERNAL_ASSERT(
         read_switch_index_map_.insert(std::make_pair(db_tv, switch_index))
             .second);
   }
 
+  //! Returns the double buffer switching index if one has been
+  //!  allocated and recorded for the given tv.
   c10::optional<Val*> getReadSwitchIndex(TensorView* db_tv) {
     auto val_it = read_switch_index_map_.find(db_tv);
     if (val_it == read_switch_index_map_.end()) {

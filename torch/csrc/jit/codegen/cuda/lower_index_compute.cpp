@@ -123,6 +123,9 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
 
   // Checks if this loop nest is calculating base address.
   bool is_address_tv_calculation = serial_loop->isBaseIndexLoop();
+
+  // Check if this loop nest is incrementing a gmem address,
+  //  see [Gmem address increment];
   bool is_increment =
       std::any_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
         return fl->loopTransformInfo().is_increment_loop;
@@ -131,6 +134,8 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
   std::unordered_set<IterDomain*> zero_ids;
 
   if (is_increment) {
+    // In the case of increment calculation, just zero
+    //  every loop except the serial loop from the address record.
     for (auto fl : loops) {
       if (fl != serial_loop) {
         zero_ids.insert(fl->iter_domain());
@@ -206,8 +211,10 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
 
   if (address_record->isRead() &&
       address_record->dataTensor()->getMemoryType() == MemoryType::Global) {
-    // The serial loop id is incremented by the address compute,
-    //  so it could be zeroed here.
+    // The serial loop is converted to increment mode, see [Gmem address
+    // increment]
+    //  so it can be zeroed always.
+    // See also [Separability Analysis] on conditions when this is enabled.
     zero_ids.insert(address_record->getConcreteSerialLoopId());
   }
 
@@ -289,10 +296,16 @@ IndexingParameters getGlobalIndexParameters(
               concrete_loop_domain,
               maybe_address_record.value()->getConcreteSerialLoopId(),
               IdMappingMode::LOOP)) {
+        // For the increment calculation, the current implementation
+        //  inserts a one for the loop index corresponding to the serial
+        //  loop. This is valid if [Separability Analysis] checks ok
+        //  on the serial id.
         // TODO:
-        //  The current restriction on the serial loop makes this ok
+        //  The current Separability restriction on the serial loop makes this
+        //  ok
         //   but should eventually use the f(i+1) - f(i) instead
-        //   of a one for the increment calculation.
+        //   of a one for the increment calculation to enable more complex
+        //   increment patterns.
         loop_index_map[index_domain] = GpuLower::current()->kernel()->oneVal();
       }
     }

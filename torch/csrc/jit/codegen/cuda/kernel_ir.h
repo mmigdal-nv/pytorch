@@ -316,21 +316,31 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
 class TORCH_CUDA_CU_API AddressCompute final : public Expr {
  public:
   enum class AddressComputeOpType {
+    // Calculate base address for lifted memory index
     BASE_ADDRESS,
-    INCREMENT,
+    // Switch a double buffer index register,
+    // see [Uniform Double Buffer Offset]
     DOUBLE_BUFFER_SWITCH,
+    // Inplace update a double buffered address
+    // see [Inplace Double Buffer Update]
     DOUBLE_BUFFER_UPDATE,
+    // Inplace increment a global address, see
+    // see [Gmem address increment]
     GMEM_INCREMENT,
+    // Inplace increment a global address, see
+    // see [Gmem Increment Hoisting]
     GMEM_DECREMENT
   };
 
+  // Constructor for BASE_ADDRESS mode calculation
+  // (Default).
   explicit AddressCompute(
       IrBuilderPasskey passkey,
       AddressComputeOpType op_type,
       Val* address_tensor,
       Val* data_tensor);
 
-  // Interface for gmem increment
+  // Constructor for gmem increment
   explicit AddressCompute(
       IrBuilderPasskey passkey,
       Val* address_tensor,
@@ -338,7 +348,7 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       TensorIndex* increment_value = nullptr,
       bool is_decrement = false);
 
-  // Interface for double buffer offset
+  // Constructor for double buffer offset
   //   calculation:
   explicit AddressCompute(
       IrBuilderPasskey passkey,
@@ -349,7 +359,7 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       int stage_number,
       Val* loop_index = nullptr);
 
-  // Interface for double buffer offset
+  // Constructor for double buffer offset
   //   inplace update:
   explicit AddressCompute(
       IrBuilderPasskey passkey,
@@ -413,14 +423,28 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
   //  data tensor.
   Val* address_tensor_ = nullptr;
 
-  // Double buffer switch and update parameters:
+  // Double buffer switch and update parameters below:
+
+  // The switching index that this op is updating.
   Val* double_buffer_switch_index_ = nullptr;
+
+  // The original buffer alloc size used for double buffer
+  //   update calculation.
   Val* buffer_size_in_byte_ = nullptr;
+
+  // The double buffer loop offset that is used for
+  //  computing the double buffer size update.
   int loop_offset_ = 0;
+
+  // The double buffer loop offset that is used for
+  //  computing the double buffer size update.
   int stage_number_ = 0;
+
+  // The double buffer loop index.
   Val* loop_index_ = nullptr;
 
-  // Gmem increment parameters
+  // Gmem increment parameters below:
+  //  The increment value to apply to the pointer.
   kir::TensorIndex* increment_value_ = nullptr;
 };
 
