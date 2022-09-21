@@ -337,7 +337,10 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       }
     }
 
-    if (stage_depth > 2) {
+    // Need to insert commits for multi-stage circular buffering
+    //  on the prologs, but do not need to wait for them until
+    //  the main loop.
+    if (stage_depth > 2 && loop_type_ == DoubleBufferLoopStage::Prolog) {
       cloned_top_level_loop_->body().push_back(
           IrBuilder::create<kir::CpAsyncCommit>());
     }
@@ -820,6 +823,10 @@ class DoubleBufferInserter : private kir::ExprMutator {
         main_loop->iter_domain());
     auto cp_async_wait = IrBuilder::create<kir::CpAsyncWait>(stage_depth - 2);
 
+    // Make sure the commit is inserted right before the
+    //  cp.async.wait in circular buffering.
+    bool need_insert_commit = stage_depth > 2;
+
     // Check if a sync has been inserted by WAR sync pass.
     auto block_sync_it = std::find_if(
         main_loop->body().exprs().rbegin(),
@@ -831,10 +838,18 @@ class DoubleBufferInserter : private kir::ExprMutator {
       //  it can just be anywhere in the loop. Chose to
       //  place at the end arbitrarily.
       main_loop->body().insert_after(end_of_loop_expr, cp_async_wait);
+      if (need_insert_commit) {
+        main_loop->body().insert_after(
+            end_of_loop_expr, IrBuilder::create<kir::CpAsyncCommit>());
+      }
     } else {
       // If a sync has been inserted, wait needs to be placed
       //  before the sync.
       main_loop->body().insert_before(*block_sync_it, cp_async_wait);
+      if (need_insert_commit) {
+        main_loop->body().insert_before(
+            *block_sync_it, IrBuilder::create<kir::CpAsyncCommit>());
+      }
     }
   }
 
