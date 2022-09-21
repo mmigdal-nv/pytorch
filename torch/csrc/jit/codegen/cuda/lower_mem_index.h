@@ -95,8 +95,12 @@ class AddressRecord {
   c10::optional<kir::ForLoop*> getMaybeSerialLoop(
       std::vector<kir::ForLoop*> loops);
 
-  // TODO: supporting only one contig id for now,
-  //  need to re-enable supporting an array of contig ids.
+  //! (Predicate record only)
+  //! Fill the contig id that this record is lifting the base
+  //!  index for.
+  //! TODO: supporting only one contig id for now,
+  //!  need to re-enable supporting an array of contig ids which
+  //!  requires some significant infrastructure heavy lifting.
   void setPredicateContigId(IterDomain* contig_id) {
     TORCH_INTERNAL_ASSERT(access_direction_ == ReadWrite::PREDICATE);
     TORCH_INTERNAL_ASSERT(
@@ -104,6 +108,8 @@ class AddressRecord {
     predicate_contig_id_ = contig_id;
   }
 
+  //! (Predicate record only)
+  //! Returns the contig id that this record computes the base index for.
   IterDomain* getPredicateContigId() const {
     TORCH_INTERNAL_ASSERT(access_direction_ == ReadWrite::PREDICATE);
     return predicate_contig_id_;

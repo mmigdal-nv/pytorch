@@ -3269,6 +3269,8 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
                            offsetted_stop_index, contig_id->extent())
                            ->as<Bool>();
 
+      // Check if there's any record of pre-computed components of
+      //  predicates.
       auto maybe_predicate_index_record =
           GpuLower::current()
               ->addressComputeInfo()
@@ -3329,6 +3331,9 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
             return fl->loopTransformInfo().predicate_peel_stage ==
                 PredicatePeelStage::Prolog;
           })) {
+        // Use the lifted predicate record if found.
+        //  See [Predicate Lifting].
+
         auto cached_index = generateAddressTensorIndex(
             loops, maybe_predicate_index_record.value()->addressTensor());
 
@@ -3352,7 +3357,12 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
   return pred_info_vec;
 }
 
-// TODO: unify the duplicated code...
+// Duplicated code from getReferenceRootPredicates that only does the
+//  indexing part, in order to support pre-computing base index in
+//  [Predicate Lifting].
+// Most of the initial code should be duplicated other than the
+//  parts setting pred_record.
+// TODO: should really build this out and unify the code paths.
 kir::TensorIndex* Index::getReferenceRootPredicateIndex(
     TensorView* consumer_tv,
     const std::vector<kir::ForLoop*>& loops) {
@@ -3405,12 +3415,16 @@ kir::TensorIndex* Index::getReferenceRootPredicateIndex(
       pred_record.has_value(),
       "predicate lifting info missing for lifted pred computation.");
 
-  // FIXME:
-  //  Only supporting lifting one branch of the predicate
-  //    currently. Allocating space for all the preidicates
+  // FIXME: [Restriction on Predicate Hoisting]
+  //  Only supporting lifting one contig id of the predicate
+  //    currently. Allocating space for all the predicates
   //    ahead of time would need require deciding contig_id_infos
   //    without the loop nest, which should be a goal with loop free
   //    indexing generation.
+  // TODO:
+  //  There are currently many variants on the predicate math. In order
+  //   to turn on this kind of predicate lifting, all of them would need
+  //   to be re-visited to ensure proper and preferrably unified handling.
   std::vector<RootPredicateInfo> pred_info_vec;
   kir::TensorIndex* result_index = nullptr;
 
@@ -3486,6 +3500,10 @@ kir::TensorIndex* Index::getReferenceRootPredicateIndex(
     auto offsetted_stop_index =
         SimplifyingIrBuilder::addExpr(stop_index, info.stop_offset_);
 
+    // Each consumer tv currently has only one predicate record
+    //  handling one contig_id as an initial support. The actual
+    //  indexing path will use the hoisted predicate index when
+    //  the contig id matches. see [Restriction on Predicate Hoisting].
     if (pred_record.value()->getPredicateContigId() == nullptr) {
       pred_record.value()->setPredicateContigId(contig_id);
     }

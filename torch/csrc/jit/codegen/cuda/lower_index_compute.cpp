@@ -616,10 +616,12 @@ IndexingParameters getPredicateInitialIndexParameters(
 
   if (maybe_prediate_record.has_value() &&
       std::none_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
-        // TODO: this is a major WAR as all components of predicate indexing
-        // uses
-        //  a shared index compute, so would need to blanket disable predicate
-        //  hoisting on the peeled prolog stage.
+        // TODO: Note [Predicate Peeling - Predicate Lift WAR]
+        // this is a major WAR as all components of predicate indexing
+        //  uses a shared index compute, on the predicate peeling prolog
+        //  we want the predicate not lifted for the contig id that is
+        //  predicate peeled. So currently just disable lifting on the
+        //  predicate peeld prolog.
         return fl->loopTransformInfo().predicate_peel_stage ==
             PredicatePeelStage::Prolog;
       })) {
@@ -628,8 +630,6 @@ IndexingParameters getPredicateInitialIndexParameters(
 
     for (const auto loop : loops) {
       auto& idx = loop_to_ind_map.at(loop);
-      // If the loop is trivial, the loop index can only be the loop
-      // start value.
       if (zero_ids.count(loop->iter_domain())) {
         // Zero the id's that's lifted
         idx = loop->container()->zeroVal();

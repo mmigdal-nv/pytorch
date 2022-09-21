@@ -392,6 +392,13 @@ class Index {
       const std::vector<kir::ForLoop*>& for_loops,
       TensorView* address_tv);
 
+  //! Partially duplicated code from getReferenceRootPredicates that only does
+  //! the
+  //!  indexing part, in order to support pre-computing base index in
+  //!  [Predicate Lifting].
+  //! Most of the initial code should be duplicated other than the
+  //!  parts setting pred_record.
+  //! TODO: should really build this out and unify the code paths.
   static kir::TensorIndex* getReferenceRootPredicateIndex(
       TensorView* consumer_tv,
       const std::vector<kir::ForLoop*>& loops);

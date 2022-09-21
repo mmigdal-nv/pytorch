@@ -507,6 +507,13 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     lift_write_address_ = true;
   }
 
+  //! A scheduler primitive signifying that part of the read
+  //!  index math of this tensor would need to be pre-computed.
+  //! See also [Predicate Lifting] in lower_mem_index.cpp
+  //! FIXME:
+  //!   This is currently formulated as a scheduler primitive to
+  //! unblock matmul performance. It should ideally be a generic
+  //! optimization that gets applied automatically.
   void liftPredicateIndex() {
     lift_predicate_index_ = true;
   }
@@ -523,6 +530,8 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     return lift_write_address_;
   }
 
+  //! Returns true if the predicate index of this tensor
+  //!  should be partially pre-computed.
   bool shouldLiftPredicateIndex() const {
     return lift_predicate_index_;
   }

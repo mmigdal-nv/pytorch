@@ -108,6 +108,77 @@ namespace cuda {
 //  IndexOf(Id3) / Id1.extent, which cannot be rewritten as IndexOf(Id3) * C,
 //  with
 // C being a compile constant integer.
+
+// Note [Predicate Lifting]:
+// The separability analysis can be extended to save registers on predicates
+// too,
+//  which could be used as a short term alternative to binary predicate vector
+//  packing.
+// Could consider removing this variant of index lifting once the predicate
+// vector
+//  packing is fully sorted out.
+//
+// An example here would help illustrate how this variant helps saving registers
+// in
+//  predicate evaluation:
+//
+// Say we have the following loop:
+//   for in i in 0..8:
+//     if index(i, threadIdx, blockIdx) < T0.size: // predicate1
+//        T0 = ...
+//   In above code predicate1 would consume at least 8 registers
+//     because the loop is unrolled, and in reality actually a lot
+//     more because the index function tends to be quite convoluted
+//     and takes addtional registers to evaluation.
+//
+//  With the separability assumption described above, where
+//   index(i, threadIdx, blockIdx) can be re-written as:
+//   index(0, threadIdx, blockIdx) + i * C, where C is a grid constant
+//
+//  The above code can be re-written as:
+//   nvfuser_index_t base_index = index(0, threadIdx, blockIdx);
+//   for in i in 0..8:
+//     if base_index < T0.size-i*C: // predicate2
+//        T0 = ...
+//   Note that the expression on the RHS of predicate2 are all grid constants
+//     which the underlying cuda compiler does a good job optimizing out.
+//   So the entire predicate evaluation now only takes 1 register aka the
+//   base_index.
+//
+//  Additional note:
+//
+//  The support for this optimization is very limited and currently only
+//  supports
+//    the usage within matmul scheduler. To extend for generic support there are
+//    a few things that'd need to be sorted out: (if we do want to go further
+//    with this route instead of moving to predicate vector packing.)
+//
+//  1. In the predicate indexing today, we do index compute once and share it
+//  for all the contig_id's, which is ok if we don't consider index lifting
+//  but would probably need one index compute pass per contig id to accomodate
+//  lifting different contig_id's on the same tensor.
+//
+//  2. Matching the contig_id's is a very important aspect of the lifting
+//  transform, and it cannot be done well under the current infrastructure for
+//  predicate evaluation. The most ideal case would be all the predicate math
+//  could be computed, through iterdomain graph, before materialization of any
+//  loop nest, and that way all the separability analysis could be done reliably
+//  on the fusion IR itself.
+//
+//  3. Related to point 1.:
+//    - see [Restriction on Predicate Hoisting]:
+//      only one contig_id is lifted from each tensor because we only have one
+//    instance of index compute to update.
+//    - see [Predicate Peeling - Predicate Lift WAR]
+//      the predicate lifting has many unsupported cases because of having
+//      only one index compute instance. Particularly, whenever there's any
+//      predicate variant on the expression that requires the un-lifted indexing
+//      the predicate lifting should be disabled.
+//
+//  4. There are currently quite a few predicate variants, see
+//  lower_predicate.cpp,
+//    and would need to revisit the interaction with all of them.
+
 AddressRecord::AddressRecord(
     TensorView* data_tv,
     TensorView* address_tv,
@@ -155,8 +226,8 @@ void AddressComputeInfo::build(Fusion* fusion) {
         makeAddressRecord(consumer_tv, consumer_tv);
       }
       if (consumer_tv->shouldLiftPredicateIndex()) {
-        // Build write address record if consumer index should
-        //  be lifted.
+        // Build predicate record if the expression defininig
+        //  consumer it is predicate lifted.
         makePredicateRecord(consumer_tv);
       }
       for (auto producer_tv :
@@ -800,11 +871,12 @@ void AddressComputeInfo::makeAddressRecord(
   std::unordered_set<IterDomain*> contig_merged_ids;
 
   if (is_predicate_record) {
-    // TODO: should add assertion against contig merged ids for predicate
-    // lifting
-    // TODO: support predicate lifting, which will require unifying this with
-    // index
-    //   compute logic to make sure the same merged contig ids are analyzed.
+    // TODO:
+    //   In order to generically turn on predicate lifting
+    // the contig id logic in predicate indexing should be
+    // used here. Yet currently that part of the logic requires
+    // the actual loop nest so cleaning up that part would be
+    // a huge todo step before this pass can be made generic.
     contig_merged_ids = std::unordered_set<IterDomain*>(
         reference_tv->getMaybeRFactorDomain().begin(),
         reference_tv->getMaybeRFactorDomain().end());
