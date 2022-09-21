@@ -394,7 +394,8 @@ void scheduleMatmul(
   // Schedule warp tile
   //  0   1  2  3   4   5   6  7  8  9  10
   // [Mo No Ko  Kw Mwo  Nwo Mw Nw (Mi Ni Ki)]
-  scheduler_utils::matmul_utils::scheduleWarpTileWithReduction(cc, gemm_tile);
+  scheduler_utils::matmul_utils::scheduleWarpTileWithReduction(
+      cc, gemm_tile, true);
 
   // Propagate warp tile to main loop and epilog/output tvs
   scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(

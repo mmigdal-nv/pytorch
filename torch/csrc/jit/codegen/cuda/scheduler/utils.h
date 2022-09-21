@@ -327,7 +327,14 @@ TORCH_CUDA_CU_API void scheduleContiguousVectorLoad(
 //! TODO: rewrite this one with makeTile
 TORCH_CUDA_CU_API void scheduleWarpTileWithReduction(
     TensorView* tv,
-    MatMulTileOptions tile);
+    MatMulTileOptions tile,
+    // Will put the inner unrolled k loop on the left
+    //  most position to facilitate loop interleaving
+    //  if serial_k_loop_first is true.
+    // TODO: should probably re-write all the test
+    //  cases that nees this to be false and then
+    //  remove this parameter.
+    bool serial_k_loop_first = false);
 
 //! Schedule utility for mma output in matmul main loop:
 //!  Realize the hierarchical tiling based on the given tiling options
