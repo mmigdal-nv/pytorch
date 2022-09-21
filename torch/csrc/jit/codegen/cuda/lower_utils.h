@@ -281,6 +281,10 @@ bool supportInlinePredicate(Expr* expr);
 //!  uses shared mem address.
 bool useDirectSmemAddress(const TensorView* tv);
 
+//! Returns true if the given val depends on any named scalars
+//!  used in thread indexing, i.e. thhreadIdx and blockDim.
+bool dependsOnThreadNamedScalars(Val* val);
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

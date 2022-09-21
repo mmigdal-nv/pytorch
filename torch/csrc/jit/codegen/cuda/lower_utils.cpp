@@ -772,6 +772,28 @@ bool useDirectSmemAddress(const TensorView* tv) {
   return expr != nullptr && ir_utils::isCpAsyncOp(expr);
 }
 
+bool dependsOnThreadNamedScalars(Val* val) {
+  if (val == nullptr) {
+    // Handle trivial case.
+    return false;
+  }
+
+  auto inputs = InputsOf::output(val->fusion(), val);
+
+  for (auto input : inputs) {
+    if (auto ns = dynamic_cast<NamedScalar*>(input)) {
+      for (auto ptype : kParallelTypeTIDs) {
+        if (ns->name() == stringifyThread(ptype) ||
+            ns->name() == stringifyThreadSize(ptype)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

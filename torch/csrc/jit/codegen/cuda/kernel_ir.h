@@ -282,9 +282,25 @@ class TORCH_CUDA_CU_API BlockSync final : public Expr {
     return war_sync_;
   }
 
+  //! Sets the flag signifying that this block sync is
+  //!  thread aligned.
+  void convertToAligned() {
+    aligned_ = true;
+  }
+
+  bool isAligned() const {
+    return aligned_;
+  }
+
  private:
   // TODO: war_sync_ is only used for testing/validation purposes.
   bool war_sync_ = false;
+
+  //! tracks if this sync is thread aligned, i.e. all threads on
+  //!  the same block are guaranteed to reach this sync.
+  //!  more details on aligned sync see :
+  //! https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-bar
+  bool aligned_ = false;
 };
 
 // CpAsyncWait represents wait intrinsics for cp.async

@@ -134,6 +134,45 @@ class KIRCleaner : public OptOutDispatch {
   bool is_nop_ = false;
 };
 
+class ConvertAlignedBlockSync : kir::IrVisitor {
+ public:
+  static std::vector<Expr*> run(std::vector<Expr*> exprs) {
+    ConvertAlignedBlockSync converter;
+    converter.handle(exprs);
+    return exprs;
+  }
+
+ private:
+  using kir::IrVisitor::handle;
+
+  void handle(kir::BlockSync* sync) final {
+    // Inspect all the scope expressions
+    for (auto expr : scope_exprs_) {
+      // All predicates we have today are thread
+      //  dependent so avoid this in general.
+      if (expr->isA<kir::IfThenElse>()) {
+        return;
+      } else if (auto fl = dynamic_cast<kir::ForLoop*>(expr)) {
+        // If the start, stop, step are not thread dependent
+        //  then this for loop should be thread independent.
+        if (dependsOnThreadNamedScalars(fl->start()) ||
+            dependsOnThreadNamedScalars(fl->stop()) ||
+            dependsOnThreadNamedScalars(fl->step())) {
+          return;
+        }
+      }
+    }
+
+    // If all the checks above pass, convert this sync
+    //  to aligned sync.
+    sync->convertToAligned();
+  }
+};
+
+std::vector<Expr*> convertAlignedBlockSync(std::vector<Expr*> exprs) {
+  return ConvertAlignedBlockSync::run(exprs);
+}
+
 } // namespace
 
 void GpuLower::collectPaddedParallelDims() {
@@ -396,10 +435,12 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
 
   const auto exprs_instrumented = instrumentKernel(exprs_cleaned_up_loops);
 
+  const auto exprs_sync_aligned = convertAlignedBlockSync(exprs_instrumented);
+
   // We now have the lowered expressions, finalize the kernel IR. This function
   // will also copy over some relevant information for code generation from
   // GpuLower.
-  kernel_->finalize(exprs_instrumented);
+  kernel_->finalize(exprs_sync_aligned);
 }
 
 kir::Kernel* GpuLower::kernel() const {

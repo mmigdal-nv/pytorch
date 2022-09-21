@@ -570,7 +570,7 @@ void scheduleMatmul(
   //  all the shared memory is double buffered.
   if (params.async_gmem_load_operands &&
       params.double_buffer_options.double_buffer_smem_write) {
-    cc->interleave(2, 2);
+    cc->interleave(2, 8);
   }
 
   // If all the indexing are lifted, should be fine disabling nvfuser_zero
