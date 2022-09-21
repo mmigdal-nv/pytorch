@@ -24,6 +24,10 @@ class InterleaveLoopInfo {
     return concrete_main_loop_to_subloop_map_;
   }
 
+  const auto& concreteMainLoopToFactorMap() const {
+    return concrete_main_loop_to_number_of_units_;
+  }
+
  private:
   //! Build phase 1: check all the tv's for
   //!  main_loops where subloops are interleaved.
@@ -50,6 +54,7 @@ class InterleaveLoopInfo {
       concrete_main_loop_to_subloop_map_;
   std::unordered_map<IterDomain*, TensorViewVector>
       concrete_main_loop_to_interleaved_tv_;
+  std::unordered_map<IterDomain*, int> concrete_main_loop_to_number_of_units_;
 
   //! Short-cut to the fusion this info keeps track of.
   Fusion* fusion_ = nullptr;

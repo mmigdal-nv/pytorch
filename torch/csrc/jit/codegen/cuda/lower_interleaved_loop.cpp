@@ -56,11 +56,11 @@ void InterleaveLoopInfo::build(Fusion* fusion) {
 
 void InterleaveLoopInfo::collectInterleaveMainLoops() {
   for (auto tv : used_tvs_) {
-    auto maybe_main_axis = tv->getMaybeInterleavedAxis();
+    auto maybe_main_axis = tv->getMaybeInterleavedAxisAndFactor();
     if (maybe_main_axis.has_value()) {
       auto concrete_main_loop_id =
           GpuLower::current()->caMap()->getConcreteMappedID(
-              tv->axis(maybe_main_axis.value()), IdMappingMode::LOOP);
+              tv->axis(maybe_main_axis.value().first), IdMappingMode::LOOP);
 
       // Create new record for this loop id if not found
       if (!concrete_main_loop_to_interleaved_tv_.count(concrete_main_loop_id)) {
@@ -68,6 +68,8 @@ void InterleaveLoopInfo::collectInterleaveMainLoops() {
             std::make_pair(concrete_main_loop_id, ConcreteIdVector()));
         concrete_main_loop_to_interleaved_tv_.insert(
             std::make_pair(concrete_main_loop_id, TensorViewVector()));
+        concrete_main_loop_to_number_of_units_.insert(std::make_pair(
+            concrete_main_loop_id, maybe_main_axis.value().second));
       }
     }
   }
@@ -266,7 +268,9 @@ class LoopInterLeaver : kir::ExprMutator {
       auto concrete_loop_id = GpuLower::current()->caMap()->getConcreteMappedID(
           loop->iter_domain(), IdMappingMode::LOOP);
       if (concrete_subloop_set_.count(concrete_loop_id) &&
-          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Epilog) {
+          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Epilog &&
+          !loop->loopTransformInfo().is_base_index_loop &&
+          !loop->loopTransformInfo().is_increment_loop) {
         return true;
       }
     }
@@ -352,7 +356,7 @@ class LoopInterLeaver : kir::ExprMutator {
       bool insert_before,
       kir::ForLoop* main_loop) {
     std::vector<kir::ForLoop*> interleave_units;
-    auto config = getInterleaveConfig(sub_loops);
+    auto config = getInterleaveConfig(main_loop, sub_loops);
 
     for (int idx : c10::irange(config.number_of_units)) {
       for (auto sub_loop : sub_loops) {
@@ -415,14 +419,12 @@ class LoopInterLeaver : kir::ExprMutator {
   }
 
   InterLeaveConfig getInterleaveConfig(
+      kir::ForLoop* main_loop,
       const std::vector<kir::ForLoop*> sub_loops_) {
     TORCH_INTERNAL_ASSERT(
         !sub_loops_.empty(), "Cannot generate config for empty subloops");
     InterLeaveConfig interleave_config;
     ExpressionEvaluator const_evaluator(sub_loops_[0]->iter_domain()->fusion());
-
-    int64_t max_extent = -1;
-    int64_t min_extent = -1;
 
     for (auto fl : sub_loops_) {
       auto maybe_value = const_evaluator.evaluate(fl->stop());
@@ -430,14 +432,6 @@ class LoopInterLeaver : kir::ExprMutator {
           maybe_value.has_value(), "non constant interleaving not supported");
       auto value = maybe_value.value().as<int64_t>();
 
-      // Collect max or min value while converting concrete extents
-      //  from the subloop iterdomains.
-      max_extent = max_extent == -1 ? value : std::max(max_extent, value);
-      min_extent = min_extent == -1 ? value : std::min(min_extent, value);
-
-      // TODO: check if this concretize step is necessary, all the iterdomain
-      // attached
-      //  to a for loop should be the concrete id.
       auto concrete_loop_domain =
           GpuLower::current()->caMap()->getConcreteMappedID(
               fl->iter_domain(), IdMappingMode::LOOP);
@@ -447,7 +441,12 @@ class LoopInterLeaver : kir::ExprMutator {
     }
 
     // Calculate interleave factor, simple heuristic as ceilDiv(max, min):
-    interleave_config.number_of_units = min_extent;
+    interleave_config.number_of_units =
+        GpuLower::current()
+            ->interleavedLoopInfo()
+            .concreteMainLoopToFactorMap()
+            .at(GpuLower::current()->caMap()->getConcreteMappedID(
+                main_loop->iter_domain(), IdMappingMode::LOOP));
 
     return interleave_config;
   }

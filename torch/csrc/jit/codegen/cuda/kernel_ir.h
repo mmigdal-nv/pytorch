@@ -596,7 +596,7 @@ struct LoopTransformInfo {
     is_interleave_unit = true;
     return *this;
   }
-  
+
   // ! Setter API
   LoopTransformInfo& incrementLoop() {
     is_increment_loop = true;

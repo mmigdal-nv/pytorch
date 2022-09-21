@@ -529,14 +529,14 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     return skew_double_buffer_loop_;
   }
 
-  void interleave(int axis) {
+  void interleave(int axis, int number_of_units = 4) {
     // TODO: move to tensorview.cpp
     //  and add upfront validation.
-    maybe_interleaved_axis_ = axis;
+    maybe_interleave_axis_and_factor_ = std::make_pair(axis, number_of_units);
   }
 
-  auto getMaybeInterleavedAxis() const {
-    return maybe_interleaved_axis_;
+  auto getMaybeInterleavedAxisAndFactor() const {
+    return maybe_interleave_axis_and_factor_;
   }
 
   //! Transforms the innermost iterdomains according to the given mma swizzle,
@@ -639,7 +639,7 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   bool skew_double_buffer_loop_ = false;
 
   // Loop where the next level of unrolled loops are interleaved.
-  c10::optional<int> maybe_interleaved_axis_;
+  c10::optional<std::pair<int, int>> maybe_interleave_axis_and_factor_;
 };
 
 //! A simple TensorView builder

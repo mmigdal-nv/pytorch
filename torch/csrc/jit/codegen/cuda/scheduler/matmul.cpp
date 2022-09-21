@@ -561,7 +561,13 @@ void scheduleMatmul(
 
   if (params.peel_main_loop) {
     cc->peelPredicatedLoop(2);
-    cc->interleave(2);
+  }
+
+  // Only interleave if using cp.async and
+  //  all the shared memory is double buffered.
+  if (params.async_gmem_load_operands &&
+      params.double_buffer_options.double_buffer_smem_write) {
+    cc->interleave(2, 2);
   }
 }
 
