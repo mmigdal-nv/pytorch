@@ -617,18 +617,25 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   // Utility function to emit a cp.async intrinsic
   void genCpAsync(const LoadStoreOp* ldst, int vec_size) {
     auto dtype = ldst->in()->getDataType().value();
+    bool is_cg = ldst->opType() == LoadStoreOpType::CpAsyncCg;
+
+    if (is_cg) {
+      indent() << "Ampere::cpAsyncCg";
+    } else {
+      indent() << "Ampere::cpAsync";
+    }
 
     if (ldst->predicate() == nullptr) {
       // Out of line predicate variant
-      indent() << "Ampere::cpAsync<" << dtype << "," << vec_size << ">("
-               << genMaybeHoistedPointer(ldst->out()) << ","
-               << genMaybeHoistedPointer(ldst->in()) << ");\n";
+      code_ << "<" << dtype << "," << vec_size << ">("
+            << genMaybeHoistedPointer(ldst->out()) << ","
+            << genMaybeHoistedPointer(ldst->in()) << ");\n";
     } else {
       // Inline predicate variant
-      indent() << "Ampere::cpAsync<" << dtype << "," << vec_size << ">("
-               << genMaybeHoistedPointer(ldst->out()) << ","
-               << genMaybeHoistedPointer(ldst->in()) << ","
-               << genInline(ldst->predicate()) << ");\n";
+      code_ << "<" << dtype << "," << vec_size << ">("
+            << genMaybeHoistedPointer(ldst->out()) << ","
+            << genMaybeHoistedPointer(ldst->in()) << ","
+            << genInline(ldst->predicate()) << ");\n";
     }
   }
 
@@ -1402,6 +1409,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         genLdMatrix(ldst, vector_word_size);
         break;
       case LoadStoreOpType::CpAsync:
+      case LoadStoreOpType::CpAsyncCg:
         genCpAsync(ldst, vector_word_size);
         break;
       default:
