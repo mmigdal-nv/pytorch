@@ -9,6 +9,93 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
+// Note: [Loop Interleaving]:
+//  This pass is trying to implement a simple yet useful loop structure
+//   optimization that tries to interleave sub iterations of unrolled loops.
+// With an example:
+//
+// Before transform:
+//    for i0 in 0..4
+//      expr1
+//    for i1 in 0..8
+//      expr2
+//    for i2 in 0..4
+//      expr3
+// After transform:
+//    for i0 in {0}
+//      expr1
+//    for i1 in {0,1}
+//      expr2
+//    for i2 in {0}
+//      expr3
+//    for i0 in {1}
+//      expr1
+//    for i1 in {2,3}
+//      expr2
+//    ...
+//
+// To simplify the initial implementation, an outer serial loop is assumed, as
+//  an indicator to define at which loop nest level to start interleaving, so
+//  the actual transform looks like: (some terminology defined inline)
+// Before transform:
+//  for i in ...        // This outer serial loop is called "main loop" in this
+//  pass
+//    for i0 in 0..4    // Each of these unrolled loops is called a "subloop" of
+//    the "main loop"
+//      expr1
+//    for i1 in 0..8
+//      expr2
+//    for i2 in 0..4
+//      expr3
+// After transform:
+//  for i in ...
+//    for i0 in {0}   // Each of these sub-iterations is called an "interleave
+//    unit"
+//      expr1
+//    for i1 in {0,1}
+//      expr2
+//    for i2 in {0}
+//      expr3
+//    for i0 in {1}
+//      expr1
+//    for i1 in {2,3}
+//      expr2
+//    ...
+//
+// This optimization is controlled by scheduler through interface:
+//   tv->interleave(pos, factor),
+// where `pos` is the position of the iterdomain
+//  that corresponds to the main loop, and all the subloops are assumed to be at
+//  the immediate next position.
+//  e.g.
+//    tv[Io, Ii] -> interleave(0, pos);
+//  means that the "main loop" is selected to be the loop that is loop mapped to
+//  Io, and Ii is assumed to be map to one of the "sub loops".
+//
+// The term `factor` defines the number of "interleave units" to split each "sub
+// loop"
+//  into, in a best effort manner, with each unit size `ceilDiv(loop_extent,
+//  factor)`.
+//
+// E.g. if the factor is 4
+//   subloop `for i in 0..8` becomes:
+//  `for i in 0..2`
+//  `for i in 2..4`
+//  `for i in 4..6`
+//  `for i in 6..8`
+//   subloop `for i in 0..7` becomes:
+//  `for i in 0..2`
+//  `for i in 2..4`
+//  `for i in 4..6`
+//  `for i in 6..7`
+//   subloop `for i in 0..6` becomes:
+//  `for i in 0..2`
+//  `for i in 2..4`
+//  `for i in 4..6`
+//
+// All the subloops are assumed to be constant sized since they need to be
+// unrolled
+//  for this optimization to be meaningful.
 namespace {
 
 int64_t ceilDiv(int64_t a, int64_t b) {
@@ -64,10 +151,15 @@ void InterleaveLoopInfo::collectInterleaveMainLoops() {
 
       // Create new record for this loop id if not found
       if (!concrete_main_loop_to_interleaved_tv_.count(concrete_main_loop_id)) {
+        // Create record space to later collect the interleaved tensors
+        //  and the subloops.
         concrete_main_loop_to_subloop_map_.insert(
             std::make_pair(concrete_main_loop_id, ConcreteIdVector()));
         concrete_main_loop_to_interleaved_tv_.insert(
             std::make_pair(concrete_main_loop_id, TensorViewVector()));
+
+        // Record the interleave factor for this main loop. see [Loop
+        // Interleaving].
         concrete_main_loop_to_number_of_units_.insert(std::make_pair(
             concrete_main_loop_id, maybe_main_axis.value().second));
       }
@@ -147,6 +239,7 @@ void InterleaveLoopInfo::collectInterleavedSubLoops() {
 }
 
 // Validation of double buffering topology of interleaved expressions:
+//  see [Supported Interleaving Cases]
 void InterleaveLoopInfo::validate() {
   // Validate expression consistency after interleaving
   for (auto& main_loop_entry : concrete_main_loop_to_interleaved_tv_) {
@@ -154,16 +247,11 @@ void InterleaveLoopInfo::validate() {
   }
 }
 
+// Returns true if the given tv is an "exit tv",
+//  see [Supported Interleaving Cases].
 bool InterleaveLoopInfo::isExitTv(
     TensorView* tv,
     const TensorViewVector& interleaved_tvs) {
-  // Check for exit tv's:
-  //  TODO: This is a simplified version of the analysis
-  //   where all the interleaved tv has have an unrolled
-  //   serial loop on the right of a CA axis, so when a
-  //   tv is an "exit-tv", we only need to check that
-  //   non of the consumers of this tv is an interleaved tv.
-
   // Output is always an exit
   if (tv->isFusionOutput()) {
     return true;
@@ -186,20 +274,91 @@ bool InterleaveLoopInfo::isExitTv(
 void InterleaveLoopInfo::validateMainLoop(
     IterDomain* concrete_main_loop,
     const TensorViewVector& interleaved_tvs) {
+  // [Supported Interleaving Cases]
   // All the expressions that are inside the main loop or subloop can
-  //  only be 2 cases:
-  // 1. It's double buffered.
+  //  only be 3 cases:
+  // 1. It's double/circular buffered across a loop that's either at or on the
+  // outer
+  //  loop nest than the main loop. E.g.
+  //  for i in ... // loop 1
+  //   for j in ... // loop 2 (interleave main loop)
+  //    for k in ... // loop 3 (interleave sub loop)
+  //     tv0 [i%3*buffersize + ... ] = ...;
+  //  tv0 is circular buffered around loop1, so interleaving loop 3
+  //  with any other serial loops within loop2 will not make any consumer
+  //  of tv0 use the wrong value.
+  //  No guarantee on the producers of tv0 from this though,
+  //   which relies on the same check being run on them as well to ensure
+  //   safety.
+  //
   // 2. It's inlined into the subloop.
-  // 3. It's not a producer of any other interleaved tv's, i.e. it is an exit
-  // tv.
+  //  Eg.
+  //  for i in ... // loop1 (interleave main loop)
+  //   for j in ... // loop2 (interleave sub loop)
+  //     for k in ... // loop3
+  //      tv0[k] = ...
+  //     for w in ... // loop4
+  //      ... = t0[w]
+  // The inlining semantically means that the consumer of tv0 above is
+  //  within loop2, so interleaving loop 2 with other loops within loop1
+  //  should not cause the consumer of tv0 to read wrong values, as they
+  //  are essentially not changed.
+  //
+  // 3. It's not a producer of any other interleaved tv's,
+  //       i.e. it is an "exit tv".
+  //  for i in ... // loop1 (interleave main loop)
+  //   for j in ... // loop2 (interleave subloop 1)
+  //    tv0[j] = ...
+  //   for k in ... // loop3 (interleave subloop 2)
+  //    tv1[j] = ...
+  //
+  //  for m in ...
+  //   ... = tv0[m] + tv1[m];
+  //
+  // In this case tv0 and tv1 are producing values that are used outside
+  //  of any of the expressions that are interleaved, so the interleaving
+  //  of loop2 and loop3 should have no effect on the semantic.
   for (auto tv : interleaved_tvs.vector()) {
     if (isExitTv(tv, interleaved_tvs)) {
+      // Exit tv computation can be interleaved by Point 3 above.
       continue;
     }
-    // Double buffered tv doesn't need to be checked.
+
+    // Double buffered tv doesn't need to be checked, see Point 2 above:
     if (tv->isDoubleBuffered() || tv->isCircularBuffered()) {
-      continue;
+      auto db_axis =
+          GpuLower::current()->doubleBufferInfo().getDoubleBufferAxis(tv);
+
+      // Check that the double buffer axis is at or on the left of
+      //  the main loop.
+      bool can_interleave = false;
+
+      // Iterating over the leaf domains from the left
+      for (auto id : tv->domain()->domain()) {
+        if (id == db_axis) {
+          // If we see double buffer axis first then
+          //  it's double buffered on the outer loop.
+          // So it can be interleaved.
+          can_interleave = true;
+          break;
+        } else if (GpuLower::current()->caMap()->areMapped(
+                       id, concrete_main_loop, IdMappingMode::LOOP)) {
+          // If we see main loop before seeing the double buffer axis,
+          //  it cannot be proven safe to interleave by double buffering
+          //  but the other two points might apply.
+          can_interleave = false;
+        }
+      }
+
+      if (can_interleave) {
+        continue;
+      }
     }
+
+    // If Point3 and Point2 didn't apply at this point,
+    //  then Point1 has apply in order for this interleaving to be valid.
+    // TODO:
+    //  Maybe in follow ups more supported patterns could be added.
 
     // Check that the subloop is on the left of CA axis:
     auto& concrete_subloops =
@@ -224,11 +383,19 @@ void InterleaveLoopInfo::validateMainLoop(
 }
 
 namespace {
+
+// A data structure collecting the parameters when realizing the interleaving.
 struct InterLeaveConfig {
+  // Total number of units, aka. interleave factor,
+  //  see [Loop Interleaving].
   int64_t number_of_units = 1;
+
+  // Evaluated loop extent of each sub loop.
   std::unordered_map<IterDomain*, int64_t> concrete_id_to_extent_;
 };
 
+//! The loop interleaving pass that implements the interleaving
+//!  transform, see [Loop Interleaving].
 class LoopInterLeaver : kir::ExprMutator {
  public:
   static std::vector<Expr*> run(std::vector<Expr*> exprs) {
@@ -254,7 +421,7 @@ class LoopInterLeaver : kir::ExprMutator {
     auto concrete_loop_id = GpuLower::current()->caMap()->getConcreteMappedID(
         fl->iter_domain(), IdMappingMode::LOOP);
 
-    // Only interleave main loop is necessary
+    // For double buffered loops, only interleave the main stage.
     if (concrete_main_loop_ == concrete_loop_id &&
         fl->doubleBufferLoopStage() == DoubleBufferLoopStage::Main) {
       handleMainLoop(fl);
@@ -263,12 +430,17 @@ class LoopInterLeaver : kir::ExprMutator {
     }
   }
 
+  // Returns true if the expression is a subloop to be interleaved
+  //  see [Loop Interleaving].
   bool isInterleavedSubloop(Expr* expr) {
     if (auto loop = dynamic_cast<kir::ForLoop*>(expr)) {
       auto concrete_loop_id = GpuLower::current()->caMap()->getConcreteMappedID(
           loop->iter_domain(), IdMappingMode::LOOP);
       if (concrete_subloop_set_.count(concrete_loop_id) &&
+          // Do not interleave double buffer epilogs
           loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Epilog &&
+
+          // Do not interleave any index computation expressions
           !loop->loopTransformInfo().is_base_index_loop &&
           !loop->loopTransformInfo().is_increment_loop) {
         return true;
@@ -277,6 +449,8 @@ class LoopInterLeaver : kir::ExprMutator {
     return false;
   }
 
+  // Remove the original subloops once the interleaved
+  //  versions have been inserted.
   void clearSubLoops(
       std::vector<kir::ForLoop*>& interleaved_subloops,
       kir::ForLoop* main_loop) {
@@ -286,32 +460,73 @@ class LoopInterLeaver : kir::ExprMutator {
     interleaved_subloops.clear();
   }
 
+  // Realize the interleaving with the given for loop
+  //  as the main loop, see [Loop Interleaving].
+  //
+  // [Loop Interleaving Impl]
+  // The implementation pass goes as the below example:
+  //
+  //  for i in ... // main loop
+  //   for j in ... // sub loop1
+  //    ...
+  //   for k in ... // sub loop2
+  //    ...
+  //   __syncthread();
+  //   for m in ... // sub loop3
+  //    ...
+  //   for n in ... // sub loop4
+  //    ...
+  //
+  // This function loops through the body of the main loop
+  //  and puts all the subloops encountered in `interleaved_subloops`
+  //  vector.
+  // Whenever it sees an expression that is *not* a interleaved subloop, e.g.
+  //  the syncthreads in the above example, the currently collected
+  //  `interleaved_subloops`, i.e. loop1 and loop2 in this case, are
+  //  emitted as interleaved units and the pass continues with an empty
+  //  `interleaved_subloops` vector.
+  // As a result, in this example, sub loop1 and sub loop2 are interleaved
+  //  while sub loop3 and sub loop4 are interleaved.
   void handleMainLoop(kir::ForLoop* fl) {
+    // Collect the subloops encountered when looping
+    //  over the main loop expressions.
     std::vector<kir::ForLoop*> interleaved_subloops;
+
+    // Keeping track of the insertion point to realize
+    //  the interleave units.
     Expr* last_expr = nullptr;
 
+    // Loop over the main loop body.
     for (auto expr : fl->body().exprs()) {
+      // Record the current expression as insertion point.
       last_expr = expr;
+
       if (auto loop = dynamic_cast<kir::ForLoop*>(expr)) {
-        if (loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Prolog ||
-            loop->doubleBufferLoopStage() ==
-                DoubleBufferLoopStage::UpperProlog ||
-            loop->doubleBufferLoopStage() ==
-                DoubleBufferLoopStage::LowerProlog) {
-          continue;
-        } else if (
-            isInterleavedSubloop(expr) &&
-            loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Epilog) {
+        if (
+            // Usually not useful to involve double buffer prologs
+            //  and epilogs in the interleaving.
+            !isProlog(loop->doubleBufferLoopStage()) &&
+            loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Epilog &&
+            // Check if this expression is a subloop
+            isInterleavedSubloop(expr)) {
+          // Collect this sub loop to be realized later, see details above.
           interleaved_subloops.push_back(expr->as<kir::ForLoop>());
           continue;
         }
       }
 
-      // TODO: generic detect
+      // Main loop may have allocation expressions that can be safe
+      //  to just continue collecting the subloop across as the interleave
+      //  units will be realized after this expression, which means the
+      //  allocation is still valid.
       if (expr->isA<kir::Allocate>()) {
         continue;
       }
 
+      // This is the point where we see an expression that is *not* an
+      //  interleaved subloop that we are collecting, so emit the currently
+      //  collected interleaved subloops as interleaved units.
+      // And clear the collected vector before proceeding.
       if (!interleaved_subloops.empty()) {
         realizeInterleavedSubloops(last_expr, interleaved_subloops, true, fl);
         clearSubLoops(interleaved_subloops, fl);
@@ -328,6 +543,8 @@ class LoopInterLeaver : kir::ExprMutator {
     }
   }
 
+  // Performs a deep loopnest clone if the expression
+  //  is a loop nest.
   // TODO: use common infra
   Expr* cloneMaybeLoopNest(Expr* expr) {
     auto fl = dynamic_cast<kir::ForLoop*>(expr);
@@ -350,16 +567,30 @@ class LoopInterLeaver : kir::ExprMutator {
         false, "LoopInterleaving: no support yet post IfThenElse lowering");
   }
 
+  // Emit the currently collected subloops as interleaved units,
+  //  see [Loop Interleaving Impl].
   void realizeInterleavedSubloops(
+      // A insertion reference point
       Expr* insert_point,
+      // Subloops to interleave.
       std::vector<kir::ForLoop*> sub_loops,
+      // Insert interleave units before insertion point
+      //  if true, after if false.
       bool insert_before,
+      // Main loop to interleave within.
       kir::ForLoop* main_loop) {
+    // Container to collect the interleave units in interleaved order.
     std::vector<kir::ForLoop*> interleave_units;
+
+    // Populate parameters on interleaving these sub loops.
     auto config = getInterleaveConfig(main_loop, sub_loops);
 
+    // Repeat for number_of_units times, each time creating
+    //  an interleave unit for each subloop.
     for (int idx : c10::irange(config.number_of_units)) {
+      // Loop over each sub loop
       for (auto sub_loop : sub_loops) {
+        // Collect concrete id and extent
         auto concrete_loop_id =
             GpuLower::current()->caMap()->getConcreteMappedID(
                 sub_loop->iter_domain(), IdMappingMode::LOOP);
@@ -367,10 +598,13 @@ class LoopInterLeaver : kir::ExprMutator {
         auto concrete_extent =
             config.concrete_id_to_extent_.at(concrete_loop_id);
 
+        // Calculate size of this unit
         auto interleave_unit = ceilDiv(concrete_extent, config.number_of_units);
 
+        // Set start and stop of this unit,
+        //   stop needs to be the minimum of start+size and original extent
+        // to avoid out running the orignal loop.
         int start_idx = idx * interleave_unit;
-
         auto stop_idx = std::min(start_idx + interleave_unit, concrete_extent);
 
         // No longer need to generate more of this sub loop if
@@ -389,7 +623,8 @@ class LoopInterLeaver : kir::ExprMutator {
         registerInsertBefore(insert_point, unit, &main_loop->body());
       }
     } else {
-      // Need to insert in reverse order when inserting after.
+      // Need to insert in reverse order when inserting after in order
+      //  to maintain the original order defined in interleave_units.
       for (auto it = interleave_units.rbegin(); it != interleave_units.rend();
            it++) {
         registerInsertAfter(insert_point, *it, &main_loop->body());
@@ -397,6 +632,8 @@ class LoopInterLeaver : kir::ExprMutator {
     }
   }
 
+  // Make an interleaved unit of the given sub loop according to the given
+  //  start and stop offset.
   kir::ForLoop* makeInterleavedUnit(kir::ForLoop* fl, Val* start, Val* stop) {
     // Create an outer loop with the same loop expressions but
     //  different start and stop.
@@ -418,6 +655,8 @@ class LoopInterLeaver : kir::ExprMutator {
     return outer_loop;
   }
 
+  // Collect info needed to realize interleaved loop,
+  //  see [Loop Interleaving Impl].
   InterLeaveConfig getInterleaveConfig(
       kir::ForLoop* main_loop,
       const std::vector<kir::ForLoop*> sub_loops_) {
