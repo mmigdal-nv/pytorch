@@ -153,7 +153,8 @@ class TORCH_CUDA_CU_API TensorIndex final : public Val {
       IrBuilderPasskey,
       const TensorView* view,
       std::vector<Val*> indices,
-      Val* base_address = nullptr);
+      Val* base_address = nullptr,
+      Val* uniform_address = nullptr);
 
   std::vector<Val*>::size_type nDims() const {
     return indices_.size();
@@ -178,10 +179,25 @@ class TORCH_CUDA_CU_API TensorIndex final : public Val {
     return base_address_;
   }
 
+  auto uniformAddress() const {
+    return uniform_address_;
+  }
+
+  bool useSmemAddress() const {
+    return use_smem_address_;
+  }
+
+  TensorIndex* toSmemAddress() {
+    use_smem_address_ = true;
+    return this;
+  }
+
  private:
   const TensorView* view_ = nullptr;
   std::vector<Val*> indices_;
   Val* base_address_ = nullptr;
+  Val* uniform_address_ = nullptr;
+  bool use_smem_address_ = false;
 };
 
 //! Allocate is a lower level Node that describes a buffer of memory that
@@ -295,15 +311,64 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
   explicit CpAsyncCommit(IrBuilderPasskey passkey);
 };
 
+//! An Expression type that handles pre-computation of memory address
+//!  that are not inlined.
 class TORCH_CUDA_CU_API AddressCompute final : public Expr {
  public:
-  enum class AddressComputeOpType { BASE_ADDRESS, INCREMENT };
+  enum class AddressComputeOpType {
+    // Calculate base address for lifted memory index
+    BASE_ADDRESS,
+    // Switch a double buffer index register,
+    // see [Uniform Double Buffer Offset]
+    DOUBLE_BUFFER_SWITCH,
+    // Inplace update a double buffered address
+    // see [Inplace Double Buffer Update]
+    DOUBLE_BUFFER_UPDATE,
+    // Inplace increment a global address, see
+    // see [Gmem address increment]
+    GMEM_INCREMENT,
+    // Inplace increment a global address, see
+    // see [Gmem Increment Hoisting]
+    GMEM_DECREMENT
+  };
 
+  // Constructor for BASE_ADDRESS mode calculation
+  // (Default).
   explicit AddressCompute(
       IrBuilderPasskey passkey,
       AddressComputeOpType op_type,
       Val* address_tensor,
       Val* data_tensor);
+
+  // Constructor for gmem increment
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      Val* address_tensor,
+      Val* data_tensor,
+      TensorIndex* increment_value = nullptr,
+      bool is_decrement = false);
+
+  // Constructor for double buffer offset
+  //   calculation:
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      TensorView* data_tv,
+      Val* double_buffer_switch_index,
+      Val* buffer_size_in_byte,
+      int loop_offset,
+      int stage_number,
+      Val* loop_index = nullptr);
+
+  // Constructor for double buffer offset
+  //   inplace update:
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      Val* address_tensor,
+      Val* buffer_size_in_byte,
+      int stage_number,
+      int loop_offset,
+      TensorView* data_tensor,
+      Val* loop_index = nullptr);
 
   auto dataTv() const {
     return data_tensor_;
@@ -315,6 +380,34 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
 
   auto opType() const {
     return op_type_;
+  }
+
+  auto doubleBufferSwitchIndex() const {
+    return double_buffer_switch_index_;
+  }
+
+  auto doubleBufferByteSize() const {
+    return buffer_size_in_byte_;
+  }
+
+  auto loopOffset() const {
+    return loop_offset_;
+  }
+
+  auto stageNumber() const {
+    return stage_number_;
+  }
+
+  auto loopIndex() const {
+    return loop_index_;
+  }
+
+  auto incrementValue() const {
+    return increment_value_;
+  }
+
+  bool isDecrement() const {
+    return op_type_ == AddressComputeOpType::GMEM_DECREMENT;
   }
 
  private:
@@ -330,8 +423,29 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
   //  data tensor.
   Val* address_tensor_ = nullptr;
 
-  // Tensor that holds the value to increment (INCREMENT MODE only).
-  Val* inc_value_ = nullptr;
+  // Double buffer switch and update parameters below:
+
+  // The switching index that this op is updating.
+  Val* double_buffer_switch_index_ = nullptr;
+
+  // The original buffer alloc size used for double buffer
+  //   update calculation.
+  Val* buffer_size_in_byte_ = nullptr;
+
+  // The double buffer loop offset that is used for
+  //  computing the double buffer size update.
+  int loop_offset_ = 0;
+
+  // The double buffer loop offset that is used for
+  //  computing the double buffer size update.
+  int stage_number_ = 0;
+
+  // The double buffer loop index.
+  Val* loop_index_ = nullptr;
+
+  // Gmem increment parameters below:
+  //  The increment value to apply to the pointer.
+  kir::TensorIndex* increment_value_ = nullptr;
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is
@@ -444,6 +558,8 @@ struct LoopTransformInfo {
   DoubleBufferLoopStage double_buffer_loop_stage =
       DoubleBufferLoopStage::NotApplicable;
 
+  //! Tracks the predicate peeling stage of this loop,
+  //!  see [Predicate Peeling].
   PredicatePeelStage predicate_peel_stage = PredicatePeelStage::NoApplicable;
 
   //! Tracks if this for loop is for base index calculation for
@@ -452,6 +568,10 @@ struct LoopTransformInfo {
 
   //! Tracks if this for loop is a unit from an interleaved set of loops.
   bool is_interleave_unit = false;
+
+  //! Tracks if this for loop is for calculating inductive variable
+  //!  increments.
+  bool is_increment_loop = false;
 
   //! Setter API
   LoopTransformInfo& doubleBufferStage(DoubleBufferLoopStage stage) {
@@ -474,6 +594,12 @@ struct LoopTransformInfo {
   //! Setter API
   LoopTransformInfo& interLeaveUnit() {
     is_interleave_unit = true;
+    return *this;
+  }
+  
+  // ! Setter API
+  LoopTransformInfo& incrementLoop() {
+    is_increment_loop = true;
     return *this;
   }
 };

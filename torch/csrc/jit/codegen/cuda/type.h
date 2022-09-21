@@ -67,6 +67,7 @@ enum class DataType {
   Int,
   Index,
   Pointer,
+  SmemAddress,
   Int32,
   Bool,
   BFloat16,
@@ -337,6 +338,10 @@ enum class DoubleBufferLoopStage {
 };
 
 enum class PredicatePeelStage { NoApplicable, Prolog, Main };
+
+//! Returns true if the given stage is a prolog stage
+//!  for some double buffered or circular buffered loop.
+bool isProlog(DoubleBufferLoopStage stage);
 
 //! Supported swizzle types,
 //!  corresponds to swizzles functions on the runtime cuda

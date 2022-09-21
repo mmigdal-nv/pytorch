@@ -257,6 +257,13 @@ bool Val::isZeroInt() const {
   return int_val.has_value() && int_val.value() == 0;
 }
 
+bool Val::isZero() const {
+  auto int_val = getInt();
+  auto double_val = getDouble();
+  return (int_val.has_value() && int_val.value() == 0) ||
+      (double_val.has_value() && double_val.value() == 0);
+}
+
 bool Val::isOneInt() const {
   auto int_val = getInt();
   return int_val.has_value() && int_val.value() == 1;

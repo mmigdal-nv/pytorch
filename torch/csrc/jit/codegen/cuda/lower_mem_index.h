@@ -13,6 +13,35 @@ namespace cuda {
 
 struct AddressRecordKey;
 
+//! [Note on data tensor and reference tensor]:
+//!
+//! In the indexing compute passes we have today we tend to have two tensors
+//!  involved when generating the memory or register indices. In the analysis
+//!  defined here they are referred to as "data tensor" and "index reference
+//!  tensor", or "reference tensor".
+//!
+//! The "data tensor" is the tensor that represents the actual memory space
+//! where
+//!  we are generating the address math for while "reference tensor" refers to
+//!  the tensorview whose tensor domain maps to the actual loop nest and index
+//!  on the idgraph.
+//!
+//! The only two examples we have today are:
+//!  when indexing producer tensors, the data tensor is the producer tv,
+//!                                  the reference tensor is the consumer tv.
+//!
+//!  when indexing consumer tensors, the data tensor is the consumer tv,
+//!                                  the reference tensor is the consumer tv as
+//!                                  well.
+//! These info are just here to keep the interface unified when defining the
+//! index lifting logic
+//!  in the following analyses and transforms.
+
+//! A utility class to keep track of memory address pre-computation.
+//!  See also [Notes on memory address lifting] in lower_mem_index.cpp.
+//! Each address record corresponds to an allocated "address_tv" that holds
+//!  the precomputed address for some "data_tv" which is the shared/global
+//!  tv the "address_tv" holds the index for.
 class AddressRecord {
  public:
   //! Utility class to note the read or write
@@ -111,14 +140,25 @@ struct AddressRecordKeyHash {
   }
 };
 
+//! Data structure stored in GPULower to keep track of
+//!  all the instances of indexing math with pre-computed
+//!  components.
 class AddressComputeInfo {
  public:
   void build(Fusion* fusion);
 
+  //! Returns the address record corresponding to the
+  //!  data_tv - reference tv pair, if any has been
+  //!  found.
+  //! Assumes reference_tv == data_tv, i.e. it is
+  //!  a consumer indexing case when reference_tv is null.
   c10::optional<AddressRecord*> getMaybeLiftedAddress(
       const TensorView* data_tv,
       const TensorView* reference_tv = nullptr);
 
+  //! Returns the corresponding address record for the given
+  //!  address_tv if found.
+  //! Each address_tv should be mapped to a unique address record.
   c10::optional<AddressRecord*> getMaybeRecordForAddressTv(
       const TensorView* tv);
 
@@ -126,7 +166,9 @@ class AddressComputeInfo {
   // Utility to help allocate space for saving pre-computed address.
   TensorView* makeAddressTv(
       std::vector<IterDomain*> address_domains,
-      bool is_global_address);
+      bool is_global_address,
+      bool is_predicate_index,
+      bool is_cpasync_write = false);
 
   void makeAddressRecord(TensorView* data_tv, TensorView* reference_tv);
 
@@ -144,6 +186,7 @@ class AddressComputeInfo {
       address_tv_to_address_record_;
 };
 
+//! Kernel IR pass that inserts requested index pre-computations.
 std::vector<Expr*> preComputeLiftedAddress(const std::vector<Expr*>& exprs);
 
 } // namespace cuda

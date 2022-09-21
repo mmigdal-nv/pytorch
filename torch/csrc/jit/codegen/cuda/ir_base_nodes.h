@@ -284,6 +284,9 @@ class TORCH_CUDA_CU_API Val : public Statement {
   bool isZeroInt() const;
   bool isOneInt() const;
 
+  // Check zero supporting both int or double.
+  bool isZero() const;
+
   // Returns the Expr that this value is an output of, returns nullptr if none
   // was found
   Expr* definition() const {
@@ -340,6 +343,12 @@ class TORCH_CUDA_CU_API Val : public Statement {
   }
 
   void resolveIndexDtype();
+
+  // Provide a way to instantiate a 32b integer scalar
+  void to32b() {
+    TORCH_INTERNAL_ASSERT(vtype_ == ValType::Scalar && dtype_ == DataType::Int);
+    dtype_ = DataType::Int32;
+  }
 
  protected:
   friend Fusion;

@@ -469,11 +469,22 @@ class TORCH_CUDA_CU_API TensorView : public Val {
 
   // Returns the depth of circular buffering if applicable.
   unsigned int circularBufferDepth() const {
+    if (is_double_buffered_) {
+      // Double buffering is circular buffering with stage 2.
+      return 2;
+    }
     TORCH_INTERNAL_ASSERT(
         is_circular_buffered_, toString(), "not circular buffered");
     return circular_buffer_stage_;
   }
 
+  //! A scheduler primitive signifying that part of the read
+  //!  index math of this tensor would need to be pre-computed.
+  //! See also [Note on memory index lifting] in lower_mem_index.cpp
+  //! FIXME:
+  //!   This is currently formulated as a scheduler primitive to
+  //! unblock matmul performance. It should ideally be a generic
+  //! optimization that gets applied automatically.
   void liftReadAddress() {
     TORCH_CHECK(
         memory_type_ == MemoryType::Global ||
@@ -482,28 +493,38 @@ class TORCH_CUDA_CU_API TensorView : public Val {
     lift_read_address_ = true;
   }
 
+  //! A scheduler primitive signifying that part of the write
+  //!  index math of this tensor would need to be pre-computed.
+  //! See also [Note on memory index lifting] in lower_mem_index.cpp
+  //! FIXME:
+  //!   This is currently formulated as a scheduler primitive to
+  //! unblock matmul performance. It should ideally be a generic
+  //! optimization that gets applied automatically.
   void liftWriteAddress() {
     TORCH_CHECK(
-        memory_type_ == MemoryType::Global ||
-            memory_type_ == MemoryType::Shared,
-        "cannot do address computation for local tensors");
+        memory_type_ == MemoryType::Shared,
+        "cannot do write address computation for global and local tensors");
     lift_write_address_ = true;
   }
 
+  //! Returns true if the read index of this tensor
+  //!  should be partially pre-computed.
   bool shouldLiftReadAddress() const {
     return lift_read_address_;
   }
 
+  //! Returns true if the write index of this tensor
+  //!  should be partially pre-computed.
   bool shouldLiftWriteAddress() const {
     return lift_write_address_;
   }
 
-  void skewDoubleBuffer() {
-    TORCH_INTERNAL_ASSERT(
-        is_double_buffered_, "can only skew double buffered tensor");
-    skew_double_buffer_loop_ = true;
-  }
+  //! Scheduler primitive to enable skew double buffer loop transform.
+  //!  see also [Skew Double Buffer Loop Transformation]
+  void skewDoubleBuffer();
 
+  //! Returns true if skew double buffer loop transform is enabled
+  //!  for this tv.
   bool shouldSkewDoubleBuffer() const {
     return skew_double_buffer_loop_;
   }
@@ -542,9 +563,14 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   friend TORCH_CUDA_CU_API void groupReductions(
       const std::vector<TensorView*>&);
 
+  //! A scheduler primitive requesting predicate peeling transform
+  //!  on the loop generated corresponding to `axis_id`.
+  //! See [Predicate Peeling].
   void peelPredicatedLoop(int axis_id);
 
-  const auto& peeledSerialId() const {
+  //! Returns the iterdomain corresponding to the loop that will
+  //!  be using the predicate peeling transform.
+  auto peeledSerialId() const {
     return peeled_serial_id_;
   }
 
@@ -586,7 +612,10 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   //! Indicates the circular buffering stage depth if applicable.
   unsigned int circular_buffer_stage_ = 0;
 
-  std::vector<IterDomain*> peeled_serial_id_;
+  //! Keeps track of the iterdomain that will use predicate
+  //!  peeling transform on the corresponding loop.
+  IterDomain* peeled_serial_id_ = nullptr;
+
   // special handling for CPU based zero-dim tensors (i.e. CPU Tensors that only
   // have one value). This is only used if on an input value, otherwise ignored.
   // This is important as special handling because these "scalars" should be

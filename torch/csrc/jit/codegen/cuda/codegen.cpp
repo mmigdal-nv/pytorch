@@ -504,6 +504,9 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return index.str();
   }
 
+  // Generate the tensor index that are directly added
+  //  to a base address pointer. So all the components
+  //  are computed in units of bytes.
   std::string genTensorAddressIndex(
       const kir::TensorIndex* ti,
       DataType dtype) {
@@ -514,9 +517,23 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         if (!first) {
           index << " + ";
         }
+
+        // Multiply all the components here by the size of the data
+        //  type to get byte offset.
         index << "(" << genInline(ind) << ")*" << dataTypeSize(dtype);
         first = false;
       }
+    }
+
+    // If there is a uniform component in this tensor index,
+    //  just add them too.
+    // See also, [Double Buffer Uniform Offset].
+    if (ti->uniformAddress() != nullptr) {
+      if (!first) {
+        index << " + ";
+      }
+      index << genInline(ti->uniformAddress());
+      first = false;
     }
 
     if (first) {
@@ -540,6 +557,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
             << "[" << genTensorIndex(ti) << "]";
       return;
     }
+
     code_ << varName(ti->view()) << "[" << genTensorIndex(ti) << "]";
   }
 
@@ -575,6 +593,12 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return ss.str();
   }
 
+  //! Generates the given value as a pointer address as
+  //!  either:
+  //!  1. hosted_base_ptr + address_index
+  //!  2. &Tensor[index]
+  //!  depending on if the given index value carries
+  //! a hoisted component or not.
   std::string genMaybeHoistedPointer(const Val* val) {
     auto ti = dynamic_cast<const kir::TensorIndex*>(val);
     TORCH_INTERNAL_ASSERT(ti != nullptr, "only support tensor index input");
@@ -701,6 +725,25 @@ class CudaKernelGenerator : private OptOutConstDispatch {
               !(out_tv->isDoubleBuffered() || out_tv->isCircularBuffered())) {
             // Vectorized initialization
             indent() << varName(out_tv) << ".set(" << gen(uop->in()) << ");\n";
+          } else if (
+              uop->out()->isA<kir::TensorIndex>() &&
+              uop->out()->as<kir::TensorIndex>()->useSmemAddress()) {
+            // A special resource string "smemReset" is used if
+            //  the unary op writes to the shared memory using
+            //  the lifted 32b shared mem pointer.
+            // This mode is reserved for resetting shared memory
+            //  space at the moment currently.
+            auto ti = uop->out()->as<kir::TensorIndex>();
+            // Special case branch for smem reset
+            // FIXME: only support filling zero at the moment:
+            //  could possibly extend.
+            TORCH_INTERNAL_ASSERT(
+                uop->in()->isZero(), "only support filling zero in smem reset");
+
+            indent() << "smemReset<" << ti->view()->dtype() << ","
+                     << vector_word_size << ">(" << gen(ti->baseAddress())
+                     << "+" << genTensorAddressIndex(ti, ti->view()->dtype())
+                     << ");\n";
           } else {
             // Note: currently arraySet option is not vectorized, so it will
             //  rely on auto vectorization pass of cuda compiler.
@@ -2396,7 +2439,11 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     alloc_map_.emplace(alloc->buffer(), alloc);
 
     if (!alloc->buffer()->isA<TensorView>()) {
-      indent() << buffer_dtype << " " << gen(alloc->buffer()) << ";\n";
+      indent() << buffer_dtype << " " << gen(alloc->buffer());
+      if (alloc->zeroInit()) {
+        code_ << " = 0";
+      }
+      code_ << ";\n";
       return;
     }
 
@@ -2473,8 +2520,59 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void handle(const kir::AddressCompute* address_compute) final {
-    indent() << gen(address_compute->addressTv()) << " = (DataPointer) &"
-             << gen(address_compute->dataTv()->as<kir::TensorIndex>()) << ";\n";
+    // FIXME:
+    //  All the global/shared memory address/offset manipulations
+    // to reduce register usage are currently lumped into this single
+    // kernel IR operator.
+    //
+    // If there's any need to commit to the current codegen tweaks
+    //  longer, could consider separating them into more IR nodes.
+    if (address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH) {
+      indent() << "doubleBufferSwitch<" << address_compute->stageNumber() << ","
+               << address_compute->loopOffset() << ">("
+               << gen(address_compute->doubleBufferSwitchIndex()) << ","
+               << gen(address_compute->loopIndex()) << ","
+               << gen(address_compute->doubleBufferByteSize()) << ");\n";
+    } else if (
+        address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE) {
+      indent() << "doubleBufferUpdate<" << address_compute->stageNumber() << ","
+               << address_compute->loopOffset() << ">("
+               << gen(address_compute->addressTv()) << ","
+               << gen(address_compute->loopIndex()) << ","
+               << gen(address_compute->doubleBufferByteSize()) << ");\n";
+    } else if (
+        address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+      indent() << gen(address_compute->addressTv()) << "+="
+               << genTensorAddressIndex(
+                      address_compute->incrementValue(),
+                      address_compute->dataTv()->dtype())
+               << ";\n";
+    } else if (
+        address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::GMEM_DECREMENT) {
+      indent() << gen(address_compute->addressTv()) << "-="
+               << genTensorAddressIndex(
+                      address_compute->incrementValue(),
+                      address_compute->dataTv()->dtype())
+               << ";\n";
+    } else {
+      indent() << "//Base Address:::\n";
+      indent() << gen(address_compute->addressTv());
+
+      if (address_compute->addressTv()->dtype() == DataType::Pointer) {
+        code_ << " = (DataPointer) &"
+              << gen(address_compute->dataTv()->as<kir::TensorIndex>())
+              << ";\n";
+      } else if (
+          address_compute->addressTv()->dtype() == DataType::SmemAddress) {
+        code_ << " = Turing::util::toSmem(&"
+              << gen(address_compute->dataTv()->as<kir::TensorIndex>())
+              << ");\n";
+      }
+    }
   }
 
   void handle(const kir::GridSync* sync) final {

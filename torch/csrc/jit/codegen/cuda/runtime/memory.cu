@@ -105,16 +105,8 @@ DEVICE_INLINE void ldMatrixT(Array<__half, 8, 8>& out, void const* ptr) {
       : "r"(addr));
 }
 
-// Load Matrix (per warp instruction) is to take data from SMEM to Local Memory.
-//   Automatically handles vectorized loads/stores in the MMA operation.
-//   Loads 8x8 matrix into a warp. Thread 0-7 provide the ptr that is the start
-//   of each row. All other threads can simply point to something valid
-//   (including 0).
-// The x2 modifier on the instruction will actually load 2x8 rows to make a
-// 16x8,
-//   then thread 0-15 will specify the start of each row.
-// Finally is an x4 modifier producing a 32x8 using addrs from 0-31 in each
-// warp.
+// Below are the variants of ldmatrix wrapper that supports lifted
+//  memory indexing.
 DEVICE_INLINE void ldMatrix(
     Array<__half, 4, 4>& out,
     nvfuser_index_t index,
@@ -127,9 +119,6 @@ DEVICE_INLINE void ldMatrix(
                : "r"(addr + (unsigned)index));
 }
 
-// Same as previous, 8x8 matrix is vectorized loaded, then scattered (to perform
-// transpose) so threads will hold 2 values down a column (instead of the
-// previous instruction that's across a row).
 DEVICE_INLINE void ldMatrixT(
     Array<__half, 4, 4>& out,
     nvfuser_index_t index,
@@ -235,57 +224,51 @@ DEVICE_INLINE void cpAsync(
       "r"((int)predicate));
 }
 
-// Global to SMEM load that is asynchronous,
-// not guaranteed to be completed until cpAsyncBarrier() is called.
+// cp.async
+// This is the variant that supports lifted indexing
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsync(
     nvfuser_index_t smem_index,
-    DataPointer smem_base_ptr,
+    unsigned smem_addr,
     nvfuser_index_t gmem_index,
     DataPointer& gmem_ptr) {
-  unsigned smem_addr = util::toSmem(smem_base_ptr);
   constexpr int byte_size = sizeof(dtype) * len;
 
   static_assert(
       byte_size == 4 || byte_size == 8 || byte_size == 16,
       "cp_async : unsupported byte size");
 
-  gmem_ptr += gmem_index;
   asm volatile(
       "cp.async.ca.shared.global [%0], [%1], %2;\n" ::"r"(
           smem_addr + (unsigned)smem_index),
-      "l"(gmem_ptr),
+      "l"(gmem_ptr + gmem_index),
       "n"(byte_size));
-  gmem_ptr -= gmem_index;
 }
 
-// Global to SMEM load that is asynchronous,
-// not guaranteed to be completed until cpAsyncBarrier() is called.
+// cp.async
+// This is the variant that supports lifted indexing, with predicate inlined.
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsync(
     nvfuser_index_t smem_index,
-    DataPointer smem_base_ptr,
+    unsigned smem_addr,
     nvfuser_index_t gmem_index,
     DataPointer& gmem_ptr,
     bool predicate) {
-  unsigned smem_addr = util::toSmem(smem_base_ptr);
   constexpr int byte_size = sizeof(dtype) * len;
 
   static_assert(
       byte_size == 4 || byte_size == 8 || byte_size == 16,
       "cp_async : unsupported byte size");
 
-  gmem_ptr += gmem_index;
   asm volatile(
       "{\n"
       "  .reg .pred p;\n"
       "  setp.ne.b32 p, %3, 0;\n"
       "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
       "}\n" ::"r"(smem_addr + (unsigned)smem_index),
-      "l"(gmem_ptr),
+      "l"(gmem_ptr + gmem_index),
       "n"(byte_size),
       "r"((int)predicate));
-  gmem_ptr -= gmem_index;
 }
 
 // TODO: Might have a different category of sync if we want to build out this:
@@ -305,5 +288,105 @@ DEVICE_INLINE void cpAsyncPartialBarrier() {
 } // namespace Ampere
 
 #endif // Arch 80
+
+// Double buffer calculation utilities:
+
+// In place update of double buffer index that has been accumulated to the data
+// buffer.
+template <int number_of_stage, int loop_offset>
+DEVICE_INLINE void doubleBufferUpdate(
+    DataPointer& data_buffer,
+    const nvfuser_index_t& loop_index,
+    nvfuser_index_t buffer_size) {
+  // static_assert(
+  //     loop_offset < number_of_stage && loop_offset > -number_of_stage);
+
+  // convert offset to [0, number_of_stage)
+  constexpr nvfuser_index_t offset =
+      loop_offset < 0 ? (loop_offset + number_of_stage) : loop_offset;
+
+  // Rewind back at number_of_stage-1, otherwise increment by 1.
+  nvfuser_index_t increment =
+      (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
+      ? buffer_size * (-number_of_stage + 1)
+      : buffer_size;
+  data_buffer += increment;
+}
+
+template <int number_of_stage, int loop_offset>
+DEVICE_INLINE void doubleBufferUpdate(
+    unsigned& data_buffer,
+    const nvfuser_index_t& loop_index,
+    nvfuser_index_t buffer_size) {
+  // static_assert(
+  //     loop_offset < number_of_stage && loop_offset > -number_of_stage);
+
+  // convert offset to [0, number_of_stage)
+  constexpr nvfuser_index_t offset =
+      loop_offset < 0 ? (loop_offset + number_of_stage) : loop_offset;
+
+  // Rewind back at number_of_stage-1, otherwise increment by 1.
+  nvfuser_index_t increment =
+      (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
+      ? buffer_size * (-number_of_stage + 1)
+      : buffer_size;
+  data_buffer += (unsigned)increment;
+}
+
+// Update double buffer offset value for smem double buffered tensors.
+// See [Uniform Double Buffer Offset]
+template <int number_of_stage, int loop_offset>
+DEVICE_INLINE void doubleBufferSwitch(
+    int& buffer_offset,
+    const nvfuser_index_t& loop_index,
+    nvfuser_index_t buffer_size) {
+  constexpr nvfuser_index_t offset =
+      loop_offset < 0 ? (loop_offset + number_of_stage) : loop_offset;
+
+  // Rewind back at number_of_stage-1, otherwise increment by 1.
+  nvfuser_index_t increment =
+      (loop_index % number_of_stage) == (number_of_stage - 1 - offset)
+      ? buffer_size * (-number_of_stage + 1)
+      : buffer_size;
+  buffer_offset += (int)increment;
+}
+
+// Reset smem space to zero
+// TODO: try cp.async.ignore-source ?
+template <typename dtype, int len>
+DEVICE_INLINE void smemReset(SmemAddress smem_addr) {
+  constexpr int byte_size = sizeof(dtype) * len;
+
+  static_assert(
+      byte_size == 4 || byte_size == 8 || byte_size == 16,
+      "cp_async : unsupported byte size");
+
+  switch (byte_size) {
+    case 4:
+      asm volatile(
+          "{\n"
+          "st.shared.u32 [%0], {%1};\n"
+          "}\n"
+          :
+          : "r"(smem_addr), "r"(0));
+      break;
+    case 8:
+      asm volatile(
+          "{\n"
+          "st.shared.v2.u32 [%0], {%1, %2};\n"
+          "}\n"
+          :
+          : "r"(smem_addr), "r"(0), "r"(0));
+      break;
+    case 16:
+      asm volatile(
+          "{\n"
+          "st.shared.v4.u32 [%0], {%1, %2, %3, %4};\n"
+          "}\n"
+          :
+          : "r"(smem_addr), "r"(0), "r"(0), "r"(0), "r"(0));
+      break;
+  }
+}
 
 #undef DEVICE_INLINE
