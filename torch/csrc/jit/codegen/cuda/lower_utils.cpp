@@ -148,6 +148,11 @@ bool isCpAsyncOp(const Expr* expr) {
 }
 
 bool isTensorScalarFillOp(const Expr* expr) {
+  // Check that this expression outputs to tensor
+  if (getTvOutput(expr) == nullptr) {
+    return false;
+  }
+
   // Check that the input is a single scalar.
   if (expr->inputs().size() == 1 && expr->input(0)->isScalar()) {
     // All load store op with a single scalar input
@@ -333,7 +338,9 @@ std::unordered_map<ParallelType, IterDomain*, TypeHash> getParallelDomains(
 }
 
 bool isCpAsyncInit(const Expr* expr) {
-  return isTensorScalarFillOp(expr) &&
+  return
+
+      isTensorScalarFillOp(expr) &&
       // FIXME:
       //  We'd need to add a flag to all the init
       //   exprs so we could robustly detect initialization
@@ -506,6 +513,10 @@ BasicAllocInfo getAllocInformation(
     if (tv->isDoubleBuffered() || tv->isCircularBuffered()) {
       auto double_buffer_alloc_axis =
           gpu_lower->doubleBufferInfo().getDoubleBufferAxis(tv);
+      // In the case of skewed double buffer, the upper prolog
+      //  component requires that the consumer tv is allocated
+      //  outside of the outer main loop. Details see
+      //  [Skew Double Buffer Loop Transformation]
       if (tv->shouldSkewDoubleBuffer()) {
         auto concrete_outer_alloc_axis =
             gpu_lower->doubleBufferInfo().nestLiftingMap().at(
@@ -744,6 +755,21 @@ bool supportInlinePredicate(Expr* expr) {
   }
   // TODO: build out support.
   return false;
+}
+
+bool useDirectSmemAddress(const TensorView* tv) {
+  // Not applicable for any indexing that's not
+  //  lifted.
+  if (!tv->shouldLiftWriteAddress() ||
+      tv->getMemoryType() != MemoryType::Shared) {
+    return false;
+  }
+
+  auto expr = tv->definition();
+  // Direct usage of smem address should be avoided at all cost,
+  //  so only allowing this very specific case where this is the
+  //  necessary step to take to get efficient indexing code.
+  return expr != nullptr && ir_utils::isCpAsyncOp(expr);
 }
 
 } // namespace cuda

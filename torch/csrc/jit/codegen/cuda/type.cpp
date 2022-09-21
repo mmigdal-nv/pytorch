@@ -228,6 +228,8 @@ static const char* data_type2string(DataType t) {
       return "nvfuser_index_t";
     case DataType::Pointer:
       return "DataPointer";
+    case DataType::SmemAddress:
+      return "SmemAddress";
     case DataType::Int32:
       return "int";
     case DataType::ComplexFloat:
@@ -1188,6 +1190,21 @@ size_t dataTypeSize(DataType type, DataType index_type) {
     return dataTypeSize(index_type);
   }
   return dataTypeSize(type);
+}
+
+bool isProlog(DoubleBufferLoopStage stage) {
+  switch (stage) {
+    case DoubleBufferLoopStage::Prolog:
+    case DoubleBufferLoopStage::UpperProlog:
+    case DoubleBufferLoopStage::LowerProlog:
+    case DoubleBufferLoopStage::CircularInitProlog:
+      return true;
+
+    default:
+      return false;
+  }
+
+  return false;
 }
 
 TORCH_CUDA_CU_API std::ostream& operator<<(

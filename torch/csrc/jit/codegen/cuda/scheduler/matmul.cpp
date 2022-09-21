@@ -394,7 +394,8 @@ void scheduleMatmul(
   // Schedule warp tile
   //  0   1  2  3   4   5   6  7  8  9  10
   // [Mo No Ko  Kw Mwo  Nwo Mw Nw (Mi Ni Ki)]
-  scheduler_utils::matmul_utils::scheduleWarpTileWithReduction(cc, gemm_tile);
+  scheduler_utils::matmul_utils::scheduleWarpTileWithReduction(
+      cc, gemm_tile, true);
 
   // Propagate warp tile to main loop and epilog/output tvs
   scheduler_utils::BoundedDirectionalTransformPropagator::bothWays(
@@ -526,8 +527,12 @@ void scheduleMatmul(
   if (params.double_buffer_options.double_buffer_smem_read) {
     acr->doubleBuffer();
     bcr->doubleBuffer();
-    acr->skewDoubleBuffer();
-    bcr->skewDoubleBuffer();
+    if (acw_smem->isDoubleBuffered() || acw_smem->isCircularBuffered()) {
+      acr->skewDoubleBuffer();
+    }
+    if (bcw_smem->isDoubleBuffered() || bcw_smem->isCircularBuffered()) {
+      bcr->skewDoubleBuffer();
+    }
   }
 
   scheduler_utils::BoundedDirectionalTransformPropagator::forward(
@@ -559,7 +564,13 @@ void scheduleMatmul(
 
   if (params.peel_main_loop) {
     cc->peelPredicatedLoop(2);
-    cc->interleave(2);
+  }
+
+  // Only interleave if using cp.async and
+  //  all the shared memory is double buffered.
+  if (params.async_gmem_load_operands &&
+      params.double_buffer_options.double_buffer_smem_write) {
+    cc->interleave(2, 2);
   }
 }
 

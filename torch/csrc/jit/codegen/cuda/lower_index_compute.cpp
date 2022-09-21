@@ -75,10 +75,33 @@ std::unordered_map<IterDomain*, IterDomain*> invertOneToOneMap(
   return inverted;
 }
 
+// Returns the set of iterdomains to be set to zero when working with
+//  indexing maths that has pre-computed components.
+// Eg.:
+//
+//  for threadIdx.x in ... // loop 1 (base index loops)
+//    for i in 0..16:      // loop 2
+//      for j in 0..1:    // loop 3
+//        T0[i] = ...
+//  for _ in 0..T1.size:   // serial loop
+//    for threadIdx.x in ... // loop 1
+//      for i in 0..16:      // loop 2
+//        for j in 0..32:    // loop 3
+//          ... = T1[j + T0[i]]
+//
+// There are 2 places we are generating read index for T1 in the above
+//  example:
+//   1. On the base index loop path: we are generating the base index
+// of T0, with loop3 and serial loop zeroed, as they are separable,
+// see [Separability analysis] in lower_mem_index.cpp.
+//  2. On the actual serial loop path where we use T0 to index T1,
+// everything except the serial loop and j are zeroed. In here
+// the separable parts such as j in loop3 are inlined while other
+// components are pre-computed in the base index loop.
 std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
     AddressRecord* address_record,
     const std::vector<kir::ForLoop*> loops) {
-  // Find the serial loop to lift over:
+  // Find the serial loop that pre-computation is lfted over:
   kir::ForLoop* serial_loop = nullptr;
   auto loop_it = loops.begin();
 
@@ -94,13 +117,34 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
     }
   }
 
-  TORCH_INTERNAL_ASSERT(serial_loop != nullptr);
+  TORCH_INTERNAL_ASSERT(
+      serial_loop != nullptr,
+      "Invalid index precomputation: serial loop not found");
 
-  // WAR : Check if this is calculating address tv or using address tv
-  //  should tag this on loop attribute
+  // Checks if this loop nest is calculating base address.
   bool is_address_tv_calculation = serial_loop->isBaseIndexLoop();
 
+  // Check if this loop nest is incrementing a gmem address,
+  //  see [Gmem address increment];
+  bool is_increment =
+      std::any_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
+        return fl->loopTransformInfo().is_increment_loop;
+      });
+
   std::unordered_set<IterDomain*> zero_ids;
+
+  if (is_increment) {
+    // In the case of increment calculation, just zero
+    //  every loop except the serial loop from the address record.
+    for (auto fl : loops) {
+      if (fl != serial_loop) {
+        zero_ids.insert(fl->iter_domain());
+      }
+    }
+    // Zero everything except the serial loop
+    //  in the case of increment gmem iterator.
+    return zero_ids;
+  }
 
   for (auto outer_loop_it = loops.begin(); outer_loop_it != loop_it;
        outer_loop_it++) {
@@ -165,6 +209,15 @@ std::unordered_set<IterDomain*> getZeroIdSetsForAddressCompute(
     loop_it++;
   }
 
+  if (address_record->isRead() &&
+      address_record->dataTensor()->getMemoryType() == MemoryType::Global) {
+    // The serial loop is converted to increment mode, see [Gmem address
+    // increment]
+    //  so it can be zeroed always.
+    // See also [Separability Analysis] on conditions when this is enabled.
+    zero_ids.insert(address_record->getConcreteSerialLoopId());
+  }
+
   return zero_ids;
 }
 
@@ -206,6 +259,13 @@ IndexingParameters getGlobalIndexParameters(
         maybe_address_record.value(), loop_indexing.loops());
   }
 
+  bool is_increment = std::any_of(
+      loop_indexing.loops().begin(),
+      loop_indexing.loops().end(),
+      [](kir::ForLoop* fl) {
+        return fl->loopTransformInfo().is_increment_loop;
+      });
+
   auto& loops = loop_indexing.loops();
   auto& loop_domain = loop_indexing.loopDomains();
   auto& loop_index_map = index_parameters.initial_concrete_id_index;
@@ -229,6 +289,26 @@ IndexingParameters getGlobalIndexParameters(
       // Default use pre-allocated integers for index
       loop_index_map[index_domain] = loop->index();
     }
+
+    if (is_increment) {
+      TORCH_INTERNAL_ASSERT(maybe_address_record.has_value());
+      if (GpuLower::current()->caMap()->areMapped(
+              concrete_loop_domain,
+              maybe_address_record.value()->getConcreteSerialLoopId(),
+              IdMappingMode::LOOP)) {
+        // For the increment calculation, the current implementation
+        //  inserts a one for the loop index corresponding to the serial
+        //  loop. This is valid if [Separability Analysis] checks ok
+        //  on the serial id.
+        // TODO:
+        //  The current Separability restriction on the serial loop makes this
+        //  ok
+        //   but should eventually use the f(i+1) - f(i) instead
+        //   of a one for the increment calculation to enable more complex
+        //   increment patterns.
+        loop_index_map[index_domain] = GpuLower::current()->kernel()->oneVal();
+      }
+    }
   }
 
   // Derive the halo extents from the loop indexing result.
@@ -243,14 +323,17 @@ IndexingParameters getGlobalIndexParameters(
   // Setup double buffer increment for producer case:
   // TODO: could unify these double buffer index calculation
   //  in follow ups.
-  if (index_producer) {
+  if (index_producer && !maybe_address_record.has_value()) {
     auto double_buffer_loop =
         GpuLower::current()->doubleBufferInfo().getDoubleBufferLoop(
             loop_indexing.consumerTv(), loops, true);
 
     for (auto loop_idx : c10::irange(loops.size())) {
       auto loop = loops[loop_idx];
-      if (loop == double_buffer_loop && !double_buffer_loop->isTrivial()) {
+      if (loop == double_buffer_loop &&
+          // The double buffer loop could be trivial in a base index
+          //   calculation loop nest.
+          !double_buffer_loop->isTrivial()) {
         TORCH_INTERNAL_ASSERT(
             !loop->isTrivial(), "The double buffer loop must be materialized");
 
@@ -309,13 +392,9 @@ IndexingParameters getNonGlobalInitialIndexParameters(
     // TODO: detect address calculation loop:
     if (double_buffer_loop && maybe_address_record.has_value()) {
       // Detect address calculation loop:
-      //  TODO: would need to check the case where double buffer loop is
-      // outside of the serial loop. Which would be the case in double buffer
-      // gmem support.
       auto serial_loop = maybe_address_record.value()->getMaybeSerialLoop(
           loop_indexing.loops());
-      if (serial_loop.has_value() &&
-          serial_loop.value()->index()->isZeroInt()) {
+      if (serial_loop.has_value() && serial_loop.value()->isBaseIndexLoop()) {
         double_buffer_loop = nullptr;
       }
     }

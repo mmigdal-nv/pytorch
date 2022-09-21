@@ -150,6 +150,69 @@ bool requireEpilogue(const std::vector<Expr*>& exprs) {
   });
 }
 
+bool isGmemIncrement(Expr* expr) {
+  if (auto loop = dynamic_cast<kir::ForLoop*>(expr)) {
+    if (loop->body().exprs().size() != 1) {
+      return false;
+    }
+    return isGmemIncrement(loop->body().exprs()[0]);
+  } else if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+    return address_compute->opType() ==
+        kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT;
+  }
+  return false;
+}
+
+//! Hoists the gmem increment ops to the beginning of the loop
+//!  within the scope of the given loop.
+//! Note: [Gmem Increment Hoisting]
+//!
+//! This optimization is very useful when inplace increment
+//!  is used on the global memory pointers.
+//! Before this optimization, the code would look like:
+//!
+//!  for i in ... // main loop
+//!    load.global ... [ptr]
+//!    // Here we actually have an anti-dependency (WAR) on
+//!    //  the register holding ptr and could result in
+//!    //  non-ideal performance when we do not have enough
+//!    //  instructions to put between the load and the increment.
+//!    // depending on how many other instructions we have
+//!    //   within this loop.
+//!    ptr += increment_value
+//!
+//! After this transformation, the code looks like:
+//!  ptr -=increment_value // a naive way to compensate
+//!                        //  for the first iter.
+//!  for i in ... // main loop
+//!    ptr += increment_value
+//!    // This is actually ok as integer instructions
+//!    //   are usually much faster than memory.
+//!    load.global ... [ptr]
+//!
+//! This function hoists the pointer increments, in the given
+//!  loop, assuming that the decrements have been inserted
+//!  on the CircularInitProlog stage.
+kir::ForLoop* hoistGmemIncrement(kir::ForLoop* fl) {
+  auto hoisted_loop = IrBuilder::create<kir::ForLoop>(fl);
+
+  // insert all gmem increment exprs
+  for (auto expr : fl->body().exprs()) {
+    if (isGmemIncrement(expr)) {
+      hoisted_loop->body().push_back(expr);
+    }
+  }
+
+  // insert all non gmem increment exprs
+  for (auto expr : fl->body().exprs()) {
+    if (!isGmemIncrement(expr)) {
+      hoisted_loop->body().push_back(expr);
+    }
+  }
+
+  return hoisted_loop;
+}
+
 // Replicates double buffer loops for Prologue, Main, and
 // Epilogue. Prologue only copies the load expressions of double
 // buffered tensors, whereas Epilogue does any expression other than
@@ -207,6 +270,7 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
           double_buffer_loop_->stop(),
           SimplifyingIrBuilder::create<Int>(stage_depth - 1));
     } else if (loop_type_ == DoubleBufferLoopStage::CircularInitProlog) {
+      // See [Predicate Peeling Interaction with Circular Buffering]
       TORCH_INTERNAL_ASSERT(start->isZeroInt());
       start = SimplifyingIrBuilder::create<Int>(stage_depth - 1);
       stop = SimplifyingIrBuilder::create<Int>(stage_depth);
@@ -225,9 +289,80 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
     handle(double_buffer_loop_);
 
-    if (stage_depth > 2) {
+    // insert double buffer switching for the read offset:
+    if (loop_type_ == DoubleBufferLoopStage::Main) {
+      auto& db_info = GpuLower::current()->doubleBufferInfo();
+
+      for (auto load : double_buffer_load_exprs_) {
+        if (auto tv_out = ir_utils::getTvOutput(load)) {
+          // calculate the switching size
+          auto switch_size = db_info.getOriginalAllocSize(tv_out);
+          auto switch_size_in_byte = SimplifyingIrBuilder::mulExpr(
+              switch_size,
+              SimplifyingIrBuilder::create<Int>(dataTypeSize(tv_out->dtype())));
+
+          // insert db switch expressions:
+          // Note:[Uniform Double Buffer Offset]
+          // This modification is to encourage usage of uniform registers on
+          // sm75+ when
+          //  accessing shared memory double buffered tensors.
+          // The code before transformation:
+          //   for i in ... // double buffer loop
+          //     ... = ld.shared [... + (i%5) * double_buffer_size]
+          // The above code doesn't explictly specify that the double buffer
+          // switch
+          //  component is uniform. The following transformed code makes it
+          //  explicit:
+          //   for i in ... // double buffer loop
+          //     ... = ld.shared [... + switch_index]
+          //     doubleBufferSwitch(switch_index);
+          //  So that the double buffer indices are all placed in uniform reg.
+
+          auto maybe_read_index = db_info.getReadSwitchIndex(tv_out);
+          if (maybe_read_index.has_value()) {
+            // Instantiate and insert the update operator.
+            auto address_compute =
+                SimplifyingIrBuilder::create<kir::AddressCompute>(
+                    tv_out,
+                    maybe_read_index.value(),
+                    switch_size_in_byte,
+                    0, // assume this path only supports read
+                       // so offset is 0
+                    db_info.getStageDepthFor(
+                        double_buffer_loop_->iter_domain()));
+
+            cloned_top_level_loop_->body().push_back(address_compute);
+          }
+        }
+      }
+    }
+
+    // Need to insert commits for multi-stage circular buffering
+    //  on the prologs, but do not need to wait for them until
+    //  the main loop.
+    if (stage_depth > 2 && loop_type_ == DoubleBufferLoopStage::Prolog) {
       cloned_top_level_loop_->body().push_back(
           IrBuilder::create<kir::CpAsyncCommit>());
+    }
+
+    // Hoist the address increment in the double buffer main
+    // loop, see also [Gmem Increment Hoisting]
+    if (loop_type_ == DoubleBufferLoopStage::Main &&
+        std::any_of(
+            double_buffer_loop_->body().exprs().begin(),
+            double_buffer_loop_->body().exprs().end(),
+            isGmemIncrement) &&
+        // FIXME:
+        // Below is current condition that is required for gmem increment
+        //  hoisting because the gmem decrement is currently placed in
+        //  CircularInitProlog which requires predicate peeling to
+        //  be generated.
+        // To fix this should probably dedicate another double buffer
+        //  loop stage, maybe GmemPointerDecrement, that is reserved
+        //  for placing the gmem decrement before the main loop stage.
+        GpuLower::current()->predicatePeelingInfo().shouldPeelLoop(
+            double_buffer_loop_)) {
+      cloned_top_level_loop_ = hoistGmemIncrement(cloned_top_level_loop_);
     }
   }
 
@@ -301,11 +436,57 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
         cloned_scopes_.back()->push_back(expr);
       }
     }
+
+    if (loop_type_ == DoubleBufferLoopStage::CircularInitProlog) {
+      // Convert the address compute ops to decrement in the circular
+      //  buffer init prolog, see [Gmem Increment Hoisting].
+      if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+        if (address_compute->opType() ==
+            kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+          cloned_scopes_.back()->push_back(
+              IrBuilder::create<kir::AddressCompute>(
+                  address_compute->addressTv(),
+                  address_compute->dataTv(),
+                  address_compute->incrementValue(),
+                  true /* is_decrement */));
+        }
+      }
+    }
+
+    // Include the double buffer update expressions in prologs too as
+    //  prolog does write into the double buffered space.
+    if (loop_type_ == DoubleBufferLoopStage::Prolog) {
+      if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+        if (address_compute->opType() ==
+            kir::AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE) {
+          if (std::any_of(
+                  double_buffer_load_exprs_.begin(),
+                  double_buffer_load_exprs_.end(),
+                  [address_compute](Expr* expr) {
+                    return ir_utils::getTvOutput(expr)->sameAs(
+                        address_compute->dataTv());
+                  })) {
+            cloned_scopes_.back()->push_back(expr);
+          }
+        }
+      }
+    }
+
+    if (loop_type_ != DoubleBufferLoopStage::CircularInitProlog) {
+      if (auto address_compute = dynamic_cast<kir::AddressCompute*>(expr)) {
+        if (address_compute->opType() ==
+            kir::AddressCompute::AddressComputeOpType::GMEM_INCREMENT) {
+          cloned_scopes_.back()->push_back(expr);
+        }
+      }
+    }
   }
 
   //! Returns true if the expression is an initialization expr that
   //!  can be omitted in main loop.
+  //! See [Predicate Peeling Interaction with Circular Buffering]
   bool canOmitInitInMainLoop(Expr* expr, kir::ForLoop* double_buffer_loop) {
+    // Check that this is an initialization for cp.async.
     if (!ir_utils::isCpAsyncInit(expr) ||
         !GpuLower::current()->predicatePeelingInfo().shouldPeelLoop(
             double_buffer_loop)) {
@@ -314,6 +495,9 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
     auto out_tv = ir_utils::getTvOutput(expr);
 
+    // Check that the double buffer loop is the main stage of
+    //  the loop defining out_tv as there might be multiple
+    //  loops that realize double buffers.
     bool db_loop_found = false;
     auto& ca_map = GpuLower::current()->caMap();
 
@@ -325,6 +509,13 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       return false;
     }
 
+    // This optimization only applies when all the loops on the
+    //  inner side of the double buffer main loop are either
+    //  constant unrolled or parallel.
+    // TODO:
+    //  Buffer alias and broadcast resolution might still
+    // break this. These are not showing in matmul kernels but
+    // would need to build out support for general safty usage.
     for (auto id : out_tv->domain()->domain()) {
       if (db_loop_found) {
         auto loop_concrete_id =
@@ -332,11 +523,6 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
         if (!loop_concrete_id->isParallelized() &&
             !loop_concrete_id->extent()->isConstInt()) {
-          // If all the loops on the right of the peeled double buffer loop are
-          //  either parallel or unrolled. Should not need to
-
-          // TODO: also check broadcast resolution, and predicate removal here,
-          //  for general safety.
           return false;
         }
       }
@@ -346,11 +532,9 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
               id, double_buffer_loop->iter_domain(), IdMappingMode::LOOP);
     }
 
-    TORCH_INTERNAL_ASSERT(
-        db_loop_found,
-        "Double buffer axis not on tv's tensor domain: ",
-        out_tv->toString());
-    return true;
+    // Only when double buffer loop was found on out_tv could useful
+    //  information have been inferred by this function.
+    return db_loop_found;
   }
 
  private:
@@ -488,6 +672,41 @@ class DoubleBufferInserter : private kir::ExprMutator {
   void insert(
       kir::ForLoop* double_buffer_loop,
       const std::vector<Expr*>& loads) {
+    // Allocate read switching index if they need to be updated
+    //  independently. see [Uniform Double Buffer Offset]
+    for (auto load : loads) {
+      if (auto load_output = dynamic_cast<TensorView*>(load->output(0))) {
+        auto uses = load_output->fusion()->unordered_uses(load_output);
+        if (load_output->getMemoryType() == MemoryType::Shared &&
+            (load_output->isDoubleBuffered() ||
+             load_output->isCircularBuffered()) &&
+            load_output->shouldLiftReadAddress() &&
+            // TODO: read switch index is only enabled for ldmatrix
+            //  at the moment.
+            // Would need to extend the ld.shared usage to directly
+            //  take pointers to use this in other cases.
+            std::all_of(uses.begin(), uses.end(), ir_utils::isLdMatrixOp)) {
+          auto switch_val = IrBuilder::create<Int>();
+          switch_val->to32b();
+
+          // Record the read switch indexing variable so it can be
+          //  used in the indexing pass.
+          // TODO: maybe want to do this in id graph instead
+          GpuLower::current()->doubleBufferInfo().setReadSwitchIndex(
+              load_output, switch_val);
+
+          // Place allocation for the switching variable before the
+          //  double buffer loop.
+          auto index_alloc = IrBuilder::create<kir::Allocate>(
+              switch_val,
+              MemoryType::Local,
+              GpuLower::current()->kernel()->oneVal(),
+              true);
+          registerInsertBefore(double_buffer_loop, index_alloc);
+        }
+      }
+    }
+
     auto prologue_loop = DoubleBufferLoopCloner::clone(
         double_buffer_loop, loads, DoubleBufferLoopStage::Prolog);
     registerInsertBefore(double_buffer_loop, prologue_loop);
@@ -604,6 +823,10 @@ class DoubleBufferInserter : private kir::ExprMutator {
         main_loop->iter_domain());
     auto cp_async_wait = IrBuilder::create<kir::CpAsyncWait>(stage_depth - 2);
 
+    // Make sure the commit is inserted right before the
+    //  cp.async.wait in circular buffering.
+    bool need_insert_commit = stage_depth > 2;
+
     // Check if a sync has been inserted by WAR sync pass.
     auto block_sync_it = std::find_if(
         main_loop->body().exprs().rbegin(),
@@ -615,10 +838,18 @@ class DoubleBufferInserter : private kir::ExprMutator {
       //  it can just be anywhere in the loop. Chose to
       //  place at the end arbitrarily.
       main_loop->body().insert_after(end_of_loop_expr, cp_async_wait);
+      if (need_insert_commit) {
+        main_loop->body().insert_after(
+            end_of_loop_expr, IrBuilder::create<kir::CpAsyncCommit>());
+      }
     } else {
       // If a sync has been inserted, wait needs to be placed
       //  before the sync.
       main_loop->body().insert_before(*block_sync_it, cp_async_wait);
+      if (need_insert_commit) {
+        main_loop->body().insert_before(
+            *block_sync_it, IrBuilder::create<kir::CpAsyncCommit>());
+      }
     }
   }
 
@@ -627,7 +858,76 @@ class DoubleBufferInserter : private kir::ExprMutator {
   kir::ForLoop* processed_loop_ = nullptr;
 };
 
-// Apply double buffering transformations
+// Apply a loop transformation related to double buffering
+//  that is particularly useful in matmul kernels.
+// Note: [Skew Double Buffer Loop Transformation]
+//
+// This optimization is used particularly in a situation
+//  where a producer-consumer pair are both double buffered.
+// in e.g.
+//   producer[Id0, Id1] (double buffer loop at Id0) = ...
+//   consumer[Id0, Id1] (double buffer loop at Id1) = producer [Id0, Id1]
+//
+// * Note that the current double buffering check will only allow consumer
+//   to have double buffer loop at strictly right of Id0.
+//
+// The generated code would look like:
+//  ```
+//  for i in 0..Id0.stage_depth-1: // Id0 prolog
+//    for j in 0..Id1.size:
+//      producer [i,...] = ...;
+//
+//  for i in 0..Id0.size: // Id0 main
+//    for j in 0..Id1.size:
+//      producer [i+1 % stage_depth,...] = ...;
+//
+//    // consumer could not have been circular buffered
+//    //  as it's a consumer so it's not a cp.async output,
+//    //  which is the only case we have so far (sm80) that
+//    //  can benefit from circular buffering.
+//
+//    for j in 0..1: // Id1 prolog
+//      consumer[j] = producer[i, j]
+//
+//    for j in 0..Id1.size-1: //Id1 main
+//      consumer[j] = producer[i, j]
+//      ... = consumer[j]
+//
+//    ... = consumer[Id1.size-1] // Id1 epilog
+//  ```
+//  The transformed code looks like:
+//  ```
+//  for i in 0..Id0.stage_depth-1: // Id0 prolog
+//    for j in 0..Id1.size:
+//      producer [i,...] = ...;
+//
+//  for i in 0..1: // first iteration of Id0 main
+//    for j in 0..1: // Id1 **Upper Prolog**
+//      consumer[j] = producer[i, j]
+//
+//  for i in 0..Id0.size: // Id0 main
+//    for j in 0..Id1.size:
+//      producer [i+1 % stage_depth,...] = ...;
+//
+//    // consumer could not have been circular buffered
+//    //  as it's a consumer so it's not a cp.async output,
+//    //  which is the only case we have so far (sm80) that
+//    //  can benefit from circular buffering.
+//
+//    for j in 0..Id1.size-1: //Id1 main
+//      consumer[j] = producer[i, j]
+//      ... = consumer[j]
+//
+//    ... = consumer[Id1.size-1] // Id1 epilog
+//
+//    for j in 0..1: // Id1 **Lower Prolog**
+//      consumer[j] = producer[i+1, j]
+//  ```
+// Essentially the prolog of Id1 is skewed ahead by 1 iteration of Id0.
+//
+// This allows the loop body of Id1 main to execute at the beginning
+//  of Id0 main and thus enables optimal instruction interleaving. by
+//  the cuda compiler.
 class SkewDoubleBufferLoop : private kir::ExprMutator {
  public:
   // When there exist multiple double buffer loops, apply
@@ -637,8 +937,12 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
     auto skewed_exprs = exprs;
     auto& double_buffer_info = GpuLower::current()->doubleBufferInfo();
 
-    // TODO: enable shared double buffer loop
+    // keep track of the lifted loops.
     std::unordered_set<IterDomain*> lifted;
+
+    // Each entry in `nestLiftingMap` corresponds to a pair of Id0,Id1
+    //  described above, use a new instance of SkewDoubleBufferLoop to
+    //  lift each one.
     for (auto& loop_nest_entry : double_buffer_info.nestLiftingMap()) {
       if (lifted.insert(loop_nest_entry.first).second) {
         SkewDoubleBufferLoop skew_loop(
@@ -661,6 +965,9 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
 
   using kir::ExprMutator::handle;
 
+  // Create the upper prolog and lower prolog of the given
+  //  prolog loop, and insert them to the intended position
+  //  as described above.
   void splitProlog(kir::ForLoop* loop) {
     // Create upper prolog
     auto upper_prolog = makeWrapedUpperProlog(loop);
@@ -684,10 +991,22 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
     registerRemove(loop);
   }
 
+  // Clones the expressions and outer loop nest levels
+  //  to ensure valid insertion of upper and lower prologs.
+  // Given the original prolog loop to clone and
+  //  an **empty** cloned_prolog kir::ForLoop with the meta
+  //  data modified.
+  // In particular, this function clones:
+  //  1. The loop nest between Id0 and Id1 mentioned above.
+  //  2. The expressions inside original prolog, possibled
+  // with further loopnests within.
   kir::ForLoop* getClonedPrologLoopNest(
       kir::ForLoop* original_prolog,
       kir::ForLoop* cloned_prolog) {
-    // clone the loop nest all the way to the original prolog
+    // Perform step 1:
+    //  clone the loop nest all the way to the original prolog
+    //  need to identify the loop nest between outer_main_loop (Id0)
+    //  and original prolog (Id1).
     std::vector<kir::ForLoop*> loop_nest_to_clone;
     bool outer_main_loop_found = false;
     for (auto loop : for_loops_) {
@@ -707,11 +1026,14 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
 
     kir::ForLoop *outer_loop = cloned_prolog, *inner_loop = cloned_prolog;
 
+    // Clone the loopnest between outer_main_loop and original_prolog
+    //  (Step1 above).
     if (!loop_nest_to_clone.empty()) {
       std::tie(outer_loop, inner_loop) = makeLoopNest(loop_nest_to_clone);
       inner_loop->body().push_back(cloned_prolog);
     }
 
+    // Perform step 2: copy all the expressions from original prolog.
     // Put actual expressions inside original prolog
     //  into the upper prolog.
     for (auto expr : original_prolog->body().exprs()) {
@@ -721,8 +1043,12 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
     return outer_loop;
   }
 
+  // Makes the upper prolog loop nest to be inserted before the
+  //  outer (Id0) main loop.
   kir::ForLoop* makeWrapedUpperProlog(kir::ForLoop* original_prolog) {
     // Peel iteration 0 of outer main loop.
+    // So the upper prolog can be inserted at the same loop nest
+    //  level as the outer main loop (Id0 main loop).
     auto cloned_main_loop = IrBuilder::create<kir::ForLoop>(
         outer_main_loop_->iter_domain(),
         GpuLower::current()->kernel()->zeroVal(),
@@ -734,6 +1060,7 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
         outer_main_loop_->isUnrollRequired(),
         kir::LoopTransformInfo());
 
+    // Make the upper prolog loop object.
     auto upper_prolog_loop = IrBuilder::create<kir::ForLoop>(
         original_prolog->iter_domain(),
         original_prolog->index(),
@@ -746,6 +1073,7 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
         original_prolog->loopTransformInfo().doubleBufferStage(
             DoubleBufferLoopStage::UpperProlog));
 
+    // Complete the loop nest.
     auto outer_loop =
         getClonedPrologLoopNest(original_prolog, upper_prolog_loop);
 
@@ -756,6 +1084,8 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
     return cloned_main_loop;
   }
 
+  // Makes the upper prolog loop nest to be inserted at the end of
+  //  the outer_main_loop (Id0 loop) body.
   kir::ForLoop* makeLowerProlog(kir::ForLoop* original_prolog) {
     auto lower_prolog_loop = IrBuilder::create<kir::ForLoop>(
         original_prolog->iter_domain(),
@@ -773,6 +1103,7 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
   }
 
   void handle(kir::ForLoop* loop) final {
+    // Check if this loop is a prolog we need to transform.
     bool is_lifted_prolog = GpuLower::current()->caMap()->areMapped(
                                 loop->iter_domain(),
                                 concrete_double_buffer_loop_id_,
@@ -780,20 +1111,25 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
         loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Prolog &&
         within_outer_main_loop_;
 
+    // Check if this loop is a main loop or not a prolog loop.
     bool is_main_loop =
         loop->doubleBufferLoopStage() == DoubleBufferLoopStage::NotApplicable ||
         loop->doubleBufferLoopStage() == DoubleBufferLoopStage::Main;
+
+    // Check if the current loop is the outer main loop.
     bool is_outer_main_loop = is_main_loop &&
         GpuLower::current()->caMap()->areMapped(
             loop->iter_domain(),
             concrete_outer_main_loop_id_,
             IdMappingMode::LOOP);
 
+    // Do the skew transform if this is an applicable case.
     if (is_lifted_prolog) {
       splitProlog(loop);
       return;
     }
 
+    // Keep track of outer main loop info if it is detected.
     if (is_outer_main_loop) {
       within_outer_main_loop_ = true;
       outer_main_loop_ = loop;
@@ -802,11 +1138,14 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
 
     kir::ExprMutator::handle(loop);
 
+    // Invalidate the within outer main loop flag once
+    //  all the loop nest level within has been processed.
     if (is_outer_main_loop) {
       within_outer_main_loop_ = false;
     }
   }
 
+  // Helper function to deep clone an expr if it is a loop nest.
   Expr* cloneMaybeLoopNest(Expr* expr) {
     auto loop = dynamic_cast<kir::ForLoop*>(expr);
     if (loop == nullptr) {
@@ -820,7 +1159,8 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
     return cloned_loop;
   }
 
-  // Returns <Outermost, Innermost>
+  // Makes the given vector of for loops into a loop nest,
+  // Returns <Outermost, Innermost> level as a pair.
   std::pair<kir::ForLoop*, kir::ForLoop*> makeLoopNest(
       std::vector<kir::ForLoop*> original_loop_nest) {
     TORCH_INTERNAL_ASSERT(
@@ -840,13 +1180,25 @@ class SkewDoubleBufferLoop : private kir::ExprMutator {
   }
 
  private:
-  // Running State
+  // Running State:
+  // Keeps track of the actual loop object representing the
+  //  outer main loop.
   kir::ForLoop* outer_main_loop_ = nullptr;
+
+  // Keeps track of the scope level of outer main loop.
   kir::Scope* outer_main_loop_scope_ = nullptr;
+
+  // Keeps track of whether the pass is processing within
+  //  the outer main loop level.
   bool within_outer_main_loop_ = false;
 
-  // Interface parameter
+  // Interface parameters:
+  // The loop concrete id of the prolog loop that this instance
+  //  is skewing.
   IterDomain* concrete_double_buffer_loop_id_;
+
+  // The loop concrete id of the outer main loop where the prolog
+  //  loop to skew is assumed within.
   IterDomain* concrete_outer_main_loop_id_;
 };
 
@@ -868,7 +1220,7 @@ void DoubleBufferInfo::build(Fusion* fusion) {
   }
 
   // Add a second pass to keep track of lifted
-  //  double buffer loop nest
+  //  double buffer loop nest see also [Skew Double Buffer Loop Transformation].
   for (auto& info : map_) {
     buildSkewInfo(info.first, info.second);
   }
@@ -878,6 +1230,7 @@ void DoubleBufferInfo::buildSkewInfo(
     const TensorView* tv,
     const TvInfo& tv_info) {
   if (tv->shouldSkewDoubleBuffer()) {
+    // Detect the outer main loop
     IterDomain* outer_loop_id = nullptr;
     bool double_buffer_axis_found = false;
     for (auto id_it = tv->domain()->domain().rbegin();
@@ -906,6 +1259,8 @@ void DoubleBufferInfo::buildSkewInfo(
         "double buffer loop ",
         tv_info.double_buffer_axis->toString());
 
+    // Record the loop concrete id of both the outer main loop
+    //  and the prolog loop to be skewed.
     auto concrete_outer_loop_id =
         GpuLower::current()->caMap()->getConcreteMappedID(
             outer_loop_id, IdMappingMode::LOOP);
@@ -1015,12 +1370,7 @@ kir::ForLoop* DoubleBufferInfo::getDoubleBufferLoop(
   auto loop_it = std::find_if(loops.begin(), loops.end(), [&](const auto loop) {
     return GpuLower::current()->caMap()->areMapped(
                loop->iter_domain(), axis, IdMappingMode::EXACT) &&
-        (!ignore_prologue ||
-         (loop->doubleBufferLoopStage() != DoubleBufferLoopStage::Prolog &&
-          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::UpperProlog &&
-          loop->doubleBufferLoopStage() != DoubleBufferLoopStage::LowerProlog &&
-          loop->doubleBufferLoopStage() !=
-              DoubleBufferLoopStage::CircularInitProlog));
+        (!ignore_prologue || !isProlog(loop->doubleBufferLoopStage()));
   });
 
   if (loop_it != loops.end()) {
