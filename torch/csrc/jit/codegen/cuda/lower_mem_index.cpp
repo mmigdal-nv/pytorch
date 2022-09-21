@@ -785,11 +785,6 @@ bool isSeparableSmemSwizzledProducerIndex(
     auto exact_producer_it = exact_to_producer_id_map.find(
         ir_utils::caMapExactConcreteId(split->in()));
 
-    if (exact_producer_it == exact_to_producer_id_map.end()) {
-      // Returns early if no exact mapped id is found.
-      return false;
-    }
-
     // Find a tile split node that this needs to assume.
     while (exact_producer_it == exact_to_producer_id_map.end()) {
       auto in_def = split->in()->definition();
