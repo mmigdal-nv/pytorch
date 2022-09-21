@@ -113,7 +113,8 @@ std::string FusionExecutor::getStructuredCode(const std::string& kernel) {
 #endif
 #endif
   code += std::string("namespace ") + FusionExecutor::kernelNamespace() +
-      " {\n" + defineNvFuserZero(fusion_->isNvFuserZeroEnabled()) +
+      " {\n" +
+      defineNvFuserZero(fusion_ == nullptr || fusion_->isNvFuserZeroEnabled()) +
       defineIntegerTypes() + defineIndexMode(options_.index_mode) +
       defineComplexTypes() + executor_utils::kernelPreamble() + kernel + "}\n";
 
