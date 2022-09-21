@@ -59,6 +59,35 @@ typedef unsigned SmemAddress;
 )";
 }
 
+// Generates the code that enables
+//  nvfuser_zero if enabled.
+// Generates placeholders if not enabled.
+static const char* defineNvFuserZero(bool enabled) {
+  if (enabled) {
+    return R"(
+#define NVFUSER_DEFINE_MAGIC_ZERO          \
+  __shared__ int nvfuser_zero_s;           \
+  if (threadIdx.x == 0)                    \
+    nvfuser_zero_s = 0;                    \
+  __syncthreads();                         \
+  atomicMin(&nvfuser_zero_s, threadIdx.x); \
+  int nvfuser_zero = nvfuser_zero_s;
+
+#define NVFUSER_UPDATE_MAGIC_ZERO \
+  do {                            \
+    nvfuser_zero <<= 1;           \
+  } while (0);
+)";
+  } else {
+    return R"(
+#define NVFUSER_DEFINE_MAGIC_ZERO \
+  constexpr int nvfuser_zero = 0;
+
+#define NVFUSER_UPDATE_MAGIC_ZERO
+)";
+  }
+}
+
 static const std::string& defineComplexTypes() {
   static std::string result = std::string(R"ESCAPE(
 #define POS_INFINITY __int_as_float(0x7f800000)
@@ -84,7 +113,8 @@ std::string FusionExecutor::getStructuredCode(const std::string& kernel) {
 #endif
 #endif
   code += std::string("namespace ") + FusionExecutor::kernelNamespace() +
-      " {\n" + defineIntegerTypes() + defineIndexMode(options_.index_mode) +
+      " {\n" + defineNvFuserZero(fusion_->isNvFuserZeroEnabled()) +
+      defineIntegerTypes() + defineIndexMode(options_.index_mode) +
       defineComplexTypes() + executor_utils::kernelPreamble() + kernel + "}\n";
 
   if (isDebugDumpEnabled(DebugDumpOption::CudaKernel)) {
