@@ -3322,6 +3322,8 @@ std::vector<RootPredicateInfo> Index::getReferenceRootPredicates(
           maybe_predicate_index_record.has_value() &&
           maybe_predicate_index_record.value()->getPredicateContigId() ==
               contig_id &&
+          // Non divisible split not yet lifted.
+          !contig_id_entry.is_non_divisible_split &&
           // TODO: see note: [WAR for predicate peeling and index lifting]
           std::none_of(loops.begin(), loops.end(), [](kir::ForLoop* fl) {
             return fl->loopTransformInfo().predicate_peel_stage ==
@@ -3474,7 +3476,8 @@ kir::TensorIndex* Index::getReferenceRootPredicateIndex(
         gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
             loops, contig_id);
     if (canOmitStopPredicate(stop_index, info.stop_offset_, contig_id) ||
-        maybe_tiled_entry.has_value()) {
+        maybe_tiled_entry.has_value() ||
+        contig_id_entry.is_non_divisible_split) {
       // No need to lift predicate for peeled contig ids.
       continue;
     }
@@ -3482,7 +3485,10 @@ kir::TensorIndex* Index::getReferenceRootPredicateIndex(
     //   stop_index + stop_offset < IterDomain::extent
     auto offsetted_stop_index =
         SimplifyingIrBuilder::addExpr(stop_index, info.stop_offset_);
-    pred_record.value()->setPredicateContigId(contig_id);
+
+    if (pred_record.value()->getPredicateContigId() == nullptr) {
+      pred_record.value()->setPredicateContigId(contig_id);
+    }
 
     result_index = SimplifyingIrBuilder::create<kir::TensorIndex>(
         consumer_tv, std::vector<Val*>({offsetted_stop_index}));
