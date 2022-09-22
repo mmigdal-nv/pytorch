@@ -3056,6 +3056,59 @@ TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
   }
 }
 
+// Matmul test on Ampere using ldmatrix.x4 to load operands
+TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoadLargeK_CUDA) {
+  // Keep multiples of 8 to keep vectorizable.
+  int M = 504, N = 136, K = 2048;
+  for (auto layout : kAllSupportedLayout) {
+    Fusion fusion;
+    FusionGuard fg(&fusion);
+    auto tv0 = makeContigTensor(2, DataType::Half);
+    auto tv1 = makeContigTensor(2, DataType::Half);
+
+    fusion.addInput(tv0);
+    fusion.addInput(tv1);
+
+    auto tv2 = matmul(tv0, tv1, layout);
+
+    fusion.addOutput(tv2);
+
+    MatMulTileOptions gemm_tile;
+    gemm_tile.cta_tile = GemmTile(128, 128, 64);
+    gemm_tile.warp_tile = GemmTile(64, 64, 64);
+    gemm_tile.instruction_tile = GemmTile(16, 16, 16);
+
+    auto mma_builder =
+        MmaBuilder(MmaOptions::MacroType::Ampere_16_16_16, gemm_tile)
+            .layout(layout);
+
+    MatmulParam params(mma_builder);
+    params.tile_sizes = gemm_tile;
+    params.async_gmem_load_operands = true;
+    params.double_buffer_options.double_buffer_smem_write = true;
+    params.double_buffer_options.double_buffer_smem_read = true;
+    params.double_buffer_options.smem_double_buffer_stage = 3;
+    scheduleMatmul(tv2, tv0, tv1, params);
+
+    at::manual_seed(0);
+    auto inputs = fp16MatmulAtInput(M, N, K, layout);
+
+    CompileOptions co;
+    co.index_mode = KernelIndexMode::INT32;
+
+    FusionExecutor fe;
+    NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
+        8,
+        0,
+        fe.compileFusion(
+            &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+    auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
+    auto tref = atMatmul(
+        inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
+    TORCH_CHECK(cg_outputs[0].allclose(tref, 0.001, 0.001));
+  }
+}
+
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
 
 } // namespace jit

@@ -241,7 +241,7 @@ MatmulParam getMatmulParams(
   return params;
 }
 
-static void Nvfuser_Matmul_4warp(
+static void Nvfuser_Matmul_4warp3stage(
     benchmark::State& benchmark_state,
     MatmulLayout layout) {
   auto cta_tile = GemmTile(128, 128, 32);
@@ -256,11 +256,41 @@ static void Nvfuser_Matmul_4warp(
   SingleMatmulBase(benchmark_state, layout, params);
 }
 
-static void Nvfuser_Matmul_8warp(
+static void Nvfuser_Matmul_8warp3stage(
     benchmark::State& benchmark_state,
     MatmulLayout layout) {
   auto cta_tile = GemmTile(256, 128, 32);
   int number_of_stage = 3;
+
+  auto params = getMatmulParams(cta_tile, number_of_stage, layout);
+
+  NVFUSER_BENCHMARK_ARCH_SMEM_GUARD(
+      8, 0, getSmemSize(cta_tile, number_of_stage), benchmark_state);
+
+  // Run benchmark:
+  SingleMatmulBase(benchmark_state, layout, params);
+}
+
+static void Nvfuser_Matmul_4warp4stage(
+    benchmark::State& benchmark_state,
+    MatmulLayout layout) {
+  auto cta_tile = GemmTile(128, 128, 32);
+  int number_of_stage = 4;
+
+  auto params = getMatmulParams(cta_tile, number_of_stage, layout);
+
+  NVFUSER_BENCHMARK_ARCH_SMEM_GUARD(
+      8, 0, getSmemSize(cta_tile, number_of_stage), benchmark_state);
+
+  // Run benchmark:
+  SingleMatmulBase(benchmark_state, layout, params);
+}
+
+static void Nvfuser_Matmul_8warp4stage(
+    benchmark::State& benchmark_state,
+    MatmulLayout layout) {
+  auto cta_tile = GemmTile(256, 128, 32);
+  int number_of_stage = 4;
 
   auto params = getMatmulParams(cta_tile, number_of_stage, layout);
 
@@ -286,14 +316,32 @@ static void Nvfuser_Matmul_8warp(
   run(NT, MatmulLayout::NT)
 
 // Instantiations:
-#define Nvfuser_4warp_test(layout_label, layout)                           \
-  BENCHMARK_CAPTURE(                                                       \
-      Nvfuser_Matmul_4warp, no_quant_nvfuser_4warp_##layout_label, layout) \
+#define Nvfuser_4warp3stage_test(layout_label, layout) \
+  BENCHMARK_CAPTURE(                                   \
+      Nvfuser_Matmul_4warp3stage,                      \
+      no_quant_nvfuser_4warp_##layout_label,           \
+      layout)                                          \
       ->NO_TILE_QUANTIZATION_ARGS
 
-#define Nvfuser_8warp_test(layout_label, layout)                           \
-  BENCHMARK_CAPTURE(                                                       \
-      Nvfuser_Matmul_8warp, no_quant_nvfuser_8warp_##layout_label, layout) \
+#define Nvfuser_8warp3stage_test(layout_label, layout) \
+  BENCHMARK_CAPTURE(                                   \
+      Nvfuser_Matmul_8warp3stage,                      \
+      no_quant_nvfuser_8warp_##layout_label,           \
+      layout)                                          \
+      ->NO_TILE_QUANTIZATION_ARGS
+
+#define Nvfuser_4warp4stage_test(layout_label, layout) \
+  BENCHMARK_CAPTURE(                                   \
+      Nvfuser_Matmul_4warp4stage,                      \
+      no_quant_nvfuser_4warp_##layout_label,           \
+      layout)                                          \
+      ->NO_TILE_QUANTIZATION_ARGS
+
+#define Nvfuser_8warp4stage_test(layout_label, layout) \
+  BENCHMARK_CAPTURE(                                   \
+      Nvfuser_Matmul_8warp4stage,                      \
+      no_quant_nvfuser_8warp_##layout_label,           \
+      layout)                                          \
       ->NO_TILE_QUANTIZATION_ARGS
 
 #define Eagermode_test(layout_label, layout)                      \
@@ -301,6 +349,8 @@ static void Nvfuser_Matmul_8warp(
       EagerModeMatmul, no_quant_eagermode_##layout_label, layout) \
       ->NO_TILE_QUANTIZATION_ARGS
 
-ForAllLayouts(Nvfuser_4warp_test);
-ForAllLayouts(Nvfuser_8warp_test);
+ForAllLayouts(Nvfuser_4warp3stage_test);
+ForAllLayouts(Nvfuser_4warp4stage_test);
+ForAllLayouts(Nvfuser_8warp3stage_test);
+ForAllLayouts(Nvfuser_8warp4stage_test);
 ForAllLayouts(Eagermode_test);
