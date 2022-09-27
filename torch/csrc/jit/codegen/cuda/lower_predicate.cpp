@@ -72,6 +72,15 @@ class ConditionalFromPredicateModifier : public kir::IrVisitor {
           }
         } else {
           TORCH_INTERNAL_ASSERT(supportInlinePredicate(expr));
+          auto thread_pred = GpuLower::current()->threadPredMap().getPredicate(
+              ir_utils::getTvOutput(expr));
+          TORCH_INTERNAL_ASSERT(
+              thread_pred->isConst() && thread_pred->value().value());
+          conditional = SimplifyingIrBuilder::andExpr(
+                            conditional,
+                            GpuLower::current()->threadPredMap().getPredicate(
+                                ir_utils::getTvOutput(expr)))
+                            ->as<Bool>();
         }
       }
       TORCH_INTERNAL_ASSERT(conditional != nullptr);
