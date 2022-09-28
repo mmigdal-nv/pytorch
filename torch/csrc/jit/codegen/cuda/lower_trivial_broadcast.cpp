@@ -10,12 +10,13 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
-void ConcretizedBroadcastDomains::build(Fusion* fusion) {
+ConcretizedBroadcastDomains::ConcretizedBroadcastDomains(Fusion* fusion) {
   exact_map_ = std::make_unique<ExactRootDomainMap>(fusion);
 
   // Initialize the origin map with input broadcast domains
+  auto inputs = fusion->inputsAndCreated();
   for (const auto fusion_input_tv :
-       ir_utils::filterByType<TensorView>(fusion->inputs())) {
+       ir_utils::filterByType<TensorView>(inputs)) {
     for (auto root_id : fusion_input_tv->getRootDomain()) {
       if (root_id->isBroadcast()) {
         broadcast_origin_map_.emplace(
