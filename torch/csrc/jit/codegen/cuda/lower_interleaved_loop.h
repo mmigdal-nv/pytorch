@@ -55,7 +55,7 @@ class InterleaveLoopInfo {
   //! Returns true if the id is loop mapped to a sub loop
   //!  within a main loop mapped to concrete_main_id.
   //!  see also [Loop Interleaving].
-  bool isSubLoopof(IterDomain* id, IterDomain* concrete_main_id);
+  bool isSubLoopOf(IterDomain* id, IterDomain* concrete_main_id);
 
   //! Validate data consistency after interleaving.
   //! see [Supported Interleaving Cases].
