@@ -124,7 +124,7 @@ void UnrollPass::handle(Expr* expr) {
                                     PredicateType::Inline, expr, thread_pred);
     }
 
-    if (supportInlinePredicate(expr)) {
+    if (lower_utils::supportInlinePredicate(expr)) {
       expr->setPredicate(pred);
       return;
     }

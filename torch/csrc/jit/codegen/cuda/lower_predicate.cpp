@@ -71,7 +71,7 @@ class ConditionalFromPredicateModifier : public kir::IrVisitor {
                               ->as<Bool>();
           }
         } else {
-          TORCH_INTERNAL_ASSERT(supportInlinePredicate(expr));
+          TORCH_INTERNAL_ASSERT(lower_utils::supportInlinePredicate(expr));
           auto thread_pred = GpuLower::current()->threadPredMap().getPredicate(
               ir_utils::getTvOutput(expr));
           TORCH_INTERNAL_ASSERT(

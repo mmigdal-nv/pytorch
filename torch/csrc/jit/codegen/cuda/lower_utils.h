@@ -223,10 +223,6 @@ struct TORCH_CUDA_CU_API IterDomainDependencySorter {
   const std::shared_ptr<const ComputeAtMap> compute_at_map_;
 };
 
-//! Returns true if the expression has a variant that takes a predicate
-//!  as an inline argument.
-bool supportInlinePredicate(Expr* expr);
-
 } // namespace ir_utils
 
 namespace lower_utils {
@@ -267,6 +263,10 @@ BasicAllocInfo getAllocInformation(
     const std::vector<kir::ForLoop*>& loops,
     const std::unordered_map<IterDomain*, IterDomain*>& id_map = {},
     bool use_id_map = false);
+
+//! Returns true if the expression has a variant that takes a predicate
+//!  as an inline argument.
+bool supportInlinePredicate(Expr* expr);
 
 } // namespace lower_utils
 
