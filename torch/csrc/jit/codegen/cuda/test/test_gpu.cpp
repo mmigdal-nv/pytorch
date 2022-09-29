@@ -11,7 +11,7 @@
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/fusion_segmenter.h>
 #include <torch/csrc/jit/codegen/cuda/grouped_reduction.h>
-#include <torch/csrc/jit/codegen/cuda/inline_propagator.h>
+#include <torch/csrc/jit/codegen/cuda/inlining.h>
 #include <torch/csrc/jit/codegen/cuda/interface.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
@@ -9444,7 +9444,7 @@ TEST_F(NVFuserTest, FusionMagicSchedulerInstanceNormalizationBackward_CUDA) {
       "");
 }
 
-TEST_F(NVFuserTest, FusionPersistentSoftmaxLocalSmem_CUDA) {
+TEST_F(NVFuserTest, FusionPersistentSoftmaxLocalShared_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
 
@@ -9550,10 +9550,11 @@ TEST_F(NVFuserTest, FusionPersistentSoftmaxLocalSmem_CUDA) {
   const int64_t dimy = 16384;
 
   auto properties = at::cuda::getDeviceProperties(0);
-  // Require 70KB of smem to run test
-  const size_t required_smem_size = 70 << 10;
+  const size_t required_smem_size =
+      (dimy - static_size) * sizeof(float) + TIDX * sizeof(float);
   if (properties->sharedMemPerBlockOptin < required_smem_size) {
-    GTEST_SKIP() << "not enough shared memory space on device to run test";
+    GTEST_SKIP() << "not enough shared memory space on device to run test: "
+                 << properties->sharedMemPerBlock;
   }
 
   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
@@ -9739,6 +9740,14 @@ TEST_F(NVFuserTest, FusionPersistentNormLocalShared_CUDA) {
   const float kEps = 1e-5;
   auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
 
+  auto properties = at::cuda::getDeviceProperties(0);
+  const size_t required_smem_size =
+      (dimy - static_size) * sizeof(float) + TIDX * sizeof(float);
+  if (properties->sharedMemPerBlockOptin < required_smem_size) {
+    GTEST_SKIP() << "not enough shared memory space on device to run test: "
+                 << properties->sharedMemPerBlock;
+  }
+
   at::Tensor aten_input = at::randn({dimx, dimy}, options);
   at::Tensor aten_static_in = aten_input.narrow(1, 0, static_size);
   at::Tensor aten_dynamic_in =
@@ -9753,13 +9762,6 @@ TEST_F(NVFuserTest, FusionPersistentNormLocalShared_CUDA) {
 
   torch::jit::fuser::cuda::FusionExecutor fe;
   fe.compileFusion(&fusion, aten_inputs);
-
-  auto properties = at::cuda::getDeviceProperties(0);
-  // Require 70KB of smem to run test
-  const size_t required_smem_size = 70 << 10;
-  if (properties->sharedMemPerBlockOptin < required_smem_size) {
-    GTEST_SKIP() << "not enough shared memory space on device to run test";
-  }
 
   fe.runFusion(aten_inputs, {cg_static_out, cg_dynamic_out});
 
@@ -11553,7 +11555,7 @@ TEST_F(NVFuserTest, FusionNonUniqueBroadcastSize_CUDA) {
   fusion.addInput(tv1);
   fusion.addInput(tv2);
 
-  auto tv3 = broadcast(tv0, {false, true});
+  auto tv3 = broadcast(tv0, {true, false});
   auto tv4 = add(tv3, tv1);
   auto tv5 = add(tv3, tv2);
 
@@ -25115,7 +25117,7 @@ TEST_F(
       &fusion, cg_outputs, aten_inputs, {aten_output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims1_CUDA) {
+TEST_F(NVFuserTest, FusionInliningMismatchedDims1_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
 
@@ -25128,8 +25130,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims1_CUDA) {
   auto tv5 = tan(tv4);
   fusion.addOutput(tv5);
 
-  InlinePropagator inline_propagator(tv5, -1, ComputeAtMode::MostInlined);
-  MaxRootDomainInfoSpanningTree(tv5).traverse(&inline_propagator);
+  inlineMost();
 
   TORCH_CHECK(tv5->getComputeAtPosition() == 3);
   TORCH_CHECK(tv4->getComputeAtPosition() == 3);
@@ -25149,7 +25150,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims1_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims2_CUDA) {
+TEST_F(NVFuserTest, FusionInliningMismatchedDims2_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
 
@@ -25162,8 +25163,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims2_CUDA) {
   auto tv5 = tan(tv4);
   fusion.addOutput(tv5);
 
-  InlinePropagator inline_propagator(tv5, -1, ComputeAtMode::BestEffort);
-  MaxRootDomainInfoSpanningTree(tv5).traverse(&inline_propagator);
+  inlineAllAt(tv5, -1, true);
 
   TORCH_CHECK(tv5->getComputeAtPosition() == 3);
   TORCH_CHECK(tv4->getComputeAtPosition() == 3);
@@ -25183,7 +25183,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims2_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims3_CUDA) {
+TEST_F(NVFuserTest, FusionInliningMismatchedDims3_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
 
@@ -25207,8 +25207,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims3_CUDA) {
     tv->merge(2);
   }
 
-  InlinePropagator inline_propagator(tv8, -1, ComputeAtMode::MostInlined);
-  MaxRootDomainInfoSpanningTree(tv8).traverse(&inline_propagator);
+  inlineMost();
 
   TORCH_CHECK(tv8->getComputeAtPosition() == 3);
   TORCH_CHECK(tv7->getComputeAtPosition() == 3);
@@ -25231,7 +25230,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims3_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims4_CUDA) {
+TEST_F(NVFuserTest, FusionInliningMismatchedDims4_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
 
@@ -25245,8 +25244,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims4_CUDA) {
   fusion.addOutput(tv5);
 
   tv3->merge(1);
-  InlinePropagator inline_propagator(tv0, -1, ComputeAtMode::MostInlined);
-  MaxRootDomainInfoSpanningTree(tv0).traverse(&inline_propagator);
+  inlineMost();
 
   TORCH_CHECK(tv5->getComputeAtPosition() == 3);
   TORCH_CHECK(tv4->getComputeAtPosition() == 3);
@@ -25266,7 +25264,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorMismatchedDims4_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInlinePropagatorBroadcast_CUDA) {
+TEST_F(NVFuserTest, FusionInliningBroadcast_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
 
@@ -25285,8 +25283,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorBroadcast_CUDA) {
     tv->merge(2);
   }
 
-  InlinePropagator inline_propagator(tv0, -1, ComputeAtMode::MostInlined);
-  MaxRootDomainInfoSpanningTree(tv0).traverse(&inline_propagator);
+  inlineMost();
 
   TORCH_CHECK(tv4->getComputeAtPosition() == 3);
   TORCH_CHECK(tv3->getComputeAtPosition() == 3);
@@ -25305,7 +25302,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorBroadcast_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInlinePropagatorBroadcastTrivialReduction_CUDA) {
+TEST_F(NVFuserTest, FusionInliningBroadcastTrivialReduction_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
 
@@ -25327,8 +25324,7 @@ TEST_F(NVFuserTest, FusionInlinePropagatorBroadcastTrivialReduction_CUDA) {
     tv->merge(2);
   }
 
-  InlinePropagator inline_propagator(tv6, -1, ComputeAtMode::MostInlined);
-  MaxRootDomainInfoSpanningTree(tv6).traverse(&inline_propagator);
+  inlineMost();
 
   TORCH_CHECK(tv6->getComputeAtPosition() == 3);
   TORCH_CHECK(tv5->getComputeAtPosition() == 3);
@@ -25418,8 +25414,7 @@ TEST_F(NVFuserTest, FusionIdGraphTrivialReduction_CUDA) {
     tv->merge(2);
   }
 
-  InlinePropagator inline_propagator(tv3, -1, ComputeAtMode::MostInlined);
-  MaxRootDomainInfoSpanningTree(tv3).traverse(&inline_propagator);
+  inlineMost();
 
   ComputeAtMap ca_map(&fusion);
 
@@ -25685,8 +25680,7 @@ TEST_F(NVFuserTest, FusionPredicateUnshare_CUDA) {
     tv->axis(-1)->parallelize(ParallelType::TIDx);
   }
 
-  InlinePropagator propagator(tv2, -1, ComputeAtMode::MostInlined);
-  MaxRootDomainInfoSpanningTree(tv2).traverse(&propagator);
+  inlineMost();
 
   auto options = at::TensorOptions().dtype(kFloat).device(at::kCUDA, 0);
   at::Tensor t0 = at::randn({5, 5}, options);
@@ -25777,8 +25771,7 @@ TEST_F(NVFuserTest, FusionMergeBroadcastingTrivialReduction1_CUDA) {
   TransformPropagatorWithCheck tp(tv0);
   tree.traverse(&tp);
 
-  InlinePropagator ip(tv0, -1, ComputeAtMode::MostInlined);
-  tree.traverse(&ip);
+  inlineMost();
 
   auto options = at::TensorOptions().dtype(kFloat).device(at::kCUDA, 0);
   at::Tensor t0 = at::randn({1, 1}, options);
@@ -25813,8 +25806,7 @@ TEST_F(NVFuserTest, FusionMergeBroadcastingTrivialReduction2_CUDA) {
   TransformPropagatorWithCheck tp(tv0);
   tree.traverse(&tp);
 
-  InlinePropagator ip(tv0, -1, ComputeAtMode::MostInlined);
-  tree.traverse(&ip);
+  inlineMost();
 
   auto options = at::TensorOptions().dtype(kFloat).device(at::kCUDA, 0);
   at::Tensor t0 = at::randn({10, 1, 1}, options);
@@ -26015,6 +26007,30 @@ TEST_F(NVFuserTest, FusionMappingRelation_CUDA) {
 
   testValidate(
       fusion, {out}, {t0, t1}, {t1 + t0.squeeze(0)}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionInlineAt_CUDA) {
+  std::unique_ptr<Fusion> fusion_ptr = std::make_unique<Fusion>();
+  auto fusion = fusion_ptr.get();
+  FusionGuard fg(fusion);
+
+  TensorView* tv0 = makeSymbolicTensor(2);
+  fusion->addInput(tv0);
+  auto tv1 = sin(tv0);
+  auto tv2 = cos(tv1);
+  fusion->addOutput(tv2);
+
+  tv1->inlineAt(-1);
+
+  auto options = at::TensorOptions().dtype(kFloat).device(at::kCUDA, 0);
+  at::Tensor t0 = at::randn({100, 2}, options);
+
+  FusionExecutor fe;
+  fe.compileFusion(fusion, {t0});
+  auto cg_outputs = fe.runFusion({t0});
+  auto out = cg_outputs[0];
+
+  testValidate(fusion, {out}, {t0}, {t0.sin().cos()}, __LINE__, __FILE__);
 }
 
 } // namespace jit
