@@ -156,9 +156,9 @@ class ConvertAlignedBlockSync : kir::IrVisitor {
       } else if (auto fl = dynamic_cast<kir::ForLoop*>(expr)) {
         // If the start, stop, step are not thread dependent
         //  then this for loop should be thread independent.
-        if (dependsOnThreadNamedScalars(fl->start()) ||
-            dependsOnThreadNamedScalars(fl->stop()) ||
-            dependsOnThreadNamedScalars(fl->step())) {
+        if (lower_utils::dependsOnThreadNamedScalars(fl->start()) ||
+            lower_utils::dependsOnThreadNamedScalars(fl->stop()) ||
+            lower_utils::dependsOnThreadNamedScalars(fl->step())) {
           return;
         }
       }
