@@ -27,6 +27,18 @@ __device__ constexpr int64_t ceilDiv(int a, int64_t b) {
   return ceilDiv((int64_t)a, b);
 }
 
+__device__ constexpr double ceilDiv(double a, double b) {
+  return std::ceil(a / b);
+}
+
+__device__ constexpr double ceilDiv(double a, int64_t b) {
+  return std::ceil(a / b);
+}
+
+__device__ constexpr double ceilDiv(int64_t a, double b) {
+  return std::ceil(a / b);
+}
+
 // Monotonic and precise lerp is described here:
 // https://math.stackexchange.com/a/1798323
 __device__ double lerp(double start, double end, double weight) {
@@ -605,6 +617,7 @@ __device__ __half print_impl(const char* name, __half value) {
   return value;
 }
 
+#if __CUDACC_VER_MAJOR__ >= 11
 __device__ __bfloat print_impl(const char* name, __bfloat value) {
   printf(
       "%s = %f @ threadIdx=(%d,%d,%d), blockIdx=(%d,%d,%d)\n",
@@ -618,8 +631,14 @@ __device__ __bfloat print_impl(const char* name, __bfloat value) {
       (int)blockIdx.z);
   return value;
 }
+#endif
 
 #define print(...) print_impl(#__VA_ARGS__, (__VA_ARGS__))
+
+template <typename OutT, typename IndexT, typename InputT>
+__device__ OutT arange(IndexT index, InputT start, InputT step) {
+  return start + step * index;
+}
 
 //! Utility to print out bank conflicts given the address from each thread.
 __device__ void checkBankConflict(
@@ -637,10 +656,14 @@ __device__ void checkBankConflict(
   }
 
   // Calculate lane_id
-  int lane_id =
-      index_utils::maskedOffset<true, true, true>(threadIdx, blockDim) % 32;
+  int lane_id = 0;
 
-  // Populate address within phase:
+  // Read laneid register directly with ptx.
+  asm("mov.u32 %0, %%laneid;" : "=r"(lane_id) :);
+
+  // Populate address within each phase:
+  // for more info on shared memory access phase see page 66 of:
+  // https://on-demand.gputechconf.com/gtc/2018/presentation/s81006-volta-architecture-and-performance-optimization.pdf
   for (int i = 0; i < phase_size; i++) {
     size_t shfl_value = 0;
     shfl_value = __shfl_down_sync(__activemask(), address, i);
@@ -650,7 +673,7 @@ __device__ void checkBankConflict(
     }
   }
 
-  // Check bank conflict at phase head.
+  // Check bank conflict at phase head, i.e. the first lane in each phase.
   if (lane_id % phase_size == 0) {
     for (int i = 0; i < phase_size; i++) {
       for (int j = 0; j < phase_size; j++) {
@@ -660,7 +683,7 @@ __device__ void checkBankConflict(
           size_t bank_idx_j = (address_warp[j] % 128) /
               vec_word_in_byte; // 128Byte per memory row.
 
-          if (bank_idx_i == bank_idx_j) {
+          if (bank_idx_i == bank_idx_j && address_warp[i] != address_warp[j]) {
             printf(
                 "call_id: %d @Thread %d, %d, %d:bank conflict between lane %d and lane %d, (%lu, %lu)\n",
                 call_id,
