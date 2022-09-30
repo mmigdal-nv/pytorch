@@ -322,7 +322,7 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
     //  the loop defining out_tv as there might be multiple
     //  loops that realize double buffers.
     bool db_loop_found = false;
-    auto& ca_map = GpuLower::current()->caMap();
+    const auto& ca_map = GpuLower::current()->caMap();
 
     if (!(out_tv->isDoubleBuffered() || out_tv->isCircularBuffered()) ||
         !ca_map->areMapped(
