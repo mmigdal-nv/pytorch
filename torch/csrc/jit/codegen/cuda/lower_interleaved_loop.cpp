@@ -109,7 +109,7 @@ c10::optional<IterDomain*> getMaybeSubloop(
     TensorView* tv,
     IterDomain* main_loop) {
   bool main_loop_found = false;
-  auto& ca_map = GpuLower::current()->caMap();
+  const auto& ca_map = GpuLower::current()->caMap();
 
   for (auto leaf_id : tv->domain()->domain()) {
     if (main_loop_found && !leaf_id->isParallelized()) {
@@ -173,7 +173,7 @@ bool InterleaveLoopInfo::isMainLoop(IterDomain* id) {
   return concrete_main_loop_to_interleaved_tv_.count(concrete_id);
 }
 
-bool InterleaveLoopInfo::isSubLoopof(
+bool InterleaveLoopInfo::isSubLoopOf(
     IterDomain* id,
     IterDomain* concrete_main_id) {
   auto it = concrete_main_loop_to_subloop_map_.find(concrete_main_id);
@@ -198,8 +198,11 @@ void InterleaveLoopInfo::insertEntry(
       concrete_main_loop_to_subloop_map_.find(concrete_main_loop);
   TORCH_INTERNAL_ASSERT(
       main_loop_entry_it != concrete_main_loop_to_subloop_map_.end(),
-      "unknown main loop ",
-      main_loop->toString());
+      "unknown main loop: ",
+      main_loop->toString(),
+      " (",
+      concrete_main_loop->toString(),
+      ")");
   main_loop_entry_it->second.pushBack(concrete_sub_loop);
 
   // Insert interleaved tvs.
@@ -207,7 +210,11 @@ void InterleaveLoopInfo::insertEntry(
       concrete_main_loop_to_interleaved_tv_.find(concrete_main_loop);
   TORCH_INTERNAL_ASSERT(
       tv_entry_it != concrete_main_loop_to_interleaved_tv_.end(),
-      "unknown main loop");
+      "unknown main loop: ",
+      main_loop->toString(),
+      " (",
+      concrete_main_loop->toString(),
+      ")");
   tv_entry_it->second.pushBack(tv);
 }
 
@@ -215,24 +222,28 @@ void InterleaveLoopInfo::collectInterleavedSubLoops() {
   for (auto tv : used_tvs_) {
     IterDomain* main_loop = nullptr;
     for (auto leaf_id : tv->domain()->domain()) {
-      if (isMainLoop(leaf_id)) {
+      if (main_loop == nullptr) {
+        if (isMainLoop(leaf_id)) {
+          main_loop = leaf_id;
+          auto maybe_subloop = getMaybeSubloop(tv, leaf_id);
+          TORCH_INTERNAL_ASSERT(
+              maybe_subloop.has_value(),
+              tv->toString(),
+              " cannot be interleaved within ",
+              leaf_id);
+          insertEntry(tv, main_loop, maybe_subloop.value());
+        }
+      } else {
+        // main loop already found. There should be no more
+        // main loop in this tensor
         TORCH_INTERNAL_ASSERT(
-            main_loop == nullptr,
+            !isMainLoop(leaf_id),
             tv,
             "has nested main loop ",
             main_loop->toString(),
             " and ",
             leaf_id->toString(),
             " which is not yet supported");
-
-        auto maybe_subloop = getMaybeSubloop(tv, leaf_id);
-        TORCH_INTERNAL_ASSERT(
-            maybe_subloop.has_value(),
-            tv->toString(),
-            " cannot be interleaved within ",
-            leaf_id);
-        insertEntry(tv, leaf_id, maybe_subloop.value());
-        main_loop = leaf_id;
       }
     }
   }
@@ -356,7 +367,7 @@ void InterleaveLoopInfo::validateMainLoop(
     }
 
     // If Point3 and Point2 didn't apply at this point,
-    //  then Point1 has apply in order for this interleaving to be valid.
+    //  then Point1 has to apply in order for this interleaving to be valid.
     // TODO:
     //  Maybe in follow ups more supported patterns could be added.
 
@@ -492,15 +503,8 @@ class LoopInterLeaver : kir::ExprMutator {
     //  over the main loop expressions.
     std::vector<kir::ForLoop*> interleaved_subloops;
 
-    // Keeping track of the insertion point to realize
-    //  the interleave units.
-    Expr* last_expr = nullptr;
-
     // Loop over the main loop body.
     for (auto expr : fl->body().exprs()) {
-      // Record the current expression as insertion point.
-      last_expr = expr;
-
       if (auto loop = dynamic_cast<kir::ForLoop*>(expr)) {
         if (
             // Usually not useful to involve double buffer prologs
@@ -528,7 +532,7 @@ class LoopInterLeaver : kir::ExprMutator {
       //  collected interleaved subloops as interleaved units.
       // And clear the collected vector before proceeding.
       if (!interleaved_subloops.empty()) {
-        realizeInterleavedSubloops(last_expr, interleaved_subloops, true, fl);
+        realizeInterleavedSubloops(expr, interleaved_subloops, true, fl);
         clearSubLoops(interleaved_subloops, fl);
       }
     }
@@ -538,7 +542,8 @@ class LoopInterLeaver : kir::ExprMutator {
     //  another realization step after visiting the whole main
     //  loop.
     if (!interleaved_subloops.empty()) {
-      realizeInterleavedSubloops(last_expr, interleaved_subloops, false, fl);
+      realizeInterleavedSubloops(
+          fl->body().exprs().back(), interleaved_subloops, false, fl);
       clearSubLoops(interleaved_subloops, fl);
     }
   }

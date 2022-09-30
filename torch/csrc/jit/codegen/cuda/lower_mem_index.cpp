@@ -773,7 +773,9 @@ bool isSeparableSmemSwizzledProducerIndex(
   for (auto producer_id :
        ir_utils::filterByType<IterDomain>(all_producer_id_vals)) {
     exact_to_producer_id_map.emplace(std::make_pair(
-        ir_utils::caMapExactConcreteId(producer_id), producer_id));
+        GpuLower::current()->caMap()->getConcreteMappedID(
+            producer_id, IdMappingMode::EXACT),
+        producer_id));
   }
 
   if (id->definition() == nullptr) {
@@ -783,7 +785,8 @@ bool isSeparableSmemSwizzledProducerIndex(
 
   if (auto split = dynamic_cast<Split*>(id->definition())) {
     auto exact_producer_it = exact_to_producer_id_map.find(
-        ir_utils::caMapExactConcreteId(split->in()));
+        GpuLower::current()->caMap()->getConcreteMappedID(
+            split->in(), IdMappingMode::EXACT));
 
     if (exact_producer_it == exact_to_producer_id_map.end()) {
       // Returns early if no exact mapped id is found.
@@ -801,7 +804,8 @@ bool isSeparableSmemSwizzledProducerIndex(
         return false;
       }
       exact_producer_it = exact_to_producer_id_map.find(
-          ir_utils::caMapExactConcreteId(split->in()));
+          GpuLower::current()->caMap()->getConcreteMappedID(
+              split->in(), IdMappingMode::EXACT));
     }
 
     if (!exact_producer_it->second->extent()->isConstInt()) {
@@ -860,7 +864,7 @@ void AddressComputeInfo::makeAddressRecord(
   // Signify if this is a producer indexing.
   bool is_data_read = !is_predicate_record && data_tv != reference_tv;
 
-  auto& ca_map = GpuLower::current()->caMap();
+  const auto& ca_map = GpuLower::current()->caMap();
 
   // Get allocation ids for the lifted index.
   //  These are the ids that we will need to allocate space for in the
@@ -1256,7 +1260,7 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
           //  direct smem access for now.
           // FIXME:
           //   Would need to extend to use this on Volta.
-          useDirectSmemAddress(data_tensor)) {
+          lower_utils::useDirectSmemAddress(data_tensor)) {
         // Insert double buffer index update if it is a double buffered write:
         // The insertion info loop nest starts with the serial loop,
         //  in the double buffer update we need to insert into the original
