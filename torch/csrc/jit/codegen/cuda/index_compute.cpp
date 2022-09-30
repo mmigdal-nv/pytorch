@@ -2334,7 +2334,7 @@ std::vector<Val*> Index::getNonGlobalConsumerStridedIndices(
       // Lifted address case the double buffer offset is
       //   computed inplace into the write address buffer.
       // See [Inplace double buffer update]
-      && !useDirectSmemAddress(consumer_tv)) {
+      && !lower_utils::useDirectSmemAddress(consumer_tv)) {
     auto db_loop =
         gpu_lower->doubleBufferInfo().getDoubleBufferLoop(consumer_tv, loops);
     TORCH_INTERNAL_ASSERT(

@@ -281,6 +281,8 @@ bool supportInlinePredicate(Expr* expr);
 //!  uses shared mem address.
 bool useDirectSmemAddress(const TensorView* tv);
 
+} // namespace lower_utils
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

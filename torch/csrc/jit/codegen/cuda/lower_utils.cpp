@@ -798,6 +798,8 @@ bool useDirectSmemAddress(const TensorView* tv) {
   return expr != nullptr && ir_utils::isCpAsyncOp(expr);
 }
 
+} // namespace lower_utils
+
 } // namespace cuda
 } // namespace fuser
 } // namespace jit

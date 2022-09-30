@@ -1146,7 +1146,7 @@ class MemoryAddressComputeInserter : public kir::ExprMutator {
           //  direct smem access for now.
           // FIXME:
           //   Would need to extend to use this on Volta.
-          useDirectSmemAddress(data_tensor)) {
+          lower_utils::useDirectSmemAddress(data_tensor)) {
         // Insert double buffer index update if it is a double buffered write:
         // The insertion info loop nest starts with the serial loop,
         //  in the double buffer update we need to insert into the original
