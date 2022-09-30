@@ -41,8 +41,12 @@ CUDA_MAJOR, CUDA_MINOR = 0, 0
 if RUN_NVFUSER and torch.version.cuda is not None:
     CUDA_MAJOR, CUDA_MINOR = (int(x) for x in torch.version.cuda.split('.')[:2])
 
-os.environ['PYTORCH_NVFUSER_ENABLE'] = 'linear_decomposition,conv_decomposition'
-os.environ['PYTORCH_NVFUSER_DISABLE'] = 'fallback,fma,unroll_with_rng'
+if 'PYTORCH_NVFUSER_ENABLE' not in os.environ:
+    os.environ['PYTORCH_NVFUSER_ENABLE'] = ""
+os.environ['PYTORCH_NVFUSER_ENABLE'] = 'linear_decomposition,conv_decomposition,' + os.environ['PYTORCH_NVFUSER_ENABLE']
+if 'PYTORCH_NVFUSER_DISABLE' not in os.environ:
+    os.environ['PYTORCH_NVFUSER_DISABLE'] = ""
+os.environ['PYTORCH_NVFUSER_DISABLE'] = 'fallback,fma,' + os.environ['PYTORCH_NVFUSER_DISABLE']
 os.environ['PYTORCH_NVFUSER_JIT_OPT_LEVEL'] = '0'
 # TODO: enable complex when we fixes the extremal cases in OpInfo
 # see issue https://github.com/csarofeen/pytorch/issues/1730"
@@ -670,12 +674,12 @@ class TestCudaFuser(JitTestCase):
                       torch.nn.functional.softplus,
                       torch.nn.functional.gelu,
                       torch.nn.functional.leaky_relu,
+                      torch.nn.functional.silu,
                       torch.relu,
                       torch.sigmoid,
                       torch.bitwise_not,
                       torch.tan,
-                      torch.tanh,
-                      torch.nn.functional.silu]
+                      torch.tanh]
         skip_complex = {torch.rsqrt, torch.reciprocal}
         for op, dtype in itertools.product(operations, data_types):
             if dtype.is_complex and op in skip_complex:
@@ -4456,6 +4460,122 @@ class TestCudaFuser(JitTestCase):
     @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
     @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
                      "Requires fusion optimization pass to be effective")
+    def test_view_before_permute(self):
+        view_examples = [[[1, 19, 1, 12, 7, 1, 99], [1, 19, 1, 3, 2772]],
+                         [[3, 17, 80, 1], [51, 1, 2, 4, 10]],
+                         [[3, 17, 80, 1, 9], [51, 1, 2, 4, 10, 9]],
+                         [[2, 3, 4, 5], [1, 6, 1, 2, 2, 5]],
+                         [[22, 22, 2], [22, 11, 1, 1, 4]],
+                         [[37, 9, 7, 6, 10], [333, 2, 2, 3, 35]],
+                         [[8, 1, 1, 8, 1, 8], [8, 2, 4, 1, 8]],
+                         [[1, 333, 1], [1, 37, 9]],
+                         [[1, 333], [1, 1, 1, 111, 1, 3]],
+                         [[1, 27454, 1, 2], [1, 7844, 1, 7]],
+                         [[1, 7844, 1, 7], [1, 27454, 2]]]
+
+        def _getTransposeAxes(sizes):
+            # broadcast do not change
+            # always move inner-most dim
+            # random permutation of other dims
+            result = []
+            valid_sizes = []
+            for idx, val in enumerate(sizes):
+                if val > 1 and idx < len(sizes) - 1:
+                    valid_sizes.append((idx, val))
+                result.append(idx)
+            idx, new_size = valid_sizes[random.randint(0, len(valid_sizes) - 1)]
+            result[idx] = len(sizes) - 1
+            result[len(sizes) - 1] = idx
+            return result
+
+        def _transposeSize(sizes, dims):
+            return [sizes[old_pos] for old_pos in dims]
+
+        for example in view_examples:
+            before_view_size, after_view_size = example
+            axes = _getTransposeAxes(after_view_size)
+            output_size = _transposeSize(after_view_size, axes)
+            self._view_before_permute_helper(before_view_size, after_view_size, output_size, axes)
+
+    def _view_before_permute_helper(self, input_shape, view_shape, output_shape, dims):
+        def t(x, y, view_shape : List[int], dims : List[int]):
+            x_v = x.view(view_shape)
+            x_t = torch.permute(x_v, dims)
+            o = torch.add(x_t, y)
+            o = torch.relu(o)
+            return o
+
+        x = torch.randn(*input_shape, device="cuda")
+        y = torch.randn(*output_shape, device="cuda")
+        t_jit = torch.jit.script(t)
+        self._run_helper(t_jit, t, x, y, view_shape, dims)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_permute(self):
+        max_dims = 4
+        for ndims in range(2, max_dims + 1):
+            shape = [idx + 2 for idx in range(ndims)]
+            for dims in itertools.permutations(range(ndims)):
+                self._permute_helper(shape, dims)
+
+    def _permute_helper(self, shape, dims):
+        def t(x, y, dims : List[int]):
+            x_t = torch.permute(x, dims)
+            y_t = torch.permute(y, dims)
+            o = torch.add(x_t, y_t)
+            o = torch.relu(o)
+            return o
+
+        x = torch.randn(*shape, device="cuda")
+        y = torch.randn(*shape, device="cuda")
+        t_jit = torch.jit.script(t)
+        self._run_helper(t_jit, t, x, y, dims)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_transpose(self):
+        max_dims = 4
+        for ndims in range(2, max_dims + 1):
+            shape = [idx + 2 for idx in range(ndims)]
+            for idx in range(1, ndims):
+                for jdx in range(idx):
+                    self._transpose_helper(shape, idx, jdx)
+
+    def _transpose_helper(self, shape, dim0, dim1):
+        def t(x, y, dim0 : int, dim1 : int):
+            x_t = torch.transpose(x, dim0, dim1)
+            y_t = torch.transpose(y, dim0, dim1)
+            o = torch.add(x_t, y_t)
+            o = torch.nn.functional.gelu(o)
+            return o
+
+        x = torch.randn(*shape, device="cuda")
+        y = torch.randn(*shape, device="cuda")
+        t_jit = torch.jit.script(t)
+        self._run_helper(t_jit, t, x, y, dim0, dim1)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_transpose_default(self):
+        def t(x, y):
+            x_t = torch.t(x)
+            y_t = torch.t(y)
+            o = torch.add(x_t, y_t)
+            o = torch.nn.functional.gelu(o)
+            return o
+
+        x = torch.randn(3, 5, device="cuda")
+        y = torch.randn(3, 5, device="cuda")
+        t_jit = torch.jit.script(t)
+        self._run_helper(t_jit, t, x, y)
+
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
     def test_input_output_passthrough(self):
         def t(t0, t1, t2):
             mask = t1.to(dtype=torch.bool)
@@ -4938,6 +5058,28 @@ class TestCudaFuser(JitTestCase):
         t_jit = torch.jit.script(t)
         self._run_helper(t_jit, t, x0, x1, x2, check_stride=True)
 
+    @unittest.skipIf(not RUN_NVFUSER, "requires CUDA")
+    @unittest.skipIf(GRAPH_EXECUTOR != ProfilingMode.PROFILING,
+                     "Requires fusion optimization pass to be effective")
+    def test_disable_const_chunk_propagation_for_normalization(self):
+        device = "cuda"
+        x0 = torch.randn(10, 12, device=device)
+        x1 = torch.randn(10, 4, device=device)
+        w0 = torch.randn(12, device=device)
+        w1 = torch.randn(4, device=device)
+
+        def t(x, y, w0, w1):
+            ih = torch.layer_norm(x, (12,), w0)
+            i_r, i_z, i_n = ih.chunk(3, dim=1)
+            i_n = torch.layer_norm(i_n, (4,), w1)
+            r = torch.sigmoid(i_r)
+            n = torch.tanh(i_n + r * i_z)
+            h = n + r * y
+            return h
+
+        t_jit = torch.jit.script(t)
+        self._run_helper(t_jit, t, x0, x1, w0, w1, check_stride=True)
+
 
 class TestEnableDisableCudaFuser(JitTestCase):
     def setUp(self):
@@ -5090,7 +5232,7 @@ class TestCudaFuserOpInfo(TestCudaFuserOpInfoParent):
         def _get_extremal_sample(sample: SampleInput, val, dtype):
             extremal_sample = SampleInput(
                 input=_get_extremal_input(sample.input, val, dtype),
-                args=[_get_extremal_input(x, val, dtype) for x in sample.args],
+                args=tuple(_get_extremal_input(x, val, dtype) for x in sample.args),
                 kwargs={k: _get_extremal_input(v, val, dtype) for k, v in sample.kwargs.items()},
             )
             return extremal_sample
@@ -5099,7 +5241,7 @@ class TestCudaFuserOpInfo(TestCudaFuserOpInfoParent):
             vals = [float('inf'), float('-inf'), float('nan')]
             if dtype.is_complex:
                 complex_vals = itertools.product(vals, vals)
-                vals = list(map(lambda x: complex(*x), complex_vals))
+                vals = tuple(map(lambda x: complex(*x), complex_vals))
             for val in vals:
                 yield _get_extremal_sample(sample, val, dtype)
 

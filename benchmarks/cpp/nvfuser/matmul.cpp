@@ -3,7 +3,6 @@
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
-#include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/ops/all_ops.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/all_schedulers.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/matmul.h>
@@ -155,13 +154,15 @@ static void SingleMatmulBase(
   auto inputs = fp16MatmulAtInput(
       input_mnk.at(0), input_mnk.at(1), input_mnk.at(2), layout);
 
+  KernelArgumentHolder args = KernelArgumentHolder::createKernelArgumentHolder(
+      {inputs.first, inputs.second});
+
   // Always use 32b indexing mode for now.
-  CompileOptions co;
-  co.index_mode = KernelIndexMode::INT32;
+  TORCH_INTERNAL_ASSERT(args.getIndexMode() == KernelIndexMode::INT32);
 
   // Compile kernel
   FusionExecutor fe;
-  fe.compileFusion(fusion, {inputs.first, inputs.second}, LaunchParams(), co);
+  fe.compileFusion(fusion, args, LaunchParams());
 
   // Warm up run
   auto outputs = fe.runFusion({inputs.first, inputs.second});
