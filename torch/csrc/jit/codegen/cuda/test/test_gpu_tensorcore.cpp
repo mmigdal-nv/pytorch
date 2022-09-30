@@ -842,9 +842,6 @@ TEST_F(NVFuserTest, FusionAmpereMatmulRegDoubleBuffer_CUDA) {
       params.double_buffer_options.double_buffer_smem_read = true;
       scheduleMatmul(tv2, tv0, tv1, params);
 
-      CompileOptions co;
-      co.index_mode = KernelIndexMode::INT32;
-
       at::manual_seed(0);
       auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
@@ -853,7 +850,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulRegDoubleBuffer_CUDA) {
           8,
           0,
           fe.compileFusion(
-              &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+              &fusion, {inputs.first, inputs.second}, LaunchParams()));
       auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
       auto tref = atMatmul(
           inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -2775,6 +2772,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTNSwizzled_CUDA) {
 
 // Matmul test on Ampere using ldmatrix.x4 to load operands
 TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
+  REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
   for (auto layout : kAllSupportedLayout) {
@@ -2810,15 +2808,12 @@ TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoad_CUDA) {
     at::manual_seed(0);
     auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
-    CompileOptions co;
-    co.index_mode = KernelIndexMode::INT32;
-
     FusionExecutor fe;
     NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
         8,
         0,
         fe.compileFusion(
-            &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+            &fusion, {inputs.first, inputs.second}, LaunchParams()));
     auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
     auto tref = atMatmul(
         inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -2867,15 +2862,12 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck4warp_CUDA) {
         at::manual_seed(0);
         auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
-        CompileOptions co;
-        co.index_mode = KernelIndexMode::INT32;
-
         FusionExecutor fe;
         NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
             8,
             0,
             fe.compileFusion(
-                &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+                &fusion, {inputs.first, inputs.second}, LaunchParams()));
         auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
         auto tref = atMatmul(
             inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -2934,15 +2926,12 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
           at::manual_seed(0);
           auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
-          CompileOptions co;
-          co.index_mode = KernelIndexMode::INT32;
-
           FusionExecutor fe;
           NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
               8,
               0,
               fe.compileFusion(
-                  &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+                  &fusion, {inputs.first, inputs.second}, LaunchParams()));
           auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
           auto tref = atMatmul(
               inputs.first.to(at::kFloat),
@@ -2992,9 +2981,6 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
 
       scheduleMatmul(tv2, tv0, tv1, params);
 
-      CompileOptions co;
-      co.index_mode = KernelIndexMode::INT32;
-
       at::manual_seed(0);
       auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
@@ -3003,7 +2989,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
           8,
           0,
           fe.compileFusion(
-              &fusion, {inputs.first, inputs.second}, LaunchParams(), co));
+              &fusion, {inputs.first, inputs.second}, LaunchParams()));
       auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
       auto tref = atMatmul(
           inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -3054,6 +3040,36 @@ TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
         inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
     TORCH_CHECK(cg_outputs[0].allclose(tref, 0.0001, 0.0001));
   }
+}
+
+// Small repro for the replay fix needed for non-affine
+//  swizzle support.
+TEST_F(NVFuserTest, FusionSwizzleReplayFixRepro_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+  auto tv0 = makeConcreteTensor({32, 32});
+
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = set(tv1);
+  fusion.addOutput(tv2);
+
+  tv1->swizzle(Swizzle2DType::XOR, 0, 1);
+  tv2->split(0, 16);
+
+  auto replayed_domain = TransformReplay::replayPasC(tv1, tv2, -1).first;
+
+  auto id_ops = DependencyCheck::getAllExprsBetween(
+      {replayed_domain->getRootDomain().begin(),
+       replayed_domain->getRootDomain().end()},
+      {replayed_domain->domain().begin(), replayed_domain->domain().end()});
+
+  TORCH_INTERNAL_ASSERT(
+      std::none_of(
+          id_ops.begin(),
+          id_ops.end(),
+          [](Expr* expr) { return expr->isA<Swizzle2D>(); }),
+      "Swizzle op should be removed by backward replay.");
 }
 
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
