@@ -236,7 +236,8 @@ IndexingParameters getLinearIndexParameters(
 
   for (auto loop_idx : c10::irange(loops.size())) {
     auto loop = loops[loop_idx];
-    auto index_domain = ir_utils::caMapExactConcreteId(loop_domain[loop_idx]);
+    auto index_domain = GpuLower::current()->caMap()->getConcreteMappedID(
+        loop_domain[loop_idx], IdMappingMode::EXACT);
     auto concrete_loop_domain =
         GpuLower::current()->caMap()->getConcreteMappedID(
             loop->iter_domain(), IdMappingMode::LOOP);
@@ -371,7 +372,8 @@ IndexingParameters getNonGlobalInitialIndexParameters(
     auto loop_domain = loop_domains[loop_idx];
 
     auto concrete_loop_index_domain =
-        ir_utils::caMapExactConcreteId(loop_domain);
+        GpuLower::current()->caMap()->getConcreteMappedID(
+            loop_domain, IdMappingMode::EXACT);
     auto concrete_loop_domain =
         GpuLower::current()->caMap()->getConcreteMappedID(
             loop->iter_domain(), IdMappingMode::LOOP);
@@ -1011,7 +1013,7 @@ IndexFromIdGraph getTensorIndexFromIdGraph(
           index_producer ? producer_tv : consumer_tv, consumer_tv);
 
   if (is_global) {
-    index_parameters = getGlobalIndexParameters(
+    index_parameters = getLinearIndexParameters(
         loop_indexing, index_producer, maybe_address_record);
   } else {
     index_parameters = getNonGlobalInitialIndexParameters(
