@@ -81,7 +81,7 @@ void UnrollPass::handle(Expr* expr) {
 
     // When a predicate needs to account for ShiftOp, it is currently
     // taken care by its own function.
-    if (GpuLower::current()->haloInfo().needsShiftPredicate(expr)) {
+    if (GpuLower::current()->haloInfo()->needsShiftPredicate(expr)) {
       ShiftPredicateInserter::insert(
           expr, for_loops_, thread_pred, unswitched_loop_);
       return;
@@ -98,7 +98,7 @@ void UnrollPass::handle(Expr* expr) {
 
     // For expr calling a device func with block sync, don't create
     // if-then-else but pass the predicate to the device func
-    if (ir_utils::hasBlockSync(expr, GpuLower::current()->threadPredMap())) {
+    if (lower_utils::hasBlockSync(expr, GpuLower::current()->threadPredMap())) {
       const auto pred = unswitched_loop_
           ? thread_pred_expr
           : IrBuilder::create<kir::Predicate>(
@@ -124,7 +124,7 @@ void UnrollPass::handle(Expr* expr) {
                                     PredicateType::Inline, expr, thread_pred);
     }
 
-    if (supportInlinePredicate(expr)) {
+    if (lower_utils::supportInlinePredicate(expr)) {
       expr->setPredicate(pred);
       return;
     }
@@ -227,7 +227,7 @@ bool UnrollPass::canOmitElseClause(kir::ForLoop* fl) {
     // If there's any expression that requires barrier
     // synchronization, the else part can't be omitted
     for (auto expr : loop->body().exprs()) {
-      if (ir_utils::hasBlockSync(expr, pred_map)) {
+      if (lower_utils::hasBlockSync(expr, pred_map)) {
         return false;
       }
     }
@@ -269,9 +269,7 @@ bool UnrollPass::canOmitElseClause(kir::ForLoop* fl) {
   return true;
 }
 
-// Generate the loop nest structure and place it in lowered_exprs
 UnrollPass::UnrollPass(const std::vector<Expr*>& exprs) {
-  FUSER_PERF_SCOPE("GpuLower::Lower::UnrollPass::computeMap");
   kir::ExprMutator::traverseAndInsert(exprs);
 }
 
