@@ -109,7 +109,7 @@ c10::optional<IterDomain*> getMaybeSubloop(
     TensorView* tv,
     IterDomain* main_loop) {
   bool main_loop_found = false;
-  auto& ca_map = GpuLower::current()->caMap();
+  const auto& ca_map = GpuLower::current()->caMap();
 
   for (auto leaf_id : tv->domain()->domain()) {
     if (main_loop_found && !leaf_id->isParallelized()) {
