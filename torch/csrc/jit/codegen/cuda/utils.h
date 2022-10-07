@@ -30,6 +30,7 @@ KernelIndexMode collectIndexMode(const at::ArrayRef<at::IValue>& inputs);
 enum class DebugDumpOption {
   FusionIr, //!< Dump the Fusion IR before lowering
   FusionIrMath, //!< Dump just the compute (math) part of the Fusion IR
+  FusionIrPresched, //!< Dump the Fusion IR before it is scheduled.
   KernelIr, //!< Dump the compiler Kernel IR
   ComputeAtMap, //!< Dump the computeAt map
   CudaKernel, //!< Dump the generated CUDA C++ kernel code
@@ -52,10 +53,13 @@ enum class DebugDumpOption {
   Halo, //! Halo information of tensors
   PerfDebugVerbose, //! When running kernels, print verbose information
                     //! associated with what's running
+  PythonDefinition, //! Python Frontend Fusion Definition.
+  PythonFrontendDebug, //! Python Frontend debug information.
   TransformPropagator, //! When running TransformPropagator, print propagation
                        //! path and replay result
   Cubin, //! Dump compiled CUBIN
-  Ptx //! Dump compiled PTX
+  Ptx, //! Dump compiled PTX
+  BankConflictInfo //! Dump bank confliction info
 };
 
 TORCH_CUDA_CU_API bool isDebugDumpEnabled(DebugDumpOption option);

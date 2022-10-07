@@ -9,6 +9,7 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
+#include <torch/csrc/jit/codegen/cuda/lower_bank_conflict.h>
 #include <torch/csrc/jit/codegen/cuda/utils.h>
 
 #include <ATen/core/LegacyTypeDispatch.h>
@@ -58,9 +59,10 @@ static const char* defineIndexMode(KernelIndexMode index_mode) {
 
 static const char* defineIntegerTypes() {
   return R"(
-typedef unsigned char uint8_t;
 typedef signed char int8_t;
+typedef unsigned char uint8_t;
 typedef short int int16_t;
+typedef unsigned short int uint16_t;
 typedef int int32_t;
 typedef unsigned int uint32_t;
 typedef long long int int64_t;
@@ -116,18 +118,22 @@ static const std::string& defineComplexTypes() {
 std::string FusionExecutor::getStructuredCode(const std::string& kernel) {
   // generating cuda code;
   std::string code = "";
-#ifdef __HIP_PLATFORM_HCC__
+#ifdef USE_ROCM
 #if ROCM_VERSION < 40200
   code += std::string("#include <hip/hip_runtime.h>\n") +
       std::string("#include <hip/hip_bf16.h>\n") +
       std::string("#include <hip/hip_fp16.h>\n");
 #endif
+  code += std::string("#pragma clang force_cuda_host_device begin\n");
 #endif
   code += std::string("namespace ") + FusionExecutor::kernelNamespace() +
       " {\n" +
       defineNvFuserZero(fusion_ == nullptr || fusion_->isNvFuserZeroEnabled()) +
       defineIntegerTypes() + defineIndexMode(options_.index_mode) +
       defineComplexTypes() + executor_utils::kernelPreamble() + kernel + "}\n";
+#ifdef USE_ROCM
+  code += std::string("#pragma clang force_cuda_host_device end\n");
+#endif
 
   if (isDebugDumpEnabled(DebugDumpOption::CudaKernel)) {
     std::cout << "\n======= Codegen output for kernel: " << kernelName()
@@ -216,6 +222,35 @@ void FusionExecutor::compileFusion(
     TORCH_INTERNAL_ASSERT(
         out->getValType() == ValType::TensorView,
         "Output types from fusions that are not tensors are not supported at this point.");
+
+    const auto maybe_rfactor_domain =
+        out->as<TensorView>()->getMaybeRFactorDomain();
+    // walking through outputs to see if output shapes are dependent on
+    // non-tensor inputs. For which case, we should have disabled output
+    // allocation, since the caching id only looks at tensor shapes.
+    // See issue https://github.com/csarofeen/pytorch/issues/2002
+    std::vector<Val*> output_extents;
+    for (const auto id : maybe_rfactor_domain) {
+      Val* extent = nullptr;
+      if (id->isReduction() || id->isStride()) {
+        continue;
+      } else if (id->isBroadcast() && id->hasExpandedExtent()) {
+        extent = id->expandedExtent();
+      } else {
+        extent = id->extent();
+      }
+      output_extents.emplace_back(extent);
+    }
+    auto dependencies = InputsOf::outputs(fusion, output_extents);
+    if (std::any_of(dependencies.begin(), dependencies.end(), [](Val* val) {
+          return val->isFusionInput();
+        })) {
+      // TODO: parameter cache is too big a hammer here. We should consider
+      // separate the caching logic of output sizes & launch params. Since
+      // output size dependency should only invalidate the output sizes
+      disable_parameter_cache_ = true;
+      break;
+    }
   }
 
   if (isDebugDumpEnabled(DebugDumpOption::FusionIr)) {
@@ -233,7 +268,7 @@ void FusionExecutor::compileFusion(
       options_.device.is_cuda(), "Provided device to CUDA fuser is the CPU.");
   auto properties = at::cuda::getDeviceProperties(options_.device.index());
   configured_device_smem_ = properties->sharedMemPerBlock;
-#ifndef __HIP_PLATFORM_HCC__
+#ifndef USE_ROCM
   device_smem_limit_ = properties->sharedMemPerBlockOptin;
 #else
   // don't know if rocm supports opt-in shared memroy reconfiguration
@@ -253,6 +288,27 @@ void FusionExecutor::compileFusion(
 
   if (isDebugDumpEnabled(DebugDumpOption::KernelIr)) {
     kernel->print();
+  }
+
+  if (isDebugDumpEnabled(DebugDumpOption::BankConflictInfo)) {
+    auto bank_conflict_info = getBankConflictInfo(kernel);
+    if (bank_conflict_info.empty()) {
+      std::cout << "===== No bank confliction =====" << std::endl;
+    } else {
+      std::cout << "======= Bank confliction =======" << std::endl;
+      for (auto info : bank_conflict_info) {
+        std::cout << "Expr: " << info.first->toString() << std::endl;
+        auto conflict = info.second;
+        if (conflict.first > 1) {
+          std::cout << "input conflict: " << conflict.first << " way, ";
+        }
+        if (conflict.second > 1) {
+          std::cout << "output conflict: " << conflict.second << " way";
+        }
+        std::cout << std::endl;
+      }
+      std::cout << "================================" << std::endl;
+    }
   }
 
   kernel_code_ = codegen::generateCudaKernel(kernel, kernelName());
@@ -311,7 +367,7 @@ void FusionExecutor::compileFusion(
   TORCH_INTERNAL_ASSERT(
       fusion_id_ > 0, "failed to assign a fusion_id_ after compilation.");
 
-#ifndef __HIP_PLATFORM_HCC__
+#ifndef USE_ROCM
   // The driver API call requires an int argument.
   int max_dynamic_smem = 0;
   AT_CUDA_DRIVER_CHECK(at::globalContext().getNVRTC().cuFuncGetAttribute(
@@ -481,7 +537,11 @@ uint64_t FusionExecutor::computeSharedMemory(
         const uint64_t data_size = dataTypeSize(smem_alloc->buffer()->dtype());
         // Add padding to align dynamic shared memory
         if (align_padding) {
+#ifndef USE_ROCM
           const int align_size = 16; // always align to 16B/128b.
+#else
+          const int align_size = 8; // see codegen.cpp for HIP
+#endif
           total = ceilDiv(total, align_size) * align_size;
         }
         total += inferred_val->as<int64_t>() * data_size;
@@ -745,29 +805,24 @@ FusionExecutor::GlobalBuffers FusionExecutor::allocGlobalVals(
 }
 
 std::vector<at::Tensor> FusionExecutor::allocOutputs(
+    const KernelArgumentHolder& args,
     kir::ExpressionEvaluator& expr_eval,
     const std::unordered_set<int>& alias_indices) {
   FUSER_PERF_SCOPE("FusionExecutor::AllocOutputs");
   const auto kernel = lowered_->kernel();
   // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   std::vector<at::Tensor> outputs;
+  TORCH_INTERNAL_ASSERT(
+      args.size() == kernel->inputs().size(),
+      "kernel arguments length does not match runtime arguments.");
   for (const auto out_i : c10::irange(kernel->outputs().size())) {
-    // TODO: FIX this short-cut where we trivially forward inputs to outputs
     if (kernel->outputs()[out_i]->isFusionInput()) {
-      TORCH_INTERNAL_ASSERT(false, "trivial input forwarding NOT IMPLEMENTED");
-      // for (auto inp_i : c10::irange(kernel->inputs().size())) {
-      //   if (kernel->inputs()[inp_i] == kernel->outputs()[out_i]) {
-      //     TORCH_INTERNAL_ASSERT(
-      //         inp_i < inputs.size(),
-      //         "Issue with an input showing up as output, couldn't find
-      //         input.");
-      //     TORCH_INTERNAL_ASSERT(
-      //         inputs[inp_i].isTensor(),
-      //         "Cannot register a scalar as an output in a fusion.");
-      //     outputs.push_back(inputs[inp_i].toTensor());
-      //     break;
-      //   }
-      // }
+      // pushing empty tensor for trivial forwarding. Since we handle this in
+      // integration, see step 1 - note [trivial forwarding]
+      c10::Device device(c10::DeviceType::CUDA, args.getDeviceIndex());
+      const auto tensor_options =
+          at::TensorOptions().dtype(at::kFloat).device(device);
+      outputs.emplace_back(at::empty({0}, tensor_options));
     } else {
       TORCH_INTERNAL_ASSERT(
           kernel->outputs()[out_i]->isA<TensorView>(),
@@ -807,7 +862,8 @@ KernelArgumentHolder FusionExecutor::evaluateOutputSizes(
   meta_options.device = c10::Device(DeviceType::Meta, 0);
 
   for (const auto out_i : c10::irange(kernel->outputs().size())) {
-    // If the output is just trivially the input, just "copy" it over.
+    // If the output is just trivially the input, just "copy" it over, see note
+    // [trivial forwarding]
     if (kernel->outputs()[out_i]->isFusionInput()) {
       for (auto inp_i : c10::irange(kernel->inputs().size())) {
         if (kernel->inputs()[inp_i] == kernel->outputs()[out_i]) {
@@ -1064,7 +1120,7 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
     }
 
     if (kernel()->summary().has_cooperative_grid_reduction) {
-#ifndef __HIP_PLATFORM_HCC__
+#ifndef USE_ROCM
       int num_blocks_per_SM = -1;
       at::globalContext().getNVRTC().cuOccupancyMaxActiveBlocksPerMultiprocessor(
           &num_blocks_per_SM,
@@ -1128,7 +1184,7 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
 
       auto& output_alias_indices = output_alias_indices_entry.get();
 
-      allocated_outputs = allocOutputs(expr_eval, output_alias_indices);
+      allocated_outputs = allocOutputs(args, expr_eval, output_alias_indices);
 
       for (const auto& entry : alias_indices) {
         auto aliased_output_index = entry.first;
@@ -1236,7 +1292,7 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
   if (execute_kernel_) {
     if (maybe_available_dynamic_smem_.has_value() &&
         launch_params_.smem() > maybe_available_dynamic_smem_.value()) {
-#ifndef __HIP_PLATFORM_HCC__
+#ifndef USE_ROCM
       // Increase limit of dynamic shared memory if needed.
       AT_CUDA_DRIVER_CHECK(at::globalContext().getNVRTC().cuFuncSetAttribute(
           compiled_kernel_.function,
@@ -1262,7 +1318,7 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
           args.getBuffer(),
           nullptr));
     } else {
-#ifndef __HIP_PLATFORM_HCC__
+#ifndef USE_ROCM
       FUSER_PERF_SCOPE("ExecutorRunFusion::cuLaunchCooperativeKernel");
       AT_CUDA_DRIVER_CHECK(
           at::globalContext().getNVRTC().cuLaunchCooperativeKernel(

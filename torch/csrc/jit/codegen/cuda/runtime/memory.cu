@@ -337,15 +337,14 @@ DEVICE_INLINE void cpAsyncCg(
       "n"(byte_size));
 }
 
-// cp.async
-// This is the variant that supports lifted indexing, with predicate inlined.
+// Global to SMEM load that is asynchronous,
+// not guaranteed to be completed until cpAsyncBarrier() is called.
 template <typename dtype, int len>
-DEVICE_INLINE void cpAsyncCg(
-    nvfuser_index_t smem_index,
-    unsigned smem_addr,
-    nvfuser_index_t gmem_index,
-    DataPointer& gmem_ptr,
+DEVICE_INLINE void cpAsync(
+    Array<dtype, len, len>* smem_ptr,
+    void const* gmem_ptr,
     bool predicate) {
+  unsigned smem_addr = util::toSmem(&(smem_ptr->array[0]));
   constexpr int byte_size = sizeof(dtype) * len;
 
   static_assert(
@@ -356,9 +355,9 @@ DEVICE_INLINE void cpAsyncCg(
       "{\n"
       "  .reg .pred p;\n"
       "  setp.ne.b32 p, %3, 0;\n"
-      "@p cp.async.cg.shared.global [%0], [%1], %2;\n"
-      "}\n" ::"r"(smem_addr + (unsigned)smem_index),
-      "l"(gmem_ptr + gmem_index),
+      "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
+      "}\n" ::"r"(smem_addr),
+      "l"(gmem_ptr),
       "n"(byte_size),
       "r"((int)predicate));
 }

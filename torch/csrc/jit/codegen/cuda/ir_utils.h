@@ -336,7 +336,7 @@ TORCH_CUDA_CU_API c10::optional<Expr*> getMaybeSingleUse(
 template <typename T>
 std::string toString(const T& nodes) {
   std::stringstream ss;
-  for (Statement* stmt : nodes) {
+  for (const Statement* stmt : nodes) {
     if (ss.tellp() != 0) {
       ss << ", ";
     }
