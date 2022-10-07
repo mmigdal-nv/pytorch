@@ -1000,9 +1000,6 @@ void IndexLowering::handle(const LoadStoreOp* ldst) {
                       ->withPredicate(ldst->predicate());
   pushBack(new_ldst);
   GpuLower::current()->propagateExprInfo(ldst, back());
-  if (ldst->predicate()) {
-    back()->setPredicate(IrBuilder::create<kir::Predicate>(ldst->predicate()));
-  }
 }
 
 void IndexLowering::handle(const MmaOp* mma) {

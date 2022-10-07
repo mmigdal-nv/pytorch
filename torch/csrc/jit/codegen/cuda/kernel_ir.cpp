@@ -232,6 +232,10 @@ AddressCompute::AddressCompute(
       "IR type only valid for Kernel container.");
 }
 
+Expr* AddressCompute::shallowCopy() const {
+  TORCH_INTERNAL_ASSERT(false);
+}
+
 InitMagicZero::InitMagicZero(IrBuilderPasskey passkey)
     : Expr(passkey, ExprType::InitMagicZero) {
   TORCH_INTERNAL_ASSERT(
@@ -467,7 +471,7 @@ Expr* ForLoop::shallowCopy() const {
       vectorize_,
       vectorize_shift_,
       unroll_required_,
-      double_buffer_loop_stage_);
+      loop_transform_info_);
   result->body_ = body_;
   result->copyPredicatesFrom(this);
   return result;

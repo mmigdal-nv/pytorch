@@ -398,6 +398,8 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       TensorView* data_tensor,
       Val* loop_index = nullptr);
 
+  Expr* shallowCopy() const override;
+
   auto dataTv() const {
     return data_tensor_;
   }
