@@ -168,6 +168,24 @@ void validateIterDomainUsage(Fusion* fusion) {
   }
 }
 
+// Check that an expanded dimension and the dimension before can never be
+// contiguous. See note [Contiguity and expand] for explanation.
+void checkContiguityForExpandedDims(TensorView* tv) {
+  auto root_dom = tv->getMaybeRFactorDomain();
+  for (const auto idx : c10::irange(root_dom.size())) {
+    bool is_contiguous = tv->domain()->contiguity()[idx];
+    if (is_contiguous) {
+      TORCH_CHECK(
+          !root_dom[idx]->hasExpandedExtent() &&
+              (idx == root_dom.size() - 1 ||
+               !root_dom[idx + 1]->hasExpandedExtent()),
+          "Validation failed on tensor ",
+          tv,
+          ". The expanded dim and the dim before it can not be contiguous.");
+    }
+  }
+}
+
 } // namespace
 
 void validateIr(Fusion* fusion) {
@@ -181,6 +199,11 @@ void validateIr(Fusion* fusion) {
   ValidateSiblings::validate(fusion);
 
   validateIterDomainUsage(fusion);
+
+  // check that the contiguity of tv is compatible with expand
+  for (auto tv : ir_utils::allTvs(fusion)) {
+    checkContiguityForExpandedDims(tv);
+  }
 }
 
 namespace {
@@ -482,7 +505,8 @@ class VectorizeValidator : public OptInDispatch {
     // be divisible by the vector word size. The domain is usually
     // just one of the root domains, but can be a merged domain of
     // contiguous domains. Those domains are saved in
-    // VectorizedSetInfo.contig_root_ids at the time of indexing.
+    // VectorizedSetInfo.contig_root_ids in
+    // fillConsumerVectorizedContigRootDomains called in lower_index_compute.
     GpuLower::current()->vectorizedSetInfo().emplace_back(vectorized_set_info);
   }
 };

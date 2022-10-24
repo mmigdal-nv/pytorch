@@ -18,197 +18,6 @@ namespace jit {
 
 using namespace torch::jit::fuser::cuda;
 
-TEST_F(NVFuserTest, FusionTranspose1_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  constexpr int M = 10;
-  constexpr int N = 20;
-
-  auto tv0 = makeSymbolicTensor(2);
-  auto tv1 = transpose(tv0);
-  fusion.addInput(tv0);
-  fusion.addOutput(tv1);
-
-  tv1->axis(0)->parallelize(ParallelType::BIDx);
-  tv1->axis(1)->parallelize(ParallelType::TIDx);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  at::manual_seed(0);
-  at::Tensor t0 = at::randn({M, N}, options);
-  std::vector<IValue> aten_inputs = {t0};
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion, aten_inputs);
-  auto outputs = fe.runFusion(aten_inputs);
-
-  at::Tensor aten_output = t0.t();
-
-  testValidate(
-      &fusion, outputs, aten_inputs, {aten_output}, __LINE__, __FILE__);
-}
-
-TEST_F(NVFuserTest, FusionTranspose2_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  constexpr int M = 10;
-  constexpr int N = 20;
-
-  auto tv0 = makeSymbolicTensor(2);
-  auto tv1 = transpose(tv0);
-  fusion.addInput(tv0);
-  fusion.addOutput(tv1);
-
-  tv1->merge(0);
-  tv1->split(0, 32);
-
-  tv1->axis(0)->parallelize(ParallelType::BIDx);
-  tv1->axis(1)->parallelize(ParallelType::TIDx);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  at::manual_seed(0);
-  at::Tensor t0 = at::randn({M, N}, options);
-  std::vector<IValue> aten_inputs = {t0};
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion, aten_inputs);
-  auto outputs = fe.runFusion(aten_inputs);
-
-  at::Tensor aten_output = t0.t();
-
-  testValidate(
-      &fusion, outputs, aten_inputs, {aten_output}, __LINE__, __FILE__);
-}
-
-TEST_F(NVFuserTest, FusionTransposeWithSwizzle_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeSymbolicTensor(2);
-  fusion.addInput(tv0);
-  auto tv1 = transpose(tv0);
-  fusion.addOutput(tv1);
-
-  // tv0: [I0, I1]
-  // tv1: [I1, I0]
-
-  const int BS = 32;
-
-  // CTA tiling by BS*BS
-  tv1->split(1, BS);
-  tv1->split(0, BS);
-  tv1->reorder({{1, 2}});
-  // tv1: [I1/BS, I0/BS, BS(I1), BS(I0)]
-
-  // Create a smem buffer to cache each tile
-  auto tv0_cache = tv0->cacheAfter();
-  tv0_cache->setMemoryType(MemoryType::Shared);
-
-  tv0->computeAt(tv1, 2);
-  // tv0: [I0, I1]
-  // tv0_cache: [I1/BS, I0/BS, BS(I1), BS(I0)]
-  // tv1: [I1/BS, I0/BS, BS(I1), BS(I0)]
-
-  // Assign each thread block to a tile
-  tv1->axis(0)->parallelize(ParallelType::BIDy);
-  tv1->axis(1)->parallelize(ParallelType::BIDx);
-
-  // Thread mapping for each tile. For both of the input and output
-  // tiles, map TIDx to the fastest-changing dimension to facilitate
-  // coalesced gmem accesses.
-  tv1->axis(2)->parallelize(ParallelType::TIDy);
-  tv1->axis(3)->parallelize(ParallelType::TIDx);
-  // Note that the fastest-changing axis is next to the inner-most
-  // axis since computeAt reorders the axes as the output tensor.
-  tv0_cache->axis(2)->parallelize(ParallelType::TIDx);
-  tv0_cache->axis(3)->parallelize(ParallelType::TIDy);
-
-  // Swizzles the smem cache to avoid bank conflicts
-  tv0_cache->swizzle(SwizzleType::Transpose, {3, 2});
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  const int bx = 100;
-  const int by = 200;
-  at::Tensor t0 = at::randn({bx, by}, options);
-  std::vector<IValue> aten_inputs = {t0};
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion, aten_inputs);
-  auto cg_outputs = fe.runFusion(aten_inputs);
-
-  auto aten_output = t0.t();
-
-  testValidate(
-      &fusion, cg_outputs, aten_inputs, {aten_output}, __LINE__, __FILE__);
-}
-
-TEST_F(NVFuserTest, FusionTransposeWithSwizzle1DThreadBlock_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeSymbolicTensor(2);
-  fusion.addInput(tv0);
-  auto tv1 = transpose(tv0);
-  fusion.addOutput(tv1);
-
-  // tv0: [I0, I1]
-  // tv1: [I1, I0]
-
-  const int BS = 32;
-  const int BDIM = 256;
-
-  // CTA tiling by BS*BS
-  tv1->split(1, BS);
-  tv1->split(0, BS);
-  tv1->reorder({{1, 2}});
-  // tv1: [I1/BS, I0/BS, BS(I1), BS(I0)]
-
-  // Create a smem buffer to cache each tile
-  auto tv0_cache = tv0->cacheAfter();
-  tv0_cache->setMemoryType(MemoryType::Shared);
-
-  tv0->computeAt(tv1, 2);
-  // tv0: [I0, I1]
-  // tv0_cache: [I1/BS, I0/BS, BS*BS/BDIM, BDIM]
-  // tv1: [I1/BS, I0/BS, BS*BS/BDIM, BDIM]
-
-  // Tranform the tile axes for 1D thread mapping
-  tv1->merge(-2, -1);
-  tv1->split(-1, BDIM);
-  // tv1: [I1/BS, I0/BS, BS*BS/BDIM, BDIM]
-
-  // Transform the cache similarly but apply swizzle to the 2D tile axes.
-  tv0_cache->reorder({{-2, -1}});
-  tv0_cache->swizzle(SwizzleType::Transpose, {2, 3});
-  tv0_cache->merge(-2, -1);
-  tv0_cache->split(-1, BDIM);
-  // tv0: [I1/BS, I0/BS, BS*BS/BDIM, BDIM]
-
-  // Assign each thread block to a tile
-  tv1->axis(0)->parallelize(ParallelType::BIDy);
-  tv1->axis(1)->parallelize(ParallelType::BIDx);
-
-  // Thread mapping for each tile.
-  tv1->axis(-1)->parallelize(ParallelType::TIDx);
-  tv0_cache->axis(-1)->parallelize(ParallelType::TIDx);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  const int bx = 100;
-  const int by = 200;
-  at::Tensor t0 = at::randn({bx, by}, options);
-  std::vector<IValue> aten_inputs = {t0};
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion, aten_inputs);
-  auto cg_outputs = fe.runFusion(aten_inputs);
-
-  auto aten_output = t0.t();
-
-  testValidate(
-      &fusion, cg_outputs, aten_inputs, {aten_output}, __LINE__, __FILE__);
-}
-
 // x->sin->transpose->cos->y
 TEST_F(NVFuserTest, FusionScheduleTransposeSimple_CUDA) {
   Fusion fusion;
@@ -1041,6 +850,7 @@ TEST_F(NVFuserTest, FusionTransposeBankConflict1_CUDA) {
 
   auto bank_conflict_info = fusion.bankConflictInfo();
 
+  TORCH_CHECK(!bank_conflict_info.empty());
   for (auto info : bank_conflict_info) {
     std::pair<int, int> expect{32, 0};
     TORCH_CHECK(info.second == expect);
@@ -1065,6 +875,7 @@ TEST_F(NVFuserTest, FusionTransposeBankConflict2_CUDA) {
 
   auto bank_conflict_info = fusion.bankConflictInfo();
 
+  TORCH_CHECK(!bank_conflict_info.empty());
   for (auto info : bank_conflict_info) {
     std::pair<int, int> expect{0, 32};
     TORCH_CHECK(info.second == expect);
@@ -1089,6 +900,7 @@ TEST_F(NVFuserTest, FusionTransposeBankConflict3_CUDA) {
 
   auto bank_conflict_info = fusion.bankConflictInfo();
 
+  TORCH_CHECK(!bank_conflict_info.empty());
   for (auto info : bank_conflict_info) {
     std::pair<int, int> expect{8, 0};
     TORCH_CHECK(info.second == expect);
@@ -1129,6 +941,7 @@ TEST_F(NVFuserTest, FusionTransposeBankConflict4_CUDA) {
 
   auto bank_conflict_info = fusion.bankConflictInfo();
 
+  TORCH_CHECK(!bank_conflict_info.empty());
   for (auto info : bank_conflict_info) {
     std::pair<int, int> expect1{0, 8};
     std::pair<int, int> expect2{8, 4};
@@ -1137,6 +950,118 @@ TEST_F(NVFuserTest, FusionTransposeBankConflict4_CUDA) {
         info.second == expect1 || info.second == expect2 ||
         info.second == expect3);
   }
+}
+
+TEST_F(NVFuserTest, FusionTransposeBankConflict5_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  auto tv0 = makeConcreteTensor({1024, 32, 32});
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = transpose(tv1, 1, 2);
+  auto tv3 = set(tv2);
+  fusion.addOutput(tv3);
+
+  tv1->setMemoryType(MemoryType::Shared);
+  tv1->axis(2)->parallelize(ParallelType::TIDx);
+  tv2->axis(2)->parallelize(ParallelType::TIDx);
+  tv3->axis(2)->parallelize(ParallelType::TIDx);
+  tv1->axis(0)->parallelize(ParallelType::BIDx);
+  tv2->axis(0)->parallelize(ParallelType::BIDx);
+  tv3->axis(0)->parallelize(ParallelType::BIDx);
+
+  auto bank_conflict_info = fusion.bankConflictInfo();
+
+  TORCH_CHECK(!bank_conflict_info.empty());
+  for (auto info : bank_conflict_info) {
+    std::pair<int, int> expect{32, 0};
+    TORCH_CHECK(info.second == expect);
+  }
+}
+
+TEST_F(NVFuserTest, FusionTransposeBankConflict6_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  auto tv0 = makeConcreteTensor({1024, 32, 32});
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = transpose(tv1, 1, 2);
+  auto tv3 = set(tv2);
+  fusion.addOutput(tv3);
+
+  tv1->setMemoryType(MemoryType::Shared);
+  tv1->axis(2)->parallelize(ParallelType::TIDy);
+  tv2->axis(2)->parallelize(ParallelType::TIDy);
+  tv3->axis(2)->parallelize(ParallelType::TIDy);
+  tv1->axis(0)->parallelize(ParallelType::BIDx);
+  tv2->axis(0)->parallelize(ParallelType::BIDx);
+  tv3->axis(0)->parallelize(ParallelType::BIDx);
+
+  auto bank_conflict_info = fusion.bankConflictInfo();
+
+  TORCH_CHECK(!bank_conflict_info.empty());
+  for (auto info : bank_conflict_info) {
+    std::pair<int, int> expect{32, 0};
+    TORCH_CHECK(info.second == expect);
+  }
+}
+
+TEST_F(NVFuserTest, FusionTransposeBankConflict7_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  auto tv0 = makeConcreteTensor({1024, 8, 8});
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = transpose(tv1, 1, 2);
+  auto tv3 = set(tv2);
+  fusion.addOutput(tv3);
+
+  tv1->setMemoryType(MemoryType::Shared);
+  tv1->axis(1)->parallelize(ParallelType::TIDx);
+  tv2->axis(1)->parallelize(ParallelType::TIDx);
+  tv3->axis(1)->parallelize(ParallelType::TIDx);
+  tv1->axis(2)->parallelize(ParallelType::TIDy);
+  tv2->axis(2)->parallelize(ParallelType::TIDy);
+  tv3->axis(2)->parallelize(ParallelType::TIDy);
+  tv1->axis(0)->parallelize(ParallelType::BIDx);
+  tv2->axis(0)->parallelize(ParallelType::BIDx);
+  tv3->axis(0)->parallelize(ParallelType::BIDx);
+
+  auto bank_conflict_info = fusion.bankConflictInfo();
+
+  TORCH_CHECK(!bank_conflict_info.empty());
+  for (auto info : bank_conflict_info) {
+    std::pair<int, int> expect{0, 2};
+    TORCH_CHECK(info.second == expect);
+  }
+}
+
+TEST_F(NVFuserTest, FusionTransposeBankConflict8_CUDA) {
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  auto tv0 = makeConcreteTensor({1024, 8, 8});
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = transpose(tv1, 1, 2);
+  auto tv3 = set(tv2);
+  fusion.addOutput(tv3);
+
+  tv1->setMemoryType(MemoryType::Shared);
+  tv1->axis(2)->parallelize(ParallelType::TIDx);
+  tv2->axis(2)->parallelize(ParallelType::TIDy);
+  tv3->axis(2)->parallelize(ParallelType::TIDy);
+  tv1->axis(0)->parallelize(ParallelType::BIDx);
+  tv2->axis(0)->parallelize(ParallelType::BIDx);
+  tv3->axis(0)->parallelize(ParallelType::BIDx);
+
+  auto bank_conflict_info = fusion.bankConflictInfo();
+
+  // no bank confliction
+  TORCH_CHECK(bank_conflict_info.empty());
 }
 
 } // namespace jit

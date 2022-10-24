@@ -1035,9 +1035,7 @@ IndexSwizzle::IndexSwizzle(
           std::move(extent_map),
           std::move(zero_domains),
           std::move(zero_merged_in)),
-      tv_(tv),
-      swizzle_type_(tv->swizzleType()),
-      ids_to_swizzle_(tv->axesToSwizzle()) {}
+      tv_(tv) {}
 
 IndexSwizzle::IndexSwizzle(
     const TensorView* tv,
@@ -1052,44 +1050,10 @@ IndexSwizzle::IndexSwizzle(
           std::move(extent_map),
           std::move(zero_domains),
           std::move(zero_merged_in)),
-      tv_(tv),
-      swizzle_type_(tv->swizzleType()),
-      ids_to_swizzle_(tv->axesToSwizzle()) {}
+      tv_(tv) {}
 
 void IndexSwizzle::run() {
-  TORCH_INTERNAL_ASSERT(
-      swizzle_type_ == SwizzleType::NoSwizzle ||
-          swizzle_type_ == SwizzleType::Transpose,
-      "Invalid swizzle type");
-  if (swizzle_type_ == SwizzleType::Transpose) {
-    // Shifts the second axis by the first axis as ((idx_1 + idx_2) %
-    // ext). Alternatively, ((idx_1 - idx_2) & (ext - 1)) would also
-    // work if ext is a power of two. Practically, ext should be 32 if
-    // the data type of the tensor is float, so the latter approach
-    // should also be fine.
-    TORCH_INTERNAL_ASSERT(tv_->getMemoryType() == MemoryType::Shared);
-    TORCH_INTERNAL_ASSERT(tv_->axesToSwizzle().size() == 2);
-
-    UpdateLeafIndices update_leaves(td_, indexMap(), extentMap());
-    index_map_ = update_leaves.indexMap();
-    extent_map_ = update_leaves.extentMap();
-
-    IterDomain* id_to_swizzle_i = ids_to_swizzle_.at(0);
-    IterDomain* id_to_swizzle_j = ids_to_swizzle_.at(1);
-
-    if (indexMap().find(id_to_swizzle_i) != indexMap().end() &&
-        indexMap().find(id_to_swizzle_j) != indexMap().end()) {
-      auto idx_to_swizzle_i = indexMap().at(id_to_swizzle_i);
-      auto idx_to_swizzle_j = indexMap().at(id_to_swizzle_j);
-
-      auto swizzled_idx = SimplifyingIrBuilder::modExpr(
-          SimplifyingIrBuilder::addExpr(idx_to_swizzle_i, idx_to_swizzle_j),
-          id_to_swizzle_j->extent());
-      index_map_[id_to_swizzle_j] = swizzled_idx;
-      swizzled_ids_.insert(id_to_swizzle_j);
-      IndexCompute::run();
-    }
-  } else if (tv_->hasSwizzleOp()) {
+  if (tv_->hasSwizzleOp()) {
     // Propagate backward for the annotated swizzle path.
     // TODO:
     //  eventually will unify the two swizzling implementation
@@ -1109,25 +1073,14 @@ void IndexSwizzle::run() {
 }
 
 void IndexSwizzle::handle(Expr* e) {
-  auto out_ids = ir_utils::filterByType<IterDomain>(e->outputs());
-  bool needs_update =
-      std::any_of(
-          out_ids.begin(),
-          out_ids.end(),
-          [this](IterDomain* id) {
-            return swizzled_ids_.find(id) != swizzled_ids_.end();
-          }) ||
-      (e->isA<Swizzle2D>() &&
-       e->as<Swizzle2D>()->swizzleType() != Swizzle2DType::NoSwizzle &&
-       e->as<Swizzle2D>()->swizzleMode() == SwizzleMode::Data);
+  bool needs_update = e->isA<Swizzle2D>() &&
+      e->as<Swizzle2D>()->swizzleType() != Swizzle2DType::NoSwizzle &&
+      e->as<Swizzle2D>()->swizzleMode() == SwizzleMode::Data;
   if (!needs_update) {
     return;
   }
 
   IndexCompute::handle(e);
-  for (auto input : ir_utils::filterByType<IterDomain>(e->inputs())) {
-    swizzled_ids_.insert(input);
-  }
 }
 
 void IndexSwizzle::handle(Swizzle2D* swizzle_2d) {
@@ -1137,17 +1090,127 @@ void IndexSwizzle::handle(Swizzle2D* swizzle_2d) {
   auto out_x_it = index_map_.find(out_x_id);
   auto out_y_it = index_map_.find(out_y_id);
 
-  // TODO: unify the legacy path in all usage
-  TORCH_INTERNAL_ASSERT(
-      swizzle_type_ == SwizzleType::NoSwizzle,
-      "Cannot mix usage of two swizzle implementations");
-
   TORCH_INTERNAL_ASSERT(
       out_x_it != index_map_.end() && out_y_it != index_map_.end(),
       "Swizzle output indices were not propagated through");
 
   IndexCompute::handle(swizzle_2d);
 }
+
+namespace {
+
+//! Check if the index of a parallel loop should be subsituted with
+//! zero.
+//!
+//! Zero substitution only happens with the BID parallel types with
+//! Local Or Shared tensors or the TID parallel types with Local
+//! tensors.
+//!
+//! This check is straightforward for consumers, but for producers
+//! the substitution is only done when the producer uses the same
+//! parallel type as the loop parallel type.
+//!
+//! If there's a mapped producer IterDoamin and that ID is
+//! parallelized, there are a couple of cases depending on the
+//! parallel type and the producer memory type:
+//!
+//! Loop PT, producer PT, producer mem -> index
+//! - BID, TID/Serial, Shared / Local -> use BID
+//! - BID, BID, Shared / Local -> use zero when loop PT == producer PT
+//! - BID, BID, Shared / Local -> invalid when loop PT != producer PT
+//! - TID, Serial, Local -> use TID
+//! - TID, TID, Local -> use zero when loop PT == producer PT
+//! - TID, TID, Local -> invalid when loop PT != producer PT
+//!
+//! The invalid cases should not happen here as they should be already
+//! detected as invalid parallelization. Thus, we just need to find if
+//! the producer has a mapped IterDomain that has the same parallel
+//! type as the loop IterDomain.
+bool isParallelLoopIndexSubstitutedAsZero(
+    const TensorView* tv,
+    IterDomain* loop_id,
+    bool as_consumer,
+    bool within_mma_loops) {
+  const auto ca_map = GpuLower::current()->caMap();
+
+  // MMA operands are currently indexed in units of "fragments",
+  //  so each mma tensor domain would be zero-ed and the tensor index
+  //  calculated here would be the fragment index.
+  // TODO: This is a quick WAR to enable iterating over a register array
+  //  of MMA fragments, so we could generate unrolled mma loops.
+  //  Eventually we still want IdGraph to be able to analyze the
+  //  in-register layout of mma fragments for more unified indexing math
+  //  as well as more flexibility in swizzling loops.
+  if (loop_id->isMma() && !as_consumer) {
+    return true;
+  }
+
+  const bool is_shared = tv->getMemoryType() == MemoryType::Shared;
+  const bool is_local = tv->getMemoryType() == MemoryType::Local;
+
+  if (!((loop_id->isBlockDim() && (is_shared || is_local)) ||
+        (loop_id->isThread() && is_local))) {
+    return false;
+  }
+
+  // If this is for a consumer, the above check is sufficient
+  if (as_consumer) {
+    return true;
+  }
+
+  // Note && TODO:
+  // mma swizzled lane_id does not map naturally from producer
+  // to consumer but they should still be detected as same
+  // parallel type. In a follow up may want to extend
+  // find_matching_parallel_domain to cover this case.
+  if (within_mma_loops && loop_id->getParallelType() == ParallelType::TIDx) {
+    return true;
+  }
+
+  // When indexing a producer, additional checks are required as
+  // mentioned above
+  auto producer_tv = tv;
+  auto it = std::find_if(
+      tv->domain()->domain().begin(),
+      tv->domain()->domain().end(),
+      [&](IterDomain* tv_id) {
+        // Matching is done using the index and loop maps. See
+        // validateParallelize as well.
+        return ca_map->areMapped(loop_id, tv_id, IdMappingMode::EXACT) ||
+            ca_map->areMapped(loop_id, tv_id, IdMappingMode::PERMISSIVE);
+      });
+
+  // There's no mapped producer ID. Zero substitution shouldn't be
+  // done.
+  if (it == tv->domain()->domain().end()) {
+    return false;
+  }
+
+  // Producer ID that corresponds to the loop ID
+  IterDomain* producer_id = *it;
+
+  // If the loop PT and producer PT are the same, the producer ID can
+  // be indexed as just zero. Otherwise, it must use the loop parallel
+  // type as its index.
+
+  // Sanity check when not substituted, i.e., when the producer ID
+  // uses a different as the loop PT. Not necessary as these
+  // conditions are already validated, but just double checking.
+
+  if (loop_id->getParallelType() != producer_id->getParallelType()) {
+    TORCH_INTERNAL_ASSERT(
+        (loop_id->isBlockDim() && !producer_id->isBlockDim()) ||
+            (loop_id->isThreadDim() && !producer_id->isThread()),
+        "Found invalid parallelization that should have been detected by the parallel validation: loop ID: ",
+        loop_id->toString(),
+        ", producer: ",
+        producer_tv->toString());
+  }
+
+  return producer_id->getParallelType() == loop_id->getParallelType();
+}
+
+} // namespace
 
 // Used for local and shared index mapping. Returns a map from loops
 // to loop indices as well as a set of loops that do not contribute to
@@ -1168,7 +1231,6 @@ indexMapFromTV(
 
   const bool is_global = tv->getMemoryType() == MemoryType::Global;
   const bool is_shared = tv->getMemoryType() == MemoryType::Shared;
-  const bool is_local = tv->getMemoryType() == MemoryType::Local;
 
   std::unordered_map<kir::ForLoop*, Val*> loop_to_ind_map;
 
@@ -1179,35 +1241,6 @@ indexMapFromTV(
         return fl->iter_domain()->isMma();
       });
 
-  // When indexed as a producer, the parallel types of the the
-  // producer domains may not be the same as those of the loops, but
-  // that's still valid parallelization. However, in that case, using
-  // the parallel types of the loops to decide replacement of indices
-  // with zero isn't valid. That's only valid when there's a matching
-  // IterDomain in the producer tensor that has the same parallel
-  // type.
-  auto find_matching_parallel_domain = [tv](IterDomain* id) -> bool {
-    const auto gpu_lower = GpuLower::current();
-    auto it = std::find_if(
-        tv->domain()->domain().begin(),
-        tv->domain()->domain().end(),
-        [&](IterDomain* tv_id) {
-          // Matching is done using the index and loop maps. See
-          // validateParallelize as well.
-          return gpu_lower->caMap()->areMapped(
-                     id, tv_id, IdMappingMode::EXACT) ||
-              (GpuLower::current()->caMap()->areMapped(
-                   id, tv_id, IdMappingMode::PERMISSIVE) &&
-               ir_utils::derivedFromRootCAAxes(tv, tv_id));
-        });
-    if (it == tv->domain()->domain().end()) {
-      return false;
-    }
-
-    auto corresponding_domain = *it;
-    return corresponding_domain->getParallelType() == id->getParallelType();
-  };
-
   // Track domains that do not contibute to the resulting
   // index. Previously, index->isZeroInt() was used to detect such
   // domains, but that's not a reliable method as we may set an
@@ -1216,15 +1249,6 @@ indexMapFromTV(
 
   for (auto loop : loops) {
     Val* idx = nullptr;
-    const auto same_parallel_type = as_consumer ||
-        find_matching_parallel_domain(loop->iter_domain()) ||
-        // Note && TODO:
-        //  mma swizzled lane_id does not map naturally from producer
-        //   to consumer but they should still be detected as same
-        //   parallel type. In a follow up may want to extent
-        //   find_matching_parallel_domain to cover this case.
-        (within_mma_loops &&
-         loop->iter_domain()->getParallelType() == ParallelType::TIDx);
     // See also LoopNestGenerator::pushAlloc.
     // NOLINTNEXTLINE(bugprone-branch-clone)
     if (!within_alloc) {
@@ -1235,33 +1259,8 @@ indexMapFromTV(
         idx = GpuLower::current()->kernel()->zeroVal();
         zero_loops.insert(loop);
       }
-    } else if (
-        // For shared-memory tensors, when a domain is parallelized by
-        // BID, the index can be replaced with zero as long as the
-        // tensor has a matching domain that has the same parallel
-        // type. Matching can be omitted when indexed as a consumer
-        // since it is always the case. When indexed as a producer, to
-        // replace it with zero, the same parallel type of BID must be
-        // used by the producer tensor. Thus, since this is a shared
-        // memory tensor, when a producer domain is parallelized by
-        // BID, there must be a matching consumer domain with the same
-        // parallel type, which must be the IterDomain of the
-        // loop.
-        (loop->iter_domain()->isBlockDim() && is_shared &&
-         same_parallel_type) ||
-        // Similarly for local memory tensors, zero replacement can be
-        // only done when there's a matching domain with the same
-        // parallel type
-        (loop->iter_domain()->isThread() && is_local && same_parallel_type) ||
-        // MMA operands are currently indexed in units of "fragments",
-        //  so each mma tensor domain would be zero-ed and the tensor index
-        //  calculated here would be the fragment index.
-        // TODO: This is a quick WAR to enable iterating over a register array
-        //  of MMA fragments, so we could generate unrolled mma loops.
-        //  Eventually we still want IdGraph to be able to analyze the
-        //  in-register layout of mma fragments for more unified indexing math
-        //  as well as more flexibility in swizzling loops.
-        (loop->iter_domain()->isMma() && !as_consumer)) {
+    } else if (isParallelLoopIndexSubstitutedAsZero(
+                   tv, loop->iter_domain(), as_consumer, within_mma_loops)) {
       idx = GpuLower::current()->kernel()->zeroVal();
       zero_loops.insert(loop);
     } else {
@@ -1359,12 +1358,6 @@ c10::optional<IterDomain*> getMaybeIndexedIdToHoist(
     Val* index) {
   if (isOptionDisabled(DisableOption::IndexHoist) ||
       index->definition() == nullptr) {
-    return c10::nullopt;
-  }
-
-  // The old swizzle interface, which should be deprecated, is not
-  // supported.
-  if (tv->swizzleType() != SwizzleType::NoSwizzle) {
     return c10::nullopt;
   }
 
@@ -2560,7 +2553,7 @@ std::vector<PredicateDomainInfo> getPredicateContigIds(
       predicate_contiguity,
       final_ids,
       concrete_index_map,
-      GpuLower::current()->divisbleSplitSet(),
+      GpuLower::current()->divisibleSplitSet(),
       GpuLower::current()->caMap(),
       GpuLower::current()->haloInfo(),
       GpuLower::current()->concretizedBroadcastDomains(),

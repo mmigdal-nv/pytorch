@@ -118,6 +118,7 @@ enum class ExprType {
   ReductionOp,
   GroupedReductionOp,
   BroadcastOp,
+  SqueezeOp,
   WelfordOp,
   GroupedWelfordOp,
   MmaOp,
@@ -322,8 +323,6 @@ enum class IterType {
   Stride,
   VectorComponent
 };
-
-enum class SwizzleType { NoSwizzle, Transpose };
 
 // Used for Iteration Domain mapping modes in ComputeAtMap
 enum class IdMappingMode { PERMISSIVE, EXACT, LOOP };

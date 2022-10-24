@@ -509,7 +509,10 @@ std::pair<TensorDomain*, unsigned int> TransformReplay::replayCasP(
         it != replay_CasP.getReplay().end(),
         "Could not find axis, ",
         p_id,
-        ", requested in replay.");
+        ", requested in replaying consumer ",
+        consumer,
+        " as producer ",
+        producer);
     TORCH_INTERNAL_ASSERT(
         leaf_ids.find(it->second) != leaf_ids.end(),
         "Replayed id to match producer id ",
@@ -705,7 +708,7 @@ int TransformReplay::getMatchedLeafPosWithoutReplayPasC(
 
   auto disjoint_sets =
       BestEffortReplay::replayPasC(producer, consumer, -1, pairwise_map)
-          .getDisjointSets();
+          .getIterDomainEquivalence();
 
   int mismatched_consumer_pos = 0;
   int mismatched_producer_pos = 0;
@@ -778,7 +781,7 @@ int TransformReplay::getMatchedLeafPosWithoutReplayCasP(
 
   auto disjoint_sets =
       BestEffortReplay::replayPasC(producer, consumer, -1, pairwise_map)
-          .getDisjointSets();
+          .getIterDomainEquivalence();
 
   int mismatched_producer_pos = 0;
   int mismatched_consumer_pos = 0;

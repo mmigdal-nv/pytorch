@@ -247,7 +247,7 @@ TensorView* newOutputTV(const std::vector<Val*>& vals, DataType dtype) {
 
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       dtype);
 }
 
@@ -281,8 +281,9 @@ Val* newValLike(Val* val, DataType dtype) {
 
   const ValType vtype = val->getValType().value();
 
-  if (vtype == ValType::TensorView)
+  if (vtype == ValType::TensorView) {
     return newOutputTV({val}, dtype);
+  }
 
   return newScalar(vtype, dtype);
 }
@@ -1134,7 +1135,7 @@ static TensorView* newForReduction(
   }
 
   TensorDomain* td = IrBuilder::create<TensorDomain>(
-      new_domain, std::vector<bool>(new_domain.size(), true));
+      new_domain, TensorDomain::getContiguousContiguity(new_domain));
 
   data_type =
       data_type == DataType::Null ? tv->getDataType().value() : data_type;
@@ -1159,13 +1160,19 @@ TensorView* reductionOp(
     TensorView* tv,
     bool keep_dim /*=false*/,
     DataType dtype /* DataType::Null */) {
+  // TODO: should we use squeeze for size 1 broadcast dim?
+
   TORCH_CHECK(
       init->isConstScalar(),
       "Cannot create a reduction operation where the initial value is not a const scalar.");
 
   TORCH_CHECK(
       TensorDomain::sameAs(tv->getMaybeRFactorDomain(), tv->domain()->domain()),
-      "Reducing a tensor once it's gone under transformations is not permitted at this time. Please set reductions before calling split/merge/computeAt.");
+      "Reducing a tensor once it's gone under transformations is not permitted at this time. \n",
+      "Please set reductions before calling split/merge/computeAt.\n  RFactor: ",
+      tv->getMaybeRFactorDomain(),
+      "\n  Domain: ",
+      tv->domain()->toString());
 
   TORCH_CHECK(axes.size() > 0, "No reduction axis specified");
 
@@ -1183,7 +1190,7 @@ TensorView* reductionOp(
 
     TORCH_CHECK(
         axis >= 0 && axis < ndims,
-        "Reduction on invalid axis, recieved: ",
+        "Reduction on invalid axis, received: ",
         axis,
         " however tensor view only has ",
         ndims,
@@ -1327,7 +1334,7 @@ TensorView* broadcast(
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       inp->getDataType().value());
   IrBuilder::create<BroadcastOp>(out_tensor, inp, is_broadcast_dim);
   return out_tensor;
@@ -1397,7 +1404,7 @@ TensorView* expand(TensorView* inp, const std::vector<Val*>& expanded_sizes) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       inp->getDataType().value());
   if (!expanded) {
     IrBuilder::create<UnaryOp>(UnaryOpType::Set, out_tensor, inp);
@@ -1457,7 +1464,7 @@ TensorView* expand_as(TensorView* inp, TensorView* other) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       inp->getDataType().value());
   if (!expanded) {
     IrBuilder::create<UnaryOp>(UnaryOpType::Set, out_tensor, inp);
@@ -1474,8 +1481,12 @@ WelfordResult Welford(
     TensorView* init_var,
     Int* init_N) {
   TORCH_CHECK(
-      TensorDomain::sameAs(tv->getRootDomain(), tv->domain()->domain()),
-      "Reducing a tensor once it's gone under transformations is not permitted at this time. Please set reductions before calling split/merge/computeAt.");
+      TensorDomain::sameAs(tv->getMaybeRFactorDomain(), tv->domain()->domain()),
+      "Reducing a tensor once it's gone under transformations is not permitted at this time. \n",
+      "Please set reductions before calling split/merge/computeAt.\n  RFactor: ",
+      tv->getMaybeRFactorDomain(),
+      "\n  Domain: ",
+      tv->domain()->toString());
 
   TORCH_CHECK(tv->nDims() > 0, "Tried to reduce a 0-dim tensor");
   TORCH_CHECK(axes.size() > 0, "No reduction axis specified");
@@ -1518,7 +1529,7 @@ WelfordResult Welford(
 
     TORCH_CHECK(
         axis >= 0 && axis < ndims,
-        "Reduction on invalid axis, recieved: ",
+        "Reduction on invalid axis, received: ",
         axis,
         " however tensor view only has ",
         ndims,
@@ -2008,7 +2019,7 @@ TensorView* shift(
 
   out = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_dom, std::vector<bool>(out_dom.size(), true)),
+          out_dom, TensorDomain::getContiguousContiguity(out_dom)),
       inp->getDataType().value());
 
   IrBuilder::create<ShiftOp>(out, inp, offsets, pad_width);
@@ -2032,7 +2043,7 @@ TensorDomain* generateTensorDomainWithStrides(
        std::all_of(
            strides.begin(), strides.end(), [](int s) { return s == 1; }))) {
     return IrBuilder::create<TensorDomain>(
-        root_domains, std::vector<bool>(root_domains.size(), true));
+        root_domains, TensorDomain::getContiguousContiguity(root_domains));
   }
 
   for (const auto i : c10::irange(root_domains.size())) {
@@ -2049,13 +2060,11 @@ TensorDomain* generateTensorDomainWithStrides(
     strided_domains.push_back(split_out.second);
   }
 
-  auto contig_vector_size = strided_domains.size();
-
   auto strided_td = IrBuilder::create<TensorDomain>(
       root_domains,
       strided_domains,
       strided_domains,
-      std::vector<bool>(contig_vector_size, true));
+      TensorDomain::getContiguousContiguity(strided_domains));
 
   return strided_td;
 }
@@ -2198,7 +2207,7 @@ TORCH_CUDA_CU_API TensorView* viewAsScalar(TensorView* inp) {
   auto out = IrBuilder::create<TensorView>(
       inp->container(),
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       out_type);
 
   IrBuilder::create<ViewAsScalar>(inp->container(), out, inp, id);
@@ -2267,7 +2276,7 @@ static TensorView* newForMma(
   }
 
   TensorDomain* td = IrBuilder::create<TensorDomain>(
-      new_domain, std::vector<bool>(new_domain.size(), true));
+      new_domain, TensorDomain::getContiguousContiguity(new_domain));
 
   return IrBuilder::create<TensorView>(td, data_type);
 }
@@ -2319,7 +2328,7 @@ TensorView* fusedMultiplySum(
 
     TORCH_CHECK(
         axis >= 0 && axis < ndims,
-        "Reduction on invalid axis, recieved: ",
+        "Reduction on invalid axis, received: ",
         axis,
         " however tensor view only has ",
         ndims,

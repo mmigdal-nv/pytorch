@@ -72,9 +72,11 @@ void ReplayTransformations::handle(Merge* m) {
   auto it_inner = id_map_.find(id_inner);
 
   const bool outer_found = it_outer != id_map_.end();
-  const bool outer_bcast = id_outer->isBroadcast();
+  const bool outer_bcast =
+      id_outer->isBroadcast() || id_outer->isTrivialReduction();
   const bool inner_found = it_inner != id_map_.end();
-  const bool inner_bcast = id_inner->isBroadcast();
+  const bool inner_bcast =
+      id_inner->isBroadcast() || id_outer->isTrivialReduction();
 
   // If either are not found
   if (!outer_found || !inner_found) {
@@ -751,12 +753,86 @@ struct ProducerForwardingInfo {
   // inputs, but maybe in the future we'll have more.
   std::unordered_map<IterDomain*, std::vector<IterDomain*>> compliment_map;
 
-  ProducerForwardingInfo(const TensorView* producer) {
+  ProducerForwardingInfo(
+      const TensorView* producer,
+      const TensorView* consumer) {
     std::vector<Expr*> producer_history = StmtSort::getExprs(
         FusionGuard::getCurFusion(),
         std::vector<Val*>(
             producer->domain()->domain().begin(),
             producer->domain()->domain().end()));
+
+    // !!!!!! squeeze !!!!!!
+
+    // Collect which root axes are in producer that are not in consumer because
+    // of squeeze
+    std::unordered_set<IterDomain*> producer_bcast_roots_not_in_consumer;
+
+    const auto p2c_root_map =
+        PairwiseRootDomainMap(producer, consumer)
+            .mapProducerToConsumer(producer->domain(), consumer->domain());
+
+    for (auto producer_root_id : producer->getMaybeRFactorDomain()) {
+      if (producer_root_id->isBroadcast()) {
+        if (p2c_root_map.find(producer_root_id) == p2c_root_map.end()) {
+          producer_bcast_roots_not_in_consumer.emplace(producer_root_id);
+        }
+      }
+    }
+
+    // We have root axes in producer that don't exist in consumer, now forward
+    // those to include all id's in producer comprised of only axes not in
+    // consumer.
+    auto producer_bcast_ids_not_in_consumer =
+        producer_bcast_roots_not_in_consumer;
+
+    auto isIdOnlyInProducer =
+        [&producer_bcast_ids_not_in_consumer](IterDomain* input_id) {
+          return producer_bcast_ids_not_in_consumer.find(input_id) !=
+              producer_bcast_ids_not_in_consumer.end();
+        };
+
+    for (auto expr : producer_history) {
+      auto input_ids = ir_utils::filterByType<IterDomain>(expr->inputs());
+      // If expr inputs are all in producer_bcast_ids_not_in_consumer, than so
+      // are all outputs
+      if (std::all_of(input_ids.begin(), input_ids.end(), isIdOnlyInProducer)) {
+        // add all outputs to not being in producer
+        for (auto output_ids :
+             ir_utils::filterByType<IterDomain>(expr->outputs())) {
+          producer_bcast_ids_not_in_consumer.emplace(output_ids);
+        }
+      } else if (
+          expr->isA<Merge>() &&
+          std::any_of(input_ids.begin(), input_ids.end(), isIdOnlyInProducer)) {
+        auto merge_expr = expr->as<Merge>();
+        // If
+        // - one of the inputs is made of id's in producer that don't map to
+        // consumer (squeeze axes),
+        // - && the other input maps to an id in both consumer and producer
+        // - && this is a merge
+        //   for the sake of BestEffortReplay we can forward the input mapping
+        //   to both consumer and producer to the output of the expression
+        std::vector<IterDomain*> forwarded_ids;
+        std::vector<IterDomain*> compliment_ids;
+
+        for (auto input_id : input_ids) {
+          if (!isIdOnlyInProducer(input_id)) {
+            forwarded_ids.emplace_back(input_id);
+            forwarding_map.emplace(std::make_pair(input_id, merge_expr->out()));
+          } else {
+            compliment_ids.push_back(input_id);
+          }
+        }
+
+        // Set up compliment map
+        for (auto forwarded_id : forwarded_ids) {
+          compliment_map.emplace(std::make_pair(forwarded_id, compliment_ids));
+        }
+      }
+    }
+
+    // !!!!!! trivial reduction !!!!!!
 
     for (auto merge : ir_utils::filterByType<Merge>(producer_history)) {
       auto inner = merge->inner();
@@ -939,7 +1015,7 @@ BestEffortReplay BestEffortReplay::replayCasP(
   // See FusionAdvancedComputeAt7 for an example of the forwarding logic
   ConsumerForwardingInfo consumer_forwarding_info(producer, consumer);
 
-  ProducerForwardingInfo producer_forwarding_info(producer);
+  ProducerForwardingInfo producer_forwarding_info(producer, consumer);
 
   auto consumer_replay = BestEffortReplay(
       consumer->domain()->domain(),
@@ -994,7 +1070,7 @@ BestEffortReplay BestEffortReplay::replayPasC(
 
   ConsumerForwardingInfo consumer_forwarding_info(producer, consumer);
 
-  ProducerForwardingInfo producer_forwarding_info(producer);
+  ProducerForwardingInfo producer_forwarding_info(producer, consumer);
 
   // Instead of replaying from the root, lets try to play forward the history
   // of producer if they match ops on consumer. Enforce if we modify an
@@ -1055,7 +1131,7 @@ void BestEffortReplay::skipSwizzles(
   }
 }
 
-DisjointSets<IterDomain*> BestEffortReplay::getDisjointSets() {
+DisjointSets<IterDomain*> BestEffortReplay::getIterDomainEquivalence() {
   DisjointSets<IterDomain*> result;
   const std::unordered_map<IterDomain*, IterDomain*>* maps[3] = {
       &target2replay_id_map_, &replay_forward_id_map_, &target_forward_id_map_};

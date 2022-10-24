@@ -460,6 +460,59 @@ IndexingParameters getNonGlobalInitialIndexParameters(
   return index_parameters;
 }
 
+// Return true if it is sufficient to predicate the end of the loop
+// iteration. An aligned vectorized loop is one example where it is
+// guaranteed to be valid by the validation checks. More generally,
+// the divisible split set is used to find such loops. The divisible
+// split set contains splits used in view transformations as well as
+// those whose output domains are vectorized. View transformations
+// guarantee that any split involved is divisible, whereas
+// vectorization only guarantees that the overall root extent is
+// divisible by the split factor. Thus, if a loop IterDomain is
+// an output of a split included in the divisible view splits, we can
+// just predicate the end of the loop iteration. If a loop IterDomain
+// is an output of a divisible split due to vectorization, it is only
+// valid when the loop IterDomain is mapped with the vectorized inner
+// output IterDomain. If it is mapped with an outer IterDomain, since
+// the split input IterDomain may be an output IterDomain of a
+// non-divisible split, we still need to predicate each loop iteration
+// value.
+bool predicateAtEnd(kir::ForLoop* loop) {
+  auto loop_id = loop->iter_domain();
+  auto split = dynamic_cast<Split*>(loop_id->definition());
+  if (split == nullptr) {
+    return false;
+  }
+
+  bool is_divisible = GpuLower::current()->divisibleSplitSet().count(split) > 0;
+
+  if (!is_divisible) {
+    return false;
+  }
+
+  // Find the other output of the split
+  auto other_out_id =
+      split->inner() == loop_id ? split->outer() : split->inner();
+
+  // If the other output is mapped with a vectorized IterDomain,
+  // this IterDomain needs to be predicated at each iteration point.
+  const auto& other_id_exact_set = GpuLower::current()
+                                       ->caMap()
+                                       ->getIdSets(IdMappingMode::EXACT)
+                                       .getDisjointSetOf(other_out_id);
+
+  if (std::any_of(
+          other_id_exact_set.begin(), other_id_exact_set.end(), [](auto id) {
+            return id->getParallelType() == ParallelType::Vectorize;
+          })) {
+    return false;
+  }
+
+  // Now it is either loop_id is mapped with a vectorized IterDomain
+  // or it's an output of view transformations.
+  return true;
+}
+
 //! Initial index parameters for predicate, adjusts loop to indexing
 //!  may according to the information annotated on the loop nest.
 //!
@@ -493,91 +546,88 @@ IndexingParameters getPredicateInitialIndexParameters(
       std::inserter(loop_to_ind_map, loop_to_ind_map.begin()),
       [](kir::ForLoop* fl) { return std::make_pair(fl, fl->index()); });
 
-  // Generate unswitch loop to index map.
-  if (unswitch_or_vec_loop != nullptr) {
-    // Vectorized predicates are different from unswitch. Unswitch predicates
-    // all loops within the unswitch (the outer most unswitch) are generated
-    // with loop->extent-1 as the index. With vectorized predicates, only the
-    // vectorized loop should be like this.
-    bool vectorized_pred =
-        unswitch_or_vec_loop->iter_domain()->getParallelType() ==
-        ParallelType::Vectorize;
+  bool unswitch_pred = unswitch_or_vec_loop != nullptr &&
+      (unswitch_or_vec_loop->iter_domain()->getParallelType() ==
+           ParallelType::Unswitch ||
+       unswitch_or_vec_loop->iter_domain()->getParallelType() ==
+           ParallelType::Unroll);
 
-    bool within_unswitch = false;
+  // Vectorized predicates are different from unswitch. Unswitch predicates
+  // all loops within the unswitch (the outer most unswitch) are generated
+  // with loop->extent-1 as the index. With vectorized predicates, only the
+  // vectorized loop should be like this.
 
-    for (const auto loop_i : c10::irange(loops.size())) {
-      auto loop = loops[loop_i];
-      auto loop_id = loop->iter_domain();
-      auto loop_pt = loop_id->getParallelType();
-      auto ref_id = loop_domains.at(loop_i);
+  bool within_unswitch = false;
 
-      if (loop == unswitch_or_vec_loop) {
-        within_unswitch = true;
-      }
+  for (const auto loop_i : c10::irange(loops.size())) {
+    auto loop = loops[loop_i];
+    auto loop_id = loop->iter_domain();
+    auto loop_pt = loop_id->getParallelType();
+    auto ref_id = loop_domains.at(loop_i);
 
-      if (within_unswitch) {
-        // Rely on the reference to check broadcasting. The for loop could be
-        // broadcasted on a constant value from an unroll split. Since reference
-        // may convert this to an iter domain, that for loop could be valid to
-        // generate predication from.
+    if (!within_unswitch && unswitch_pred) {
+      within_unswitch = loop == unswitch_or_vec_loop;
+    }
 
-        // Note that loop->stop() is not used below. Instead,
-        // loop->iter_domain()->extent() is used, which is uniform
-        // across the mapped domains irrespective of halo. Predicates are
-        // compared with each to pick the most restrictive ones. The
-        // comparison is done by only using the offset, which is the
-        // term added to the index. So, the index term must be the
-        // same among all predicates, otherwise the comparison would
-        // be invalid. The effect by halo is added to the offset
-        // term. See getUnswitchStopOffset.
+    bool predicate_at_end =
+        within_unswitch || loop == unswitch_or_vec_loop || predicateAtEnd(loop);
 
-        if (ref_id->isBroadcast()) {
-          // Ignore indexing into broadcasted dimensions.
-          continue;
-        } else if (loop_id->isThread()) {
-          // When parallelized, if the loop stop is the same as the
-          // extent of the associated IterDomain, i.e., no extra
-          // iterations for halo, predicating with the threading index
-          // is sufficient for both the start and stop
-          // predicates. That isn't the case if the loop has halo, and
-          // in the case either the minimum and maximum values of the
-          // iteration domain needs to be used.
-          //
-          // Note: Better performance was obtained if using
-          // threadIdx in unswitch predicates was avoided. More
-          // specifically, in the Hdiff stencil example, instead of
-          // predicating with threadIdx.x for both the start and stop
-          // predicates, using zero and (blockDim.x - 1) for the start
-          // and stop predicates, respectively, resulted in less
-          // register pressure. The alternative codegen can be done by
-          // adding this to the first if condition:
-          // loop_id->isBlockDim(). This would not be a concern if the
-          // else part could be omitted, so canOmitElseClause should
-          // be used as well.
-          if (loop->stop() == loop_id->extent()) {
-            loop_to_ind_map[loop] = loop->start();
-          } else if (is_start_predicate) {
-            loop_to_ind_map[loop] = GpuLower::current()->kernel()->zeroVal();
-          } else {
-            // Note that the parallel dimension is used rather than
-            // loop-stop(). See the above comment.
-            loop_to_ind_map[loop] =
-                GpuLower::current()->parallelDimensionMap().get(loop_pt);
-          }
+    if (predicate_at_end) {
+      // Rely on the reference to check broadcasting. The for loop could be
+      // broadcasted on a constant value from an unroll split. Since reference
+      // may convert this to an iter domain, that for loop could be valid to
+      // generate predication from.
+
+      // Note that loop->stop() is not used below. Instead,
+      // loop->iter_domain()->extent() is used, which is uniform
+      // across the mapped domains irrespective of halo. Predicates are
+      // compared with each to pick the most restrictive ones. The
+      // comparison is done by only using the offset, which is the
+      // term added to the index. So, the index term must be the
+      // same among all predicates, otherwise the comparison would
+      // be invalid. The effect by halo is added to the offset
+      // term. See getUnswitchStopOffset.
+
+      if (ref_id->isBroadcast()) {
+        // Ignore indexing into broadcasted dimensions.
+        continue;
+      } else if (loop_id->isThread()) {
+        // When parallelized, if the loop stop is the same as the
+        // extent of the associated IterDomain, i.e., no extra
+        // iterations for halo, predicating with the threading index
+        // is sufficient for both the start and stop
+        // predicates. That isn't the case if the loop has halo, and
+        // in the case either the minimum and maximum values of the
+        // iteration domain needs to be used.
+        //
+        // Note: Better performance was obtained if using
+        // threadIdx in unswitch predicates was avoided. More
+        // specifically, in the Hdiff stencil example, instead of
+        // predicating with threadIdx.x for both the start and stop
+        // predicates, using zero and (blockDim.x - 1) for the start
+        // and stop predicates, respectively, resulted in less
+        // register pressure. The alternative codegen can be done by
+        // adding this to the first if condition:
+        // loop_id->isBlockDim(). This would not be a concern if the
+        // else part could be omitted, so canOmitElseClause should
+        // be used as well.
+        if (loop->stop() == loop_id->extent()) {
+          loop_to_ind_map[loop] = loop->start();
         } else if (is_start_predicate) {
           loop_to_ind_map[loop] = GpuLower::current()->kernel()->zeroVal();
         } else {
-          // Similar to the above, loop_id()->extent() is
-          // used here instead of loop->stop(). See the above comment.
-          loop_to_ind_map[loop] = SimplifyingIrBuilder::subExpr(
-              loop_id->extent(), GpuLower::current()->kernel()->oneVal());
+          // Note that the parallel dimension is used rather than
+          // loop-stop(). See the above comment.
+          loop_to_ind_map[loop] =
+              GpuLower::current()->parallelDimensionMap().get(loop_pt);
         }
-      }
-
-      // If a vectorized predicate, bail after the vectorized loop was found.
-      // Don't continue unswitching loops.
-      if (vectorized_pred && within_unswitch) {
-        break;
+      } else if (is_start_predicate) {
+        loop_to_ind_map[loop] = GpuLower::current()->kernel()->zeroVal();
+      } else {
+        // Similar to the above, loop_id()->extent() is
+        // used here instead of loop->stop(). See the above comment.
+        loop_to_ind_map[loop] = SimplifyingIrBuilder::subExpr(
+            loop_id->extent(), GpuLower::current()->kernel()->oneVal());
       }
     }
   }
@@ -667,129 +717,25 @@ IndexingParameters getPredicateInitialIndexParameters(
 
 } // namespace
 
-class LoopIndexingAnalysis {
- public:
-  static LoopIndexing fromLoopAndConsumer(
-      const std::vector<kir::ForLoop*>& loops,
-      const TensorView* consumer_tv) {
-    LoopIndexingAnalysis analysis(loops, consumer_tv);
-    return analysis.getLoopIndexing();
-  }
+LoopIndexing LoopIndexingAnalysis::fromLoopAndConsumer(
+    const std::vector<kir::ForLoop*>& loops,
+    const TensorView* consumer_tv) {
+  LoopIndexingAnalysis analysis(loops, consumer_tv);
+  return analysis.getLoopIndexing(loops);
+}
 
- private:
-  explicit LoopIndexingAnalysis(
-      const std::vector<kir::ForLoop*>& loops,
-      const TensorView* consumer_tv);
-
-  //! Populate derived information into a LoopIndexing
-  //!  data structure.
-  LoopIndexing getLoopIndexing() {
-    LoopIndexing indexing;
-    indexing.loops_ = loops_;
-    indexing.consumer_tv_ = consumer_tv_;
-    indexing.loop_root_ = loop_root_domains_;
-    indexing.loop_domains_ = loop_domains_.vector();
-    indexing.index_exprs_ = replayed_exprs_;
-    indexing.out_of_line_exprs_ = out_of_line_exprs_;
-    return indexing;
-  }
-
-  //! Validates that the current loop structure is well formed, in the sense
-  //! that ca_map would not map any two loops in the loop nest together.
-  void validateLoopStructure(const std::vector<kir::ForLoop*>& loops);
-
-  //! Start at the loop iter domains, and traverse back into history on the
-  //! concrete IDs in the exact map calling "visitExpr" expressions through the
-  //! history.
-  void traverseFromDomainVals();
-
-  //! Concretize the given iterdomain and record the visit (in deterministic
-  //! order) in terms of the exact mapped concrete id. Marks the mapping of the
-  //! id to the concrete id in "concrete_to_original_id_" and returns the
-  //! concrete id.
-  IterDomain* concretizeAndVisitId(IterDomain* id);
-
-  //! If an equivalent expression has already been processed this function
-  //! simply returns. Otherwise puts the exact concrete IDs of inputs in
-  //! consumed_concrete_, and concrete IDs of outputs in produced_concrete_.
-  //! Then adds the expression to replayed_exprs_.
-  void visitExpr(Expr* expr);
-
-  //! Iterates through provided vals, calls concretizeAndVisitId on them, and
-  //! returns if any of the returned vals are in existing_ids. This is used to
-  //! check if inputs or outputs of ID expressions have already been
-  //! produced/consumed in the traversal. Indexing only needs to consume/produce
-  //! one IterDomain per exact disjoint set.
-  bool visitIdsAndCheckDuplication(
-      const std::vector<Val*>& vals,
-      const std::unordered_set<IterDomain*>& existing_ids);
-
-  //! Fills loop_domains_ with the corresponding replayed_concrete_id mapping to
-  //! the provided loops. Must be done after the exact iterdomain "replay"
-  //! (traverseFromDomainVals). loop_domains_ are the original_id not the
-  //! concrete_id (translated with concrete_to_original_id). These iter domains
-  //! are used to grab the history that will be replayed in IndexCompute. We're
-  //! looking for "new" root domains and subsequent transformations, filling in
-  //! any missing "outputs" (or inputs for backward traversal). Then fills
-  //! loop_domains_ with all of these iter domains.
-  void constructLoopDomains();
-
-  //! Fills out_of_line_exprs_ by traversing the selected list of
-  //!  expressions in reverse topological order and collect iterdomains
-  //!  on the indexing paths that only involves leaf id's on the right
-  //!  of consumer's ca axis.
-  void collectOutOfLineExprs();
-
- private:
-  //! Original loop nest input to derive info from.
-  const std::vector<kir::ForLoop*>& loops_;
-
-  //! Original consumer tv to derive view info from.
-  const TensorView* consumer_tv_ = nullptr;
-
-  // Exact concrete domains that has been used
-  //  in the traversal connection.
-  std::unordered_set<IterDomain*> produced_concrete_;
-  std::unordered_set<IterDomain*> consumed_concrete_;
-
-  //! Iterdomains that the corresponding loops are generated from.
-  std::vector<IterDomain*> initial_loop_domain_ids_;
-
-  //! All Id's in consumer's transform history
-  std::vector<Val*> all_consumer_id_vals_;
-
-  //! Concrete iterdomains visited in the domain traversal,
-  //!  in the order they are visited in traverseFromDomainVals.
-  VectorOfUniqueEntries<IterDomain*> replayed_concrete_ids_;
-
-  //! Keeping track of the original visited id's before they
-  //!  were concretized.
-  std::unordered_map<IterDomain*, IterDomain*> concrete_to_original_id_;
-
-  //! Map from concrete id to its single consumer on the selected
-  //!  iterdomain expression list.
-  std::unordered_map<IterDomain*, Expr*> concrete_id_to_consumer_;
-
-  //! Source domains that all the Iterdomain transforms
-  //!  in the loop nest originated from.
-  std::vector<IterDomain*> loop_root_domains_;
-
-  //! Leaf domains representing the original loop structure
-  VectorOfUniqueEntries<IterDomain*> loop_domains_;
-
-  //! Selected list of exprs that will produce and consume each
-  //!  of the exact concrete ids from the loop nest exactly once.
-  std::vector<Expr*> replayed_exprs_;
-
-  //! Set of expressions from the selected list that can be
-  //!  resolved from axes on the right of ca axes.
-  std::vector<Expr*> out_of_line_exprs_;
-};
+VectorOfUniqueEntries<IterDomain*> LoopIndexingAnalysis::
+    getReplayableConcreteIDs(
+        const std::vector<IterDomain*>& consumer_leaf_ids,
+        const TensorView* consumer_tv) {
+  LoopIndexingAnalysis analysis(consumer_leaf_ids, consumer_tv);
+  return analysis.replayed_concrete_ids_;
+}
 
 LoopIndexingAnalysis::LoopIndexingAnalysis(
     const std::vector<kir::ForLoop*>& loops,
     const TensorView* consumer_tv)
-    : loops_(loops), consumer_tv_(consumer_tv) {
+    : consumer_tv_(consumer_tv) {
   // Validate consistency in given loop nest
   validateLoopStructure(loops);
 
@@ -800,12 +746,43 @@ LoopIndexingAnalysis::LoopIndexingAnalysis(
       std::back_inserter(initial_loop_domain_ids_),
       [](kir::ForLoop* fl) { return fl->iter_domain(); });
 
+  run();
+}
+
+LoopIndexingAnalysis::LoopIndexingAnalysis(
+    const std::vector<IterDomain*>& consumer_leaf_ids,
+    const TensorView* consumer_tv)
+    : consumer_tv_(consumer_tv) {
+  // Populate initial loop iter domains.
+  std::transform(
+      consumer_leaf_ids.begin(),
+      consumer_leaf_ids.end(),
+      std::back_inserter(initial_loop_domain_ids_),
+      [&](IterDomain* consumer_leaf_id) {
+        // Make sure consumer_leaf_id is indeed a consumer leaf ID
+        TORCH_INTERNAL_ASSERT(
+            std::find(
+                consumer_tv->domain()->domain().begin(),
+                consumer_tv->domain()->domain().end(),
+                consumer_leaf_id) != consumer_tv->domain()->domain().end(),
+            "Not a consumer leaf ID: ",
+            consumer_leaf_id->toString(),
+            ", consumer: ",
+            consumer_tv->toString());
+        return GpuLower::current()->caMap()->getConcreteMappedID(
+            consumer_leaf_id, IdMappingMode::LOOP);
+      });
+
+  run();
+}
+
+void LoopIndexingAnalysis::run() {
   // Collect consumer id's for view rfactor traversal.
   all_consumer_id_vals_ = DependencyCheck::getAllValsBetween(
-      {consumer_tv->getRootDomain().begin(),
-       consumer_tv->getRootDomain().end()},
-      {consumer_tv->domain()->domain().begin(),
-       consumer_tv->domain()->domain().end()});
+      {consumer_tv_->getRootDomain().begin(),
+       consumer_tv_->getRootDomain().end()},
+      {consumer_tv_->domain()->domain().begin(),
+       consumer_tv_->domain()->domain().end()});
 
   // Resolve definition of each exact concrete id's involved in the whole loop
   // nest transform history
@@ -997,36 +974,18 @@ void LoopIndexingAnalysis::constructLoopDomains() {
               !concrete_id_to_consumer_.count(concrete_id) &&
               // Use permissive map so the selected ID indeed represents the
               // loop.
-              // Note: see PR https://github.com/csarofeen/pytorch/pull/1960
-              //  and issue https://github.com/csarofeen/pytorch/issues/1873
               // This mapping look up is part of a staged indexing scheme.
               //  When we find a replayed exact id that exactly map to the loop
               //  id, this means that we can resolve indexing involved in this
               //  loop "locally", i.e. only with and with only the iterdomains
-              //  on the
-              //
-              //  given consumer tv.
+              //  on the given consumer tv.
               //  When we cannot find an exact mapping, the permissive mapping
-              //  would
-              //   help defering the indexing resolution for this loop nest
+              //  would help defering the indexing resolution for this loop nest
               //   level to other iterdomain expressions from tv's that are
               //   further concretized and usually they are further down the
               //   consumer chain of the given consumer tv.
-              //
-              //  Intuitively exact mapping of two iterdomains should imply
-              //  permissive mapping
-              //   of them as well and if that was the case, only looking up
-              //   permissive mapping would be enough to address both of the
-              //   cases above.
-              //  FIXME: But currently exact mapping does not imply permissive
-              //  mapping (See issue:
-              //       https://github.com/csarofeen/pytorch/issues/1963)
-              // Which means we should check both exact and permissive mapping
-              // here.
-              (GpuLower::current()->caMap()->areMapped(
-                   concrete_id, loop_id, IdMappingMode::EXACT) ||
-               GpuLower::current()->caMap()->areMapped(
-                   concrete_id, loop_id, IdMappingMode::PERMISSIVE));
+              GpuLower::current()->caMap()->areMapped(
+                  concrete_id, loop_id, IdMappingMode::PERMISSIVE);
         });
 
     TORCH_INTERNAL_ASSERT(
@@ -1173,7 +1132,7 @@ IndexFromIdGraph getTensorIndexFromIdGraph(
       target_tv->domain()->contiguity(),
       {},
       indexing.indexMap(),
-      GpuLower::current()->divisbleSplitSet(),
+      GpuLower::current()->divisibleSplitSet(),
       GpuLower::current()->caMap(),
       GpuLower::current()->haloInfo(),
       GpuLower::current()->concretizedBroadcastDomains(),

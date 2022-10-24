@@ -344,6 +344,16 @@ struct SubstituteInExpr : public OptInDispatch {
         broadcast_expr->getBroadcastDimFlags());
   }
 
+  void handle(SqueezeOp* squeeze_expr) final {
+    auto out = reference_->sameAs(squeeze_expr->out()) ? substitute_
+                                                       : squeeze_expr->out();
+    auto in = reference_->sameAs(squeeze_expr->in()) ? substitute_
+                                                     : squeeze_expr->in();
+
+    expr_ = IrBuilder::create<SqueezeOp>(
+        squeeze_expr->container(), out, in, squeeze_expr->getSqueezeDimFlags());
+  }
+
   void handle(TransposeOp* transpose_expr) final {
     TORCH_INTERNAL_ASSERT(
         substitute_->isA<TensorView>(),
@@ -1059,6 +1069,43 @@ Val* replaceValInIndexVal(
     Val* index,
     const std::unordered_map<Val*, Val*>& replacement_map) {
   return ReplaceValInIndexVal::replace(index, replacement_map);
+}
+
+bool isSqueezeInput(const TensorView* tv) {
+  for (auto expr : tv->uses()) {
+    if (expr->isA<SqueezeOp>()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isSqueezedID(const TensorView* tv, const IterDomain* id) {
+  auto root_dom = TensorDomain::noReductions(tv->getMaybeRFactorDomain());
+  auto squeezes = ir_utils::filterByType<SqueezeOp>(tv->uses());
+  for (auto i : c10::irange(root_dom.size())) {
+    if (root_dom[i] != id) {
+      continue;
+    }
+    for (auto squeeze : squeezes) {
+      if (squeeze->isSqueezeDim(i)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+std::vector<IterDomain*> allIDsOf(const TensorView* tv) {
+  const auto& root_domain = tv->getRootDomain();
+  const auto& domain = tv->domain()->domain();
+  // Grab all values in the history of the tensor view's domain
+  auto all_vals = DependencyCheck::getAllValsBetween(
+      {root_domain.begin(), root_domain.end()}, {domain.begin(), domain.end()});
+
+  // Filter so we only have iteration domains (ignore Ints used in split)
+  auto all_ids = ir_utils::filterByType<IterDomain>(all_vals);
+  return std::vector<IterDomain*>(all_ids.begin(), all_ids.end());
 }
 
 } // namespace ir_utils

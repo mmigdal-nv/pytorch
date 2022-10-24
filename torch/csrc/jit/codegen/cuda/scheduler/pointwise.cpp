@@ -110,7 +110,12 @@ std::shared_ptr<PointwiseParams> getPointwiseHeuristics(
         (int64_t)dataTypeSize(inp->getDataType().value(), index_type));
   }
 
-  auto ref_root = largest_out->getMaybeRFactorDomain();
+  // We always cacheBefore output at the beginning of the scheduling. And after
+  // cacheBefore, the reference tensor will have all reduction IDs removed.
+  // TODO: clean this up when we kill trivial reduction.
+  auto ref_root =
+      TensorDomain::noReductions(largest_out->getMaybeRFactorDomain());
+
   std::vector<int64_t> elem_counts(ref_root.size(), 1);
   int64_t n_elems = 1;
   for (size_t ref_i = 0; ref_i < ref_root.size(); ref_i++) {
@@ -485,36 +490,10 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
   int rhs_i = -1;
   int lhs_i = -1;
 
-  auto view_ops = ir_utils::getViewOps(fusion);
-
-  /*
-   * If there's no path from reference through producer paths only to a view,
-   * e.g.: input
-   *      /  \
-   *   view reference
-   *    /
-   * output
-   *
-   * we need to propagate the view transformations to the reference tv before
-   * scheduling the reference tv. Since view ops have to be identical, if any
-   * path from reference tv through producers goes through a view, all paths
-   * from reference tv's to views should be through producers.
-   */
-  bool needs_view_prop =
-      view_ops.size() > 0 &&
-      !std::any_of(
-          view_ops.begin(), view_ops.end(), [&reference_tv](ViewOp* view) {
-            return DependencyCheck::isDependencyOf(view->out(), reference_tv) ||
-                view->out()->sameAs(reference_tv);
-          });
-
-  if (needs_view_prop) {
-    auto first_view_op = *view_ops.begin();
-
-    // Propagate the view transformations
-    TransformPropagator propagator(first_view_op->out());
-    MaxRootDomainInfoSpanningTree spanning_tree(first_view_op->out());
-    spanning_tree.traverse(&propagator);
+  if (ir_utils::getViewOps(fusion).size() > 0) {
+    ComputeAtMap ca_map(fusion);
+    // Propagate view transforms through the graph, expecially the reference.
+    scheduler_utils::propagateViewTransforms(fusion, ca_map);
 
     // Reorder reference_tv after propagating the view operation. This will
     // reorder for better merging.
@@ -790,13 +769,15 @@ void schedulePointwise(Fusion* fusion, const PointwiseParams& params) {
       vectorized_tvs.insert(
           vectorized_tvs.end(), consumer_tvs.begin(), consumer_tvs.end());
     }
-    // Aggressively mark with vectorized and cleanup later. That way we
-    // don't have to manually specify parallelization outside the reference.
-    vectorize_id->parallelize(ParallelType::Vectorize);
-    scheduler_utils::parallelizeAllLike(
-        reference_tv, vectorized_tvs, {ParallelType::Vectorize});
-    if (!should_vectorize_reference_tv) {
-      vectorize_id->parallelize(ParallelType::Serial);
+    if (!vectorized_tvs.empty()) {
+      // Aggressively mark with vectorized and cleanup later. That way we
+      // don't have to manually specify parallelization outside the reference.
+      vectorize_id->parallelize(ParallelType::Vectorize);
+      scheduler_utils::parallelizeAllLike(
+          reference_tv, vectorized_tvs, {ParallelType::Vectorize});
+      if (!should_vectorize_reference_tv) {
+        vectorize_id->parallelize(ParallelType::Serial);
+      }
     }
   }
 

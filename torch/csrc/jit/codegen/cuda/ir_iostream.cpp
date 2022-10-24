@@ -582,6 +582,11 @@ void IrPrinter::handle(const BroadcastOp* bop) {
   indent() << "   = broadcast( " << bop->in() << " )\n";
 }
 
+void IrPrinter::handle(const SqueezeOp* bop) {
+  indent() << bop->out() << "\n";
+  indent() << "   = squeeze( " << bop->in() << " )\n";
+}
+
 void IrPrinter::handle(const Split* s) {
   os_ << (s->innerSplit() ? "Split: " : "Outer split: ");
   handle(s->in());
@@ -1071,6 +1076,8 @@ void IrTransformPrinter::printTransforms(TensorView* tv) {
     }
     os() << ")\n";
   }
+
+  os() << " contiguity: " << tv->domain()->contiguity() << "\n";
 
   auto from = tv->getMaybeRFactorDomain();
   auto all_exp = DependencyCheck::getAllExprsBetween(

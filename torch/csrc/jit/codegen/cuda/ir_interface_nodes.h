@@ -368,17 +368,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   // Reorder axes according to old2new[old_pos] = new_pos
   TensorView* reorder(const std::unordered_map<int, int>& old2new);
 
-  //! Swizzle indices to improve memory access efficiency.
-  //!
-  //! Swizzle::Transpose is a pattern commonly used to avoid bank
-  //! conflicts in shared memory. It takes two axes and shifts the
-  //! second axis by the first axis as ((axis1 + axis2) % extent). The
-  //! memory type must be Shared.
-  //!
-  //! \input type Swizzle pattern such as transpose.
-  //! \input axes Axes to swizzle
-  TensorView* swizzle(SwizzleType type, const std::vector<int>& axes);
-
   //! Swizzle the rectangular tile defined by the iterdomains corresponding
   //!  to the 2 given indices.
   TensorView* swizzle(
@@ -442,14 +431,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   }
 
   void setMemoryType(MemoryType mt);
-
-  SwizzleType swizzleType() const {
-    return swizzle_type_;
-  }
-
-  const std::vector<IterDomain*>& axesToSwizzle() const {
-    return axes_to_swizzle_;
-  }
 
   // Apply double buffering transformation
   void doubleBuffer();
@@ -628,8 +609,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   unsigned int compute_at_pos_ = 0;
   unsigned int max_producer_pos_ = 0;
   MemoryType memory_type_ = MemoryType::Local;
-  SwizzleType swizzle_type_ = SwizzleType::NoSwizzle;
-  std::vector<IterDomain*> axes_to_swizzle_;
   bool is_double_buffered_ = false;
 
   //! Indicates if the tensor is circular buffered.
@@ -694,6 +673,9 @@ class TORCH_CUDA_CU_API TensorViewBuilder {
   TensorViewBuilder& shape(std::vector<Val*> shape);
   TensorViewBuilder& shape(const std::vector<int64_t>& shape);
 
+  //! Set if a dimension is expanded
+  TensorViewBuilder& expanded(std::vector<bool> expanded);
+
   //! Creates a new TensorView with the specified options
   TensorView* build() const;
 
@@ -702,6 +684,7 @@ class TORCH_CUDA_CU_API TensorViewBuilder {
   DataType dtype_ = DataType::Float;
   std::vector<bool> contiguity_;
   std::vector<Val*> shape_;
+  std::vector<bool> expanded_;
 };
 
 } // namespace cuda

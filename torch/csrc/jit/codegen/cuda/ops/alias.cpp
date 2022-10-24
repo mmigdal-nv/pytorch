@@ -89,16 +89,16 @@ TensorView* view(
 
   auto view_analysis = analyzeView(x, original_sizes, new_sizes);
 
-  auto reduction = (!view_analysis.trivial_reduction_axes.empty())
-      ? sum(x,
-            view_analysis.trivial_reduction_axes,
-            false /* keep_dim */,
-            x->getDataType().value())
+  auto squeezed = std::any_of(
+                      view_analysis.squeeze_axes.begin(),
+                      view_analysis.squeeze_axes.end(),
+                      [](bool s) { return s; })
+      ? squeeze(x, view_analysis.squeeze_axes)
       : x;
 
   auto view = view_analysis.transforms.empty()
-      ? reduction
-      : applyViewTransforms(x, reduction, view_analysis);
+      ? squeezed
+      : applyViewTransforms(x, squeezed, view_analysis);
 
   auto bcasted = std::any_of(
                      view_analysis.broadcast_axes.begin(),
@@ -140,6 +140,44 @@ TensorView* flatten(TensorView* x, int64_t start_dim, int64_t end_dim) {
   return out;
 }
 
+TensorView* squeeze(TensorView* x, const std::vector<bool>& to_squeeze) {
+  TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
+  auto x_dom = x->domain()->noReductions();
+  const auto ndims = static_cast<int>(x_dom.size());
+
+  TORCH_INTERNAL_ASSERT(
+      ndims == to_squeeze.size(),
+      "Invalid to_squeeze for squeeze: ",
+      to_squeeze,
+      ". Input tensor: ",
+      x->toString());
+
+  std::vector<IterDomain*> out_domain;
+  for (const auto idx : c10::irange(ndims)) {
+    auto id = x_dom[idx];
+    if (to_squeeze[idx]) {
+      TORCH_CHECK(
+          id->isBroadcast(), "Can not squeeze non-broadcasting dimension(s).");
+      TORCH_CHECK(
+          !id->hasExpandedExtent(), "Can not squeeze expanded dimension(s).");
+      TORCH_CHECK(
+          id->extent()->isOneInt(),
+          "Can not squeeze dimension(s) with size != 1.");
+    } else {
+      out_domain.push_back(id->cloneWithoutRFactor());
+    }
+  }
+
+  auto out = IrBuilder::create<TensorView>(
+      IrBuilder::create<TensorDomain>(
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
+      *x->getDataType());
+
+  IrBuilder::create<SqueezeOp>(x->container(), out, x, to_squeeze);
+
+  return out;
+}
+
 TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes) {
   TORCH_INTERNAL_ASSERT(x != nullptr, "Input is invalid.");
   const auto ndims = static_cast<int>(x->domain()->noReductions().size());
@@ -151,17 +189,11 @@ TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes) {
       ". Input tensor: ",
       x->toString());
 
-  std::vector<int> trivial_reduction_axes;
+  std::vector<bool> to_squeeze(ndims);
   for (const auto idx : c10::irange(sizes.size())) {
-    if (sizes[idx] == 1) {
-      trivial_reduction_axes.push_back(idx);
-    }
+    to_squeeze[idx] = (sizes[idx] == 1);
   }
-  return (trivial_reduction_axes.empty()) ? x
-                                          : sum(x,
-                                                trivial_reduction_axes,
-                                                false /* keep_dim */,
-                                                x->getDataType().value());
+  return squeeze(x, to_squeeze);
 }
 
 TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes, int dim) {
@@ -187,7 +219,9 @@ TensorView* squeeze(TensorView* x, const std::vector<int64_t>& sizes, int dim) {
       x->toString());
 
   if (sizes[dim] == 1) {
-    return sum(x, {dim}, false /* keep_dim */, x->getDataType().value());
+    std::vector<bool> to_squeeze(ndims, false);
+    to_squeeze[dim] = true;
+    return squeeze(x, to_squeeze);
   } else {
     return set(x);
   }
@@ -244,7 +278,7 @@ TensorView* permute(TensorView* x, const std::vector<int64_t>& new2old) {
 
   TensorView* out_tensor = IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(
-          out_domain, std::vector<bool>(out_domain.size(), true)),
+          out_domain, TensorDomain::getContiguousContiguity(out_domain)),
       x->getDataType().value());
   IrBuilder::create<TransposeOp>(out_tensor, x, normalized_new2old);
   return out_tensor;
