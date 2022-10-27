@@ -3419,6 +3419,49 @@ TEST_F(NVFuserTest, FusionTestReEntrantGridWelford_CUDA) {
     tv->axis(-1)->parallelize(ParallelType::Serial);
   }
 
+  // Welford inputs and outputs should not be aliased. See PR #2118.
+  class AliasChecker : public kir::IrVisitor {
+   public:
+    using kir::IrVisitor::handle;
+
+    void handle(kir::Allocate* alloc) final {
+      if (alloc->alias() == nullptr) {
+        return;
+      }
+      auto tv = dynamic_cast<TensorView*>(alloc->buffer());
+      auto alias_tv = dynamic_cast<TensorView*>(alloc->alias()->buffer());
+      if (tv != nullptr && alias_tv != nullptr) {
+        alias_map_.emplace(tv, alias_tv);
+        alias_map_.emplace(alias_tv, tv);
+      }
+    }
+
+    void handle(kir::GridWelford* gwop) final {
+      for (auto out_ti : ir_utils::filterByType<kir::TensorIndex>(
+               gwop->welford_op()->outputs())) {
+        auto out_tv = out_ti->view();
+        if (alias_map_.count(out_tv) == 0) {
+          continue;
+        }
+        auto alias_tv = alias_map_.at(out_tv);
+        for (auto inp_ti : ir_utils::filterByType<kir::TensorIndex>(
+                 gwop->welford_op()->inputs())) {
+          TORCH_CHECK(
+              inp_ti->view() != alias_tv,
+              "Invalid alias found between GridWelford input and output. Out tv: ",
+              out_tv->toString(),
+              ", In tv: ",
+              alias_tv->toString());
+        }
+      }
+    }
+
+    std::unordered_map<TensorView*, TensorView*> alias_map_;
+  } checker;
+
+  GpuLower gpulw(&fusion);
+  checker.handle(gpulw.kernel()->topLevelExprs());
+
   FusionExecutor fe;
   fe.compileFusion(&fusion, {}, LaunchParams());
 
@@ -3741,6 +3784,11 @@ TEST_F(NVFuserTest, FusionSimpleSwizzle0_CUDA) {
 
   tv1->computeAt(tv2, 1);
   tv1->swizzle(Swizzle2DType::ZShape, -2, -1);
+
+  GpuLower gpulw(&fusion);
+  auto exprs = gpulw.kernel()->topLevelExprs();
+  auto str = ir_utils::toString(exprs);
+  TORCH_CHECK(str.find("ZShape2D") != string::npos);
 
   FusionExecutor fe;
   fe.compileFusion(&fusion);
@@ -6248,8 +6296,32 @@ TEST_F(NVFuserTest, FusionTrivialInputForwarding_CUDA) {
   testValidate(fusion, cg_outputs, {t0, t1}, {t0}, __LINE__, __FILE__);
 
   // Second run to ensure cache hit handles trivial forwarding properly
+  TORCH_CHECK(fec.isCompiled({t0, t1}));
   auto cg_outputs2 = fec.runFusionWithInputs({t0, t1});
   testValidate(fusion, cg_outputs2, {t0, t1}, {t0}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionTrivialInputForwarding2_CUDA) {
+  std::unique_ptr<Fusion> fusion_ptr = std::make_unique<Fusion>();
+  auto fusion = fusion_ptr.get();
+  FusionGuard fg(fusion);
+
+  TensorView* tv0 = makeSymbolicTensor(0);
+  fusion->addInput(tv0);
+  fusion->addOutput(tv0);
+
+  auto options = at::TensorOptions().dtype(kFloat).device(at::kCUDA, 0);
+  at::Tensor t0 = at::randn({}, options);
+
+  FusionExecutorCache fec(std::move(fusion_ptr));
+  auto cg_outputs = fec.runFusionWithInputs({t0});
+
+  testValidate(fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
+
+  // Second run to ensure cache hit handles trivial forwarding properly
+  TORCH_CHECK(fec.isCompiled({t0}));
+  auto cg_outputs2 = fec.runFusionWithInputs({t0});
+  testValidate(fusion, cg_outputs2, {t0}, {t0}, __LINE__, __FILE__);
 }
 
 // Simplified repro of issue #2008

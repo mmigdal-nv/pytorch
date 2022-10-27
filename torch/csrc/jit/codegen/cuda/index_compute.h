@@ -211,7 +211,8 @@ class IndexCompute : public BackwardVisitor {
   // returns a new IndexCompute ready to be used.
   IndexCompute updateIndexCompute(
       const TensorDomain* new_td,
-      const std::unordered_map<IterDomain*, IterDomain*>& id_map,
+      const std::unordered_map<IterDomain*, VectorOfUniqueEntries<IterDomain*>>&
+          id_map,
       const ContigIDs& contig_finder) const;
 
   // Interface to run index traversal through loop indexing analysis result to
@@ -250,6 +251,7 @@ class IndexSwizzle : public IndexCompute {
 
  private:
   const TensorView* tv_ = nullptr;
+  std::unordered_set<IterDomain*> swizzled_ids_;
 };
 
 //! Predicate information of a root or contiguous merged domain
