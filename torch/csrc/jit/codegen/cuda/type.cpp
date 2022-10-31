@@ -278,8 +278,6 @@ static const char* val_type2string(ValType t) {
       return "Predicate";
     case ValType::TensorIndex:
       return "TensorIndex";
-    case ValType::IntPair:
-      return "IntPair";
     default:
       TORCH_INTERNAL_ASSERT(false, "No string found for val type.");
   }
@@ -433,8 +431,12 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "abs";
     case UnaryOpType::Acos:
       return "acos";
+    case UnaryOpType::Acosh:
+      return "acosh";
     case UnaryOpType::Asin:
       return "asin";
+    case UnaryOpType::Asinh:
+      return "asinh";
     case UnaryOpType::Atan:
       return "atan";
     case UnaryOpType::Atanh:
@@ -449,12 +451,18 @@ static const char* unary_op_type2string(UnaryOpType t) {
       return "cosh";
     case UnaryOpType::Exp:
       return "exp";
+    case UnaryOpType::Exp2:
+      return "exp2";
     case UnaryOpType::Expm1:
       return "expm1";
     case UnaryOpType::Erf:
       return "erf";
     case UnaryOpType::Erfc:
       return "erfc";
+    case UnaryOpType::Erfinv:
+      return "erfinv";
+    case UnaryOpType::Erfcinv:
+      return "erfcinv";
     case UnaryOpType::Floor:
       return "floor";
     case UnaryOpType::Frac:
@@ -593,6 +601,10 @@ static const char* binary_op_type2string(BinaryOpType t) {
     // Logical Ops
     case BinaryOpType::And:
       return "and";
+    case BinaryOpType::Or:
+      return "or";
+    case BinaryOpType::Xor:
+      return "xor";
     case BinaryOpType::Eq:
       return "equal";
     case BinaryOpType::GE:

@@ -439,30 +439,6 @@ TensorView* TensorView::computeAt(
   return this;
 }
 
-TensorView* TensorView::computeWith(
-    TensorView* consumer,
-    int position,
-    ComputeAtMode mode) {
-  TORCH_INTERNAL_ASSERT(
-      !container()->isA<kir::Kernel>(),
-      "Function invalid for kernel container.");
-  // Make sure this and consumer are not the same tensor, that's illegal
-  TORCH_CHECK(!sameAs(consumer), "Cannot call this->computeAt(this, ...)");
-
-  // We support negative axes, so increment it by this->nDims() + 1 and make
-  // sure the result is within this->nDims() + 1. being at this->nDims()
-  // means producer will be computed inline with this, hence the +1.
-  if (position < 0)
-    position += int(this->nDims()) + 1;
-  TORCH_CHECK(
-      position >= 0 && (unsigned int)position < this->nDims() + 1,
-      "Compute at called on an position outside valid range.");
-
-  ComputeAt::runWith(this, consumer, (unsigned int)position, mode);
-
-  return this;
-}
-
 TensorView* TensorView::split(
     int axis_,
     Val* factor,
@@ -613,6 +589,11 @@ TensorView* TensorView::swizzle(
   if (y < 0) {
     y += domain()->nDims();
   }
+
+  TORCH_CHECK(
+      !(getMemoryType() == MemoryType::Global &&
+        swizzle_mode == SwizzleMode::Data),
+      "Data swizzle on global memory is not supported.");
 
   TORCH_CHECK(
       x >= (int)getComputeAtPosition(),

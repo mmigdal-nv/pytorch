@@ -2319,94 +2319,6 @@ TEST_F(NVFuserTest, FusionVectorizeContigIndexPointwiseSchedule_CUDA) {
   testValidate(&fusion, cg_outputs, {t0, t1}, {ref}, __LINE__, __FILE__);
 }
 
-// Repro of issue #1539.
-TEST_F(NVFuserTest, FusionTrivialReductionForwarding1_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeSymbolicTensor(1);
-  fusion.addInput(tv0);
-
-  auto tv1 = broadcast(tv0, {true, false});
-  auto tv2 = sum(tv1, {0});
-  auto tv3 = set(tv2);
-  fusion.addOutput(tv3);
-
-  tv2->merge(0);
-  tv2->split(0, 4);
-
-  TransformPropagatorWithCheck propagator(tv2);
-  MaxRootDomainInfoSpanningTree(tv2).traverse(&propagator);
-
-  // All tensors must be transformed to a 2D tensor with each axis
-  // mapped with each other in the LOOP map.
-  ComputeAtMap ca_map(&fusion);
-  for (auto tv : ir_utils::allTvs(&fusion)) {
-    TORCH_CHECK(
-        tv->nDims() == 2, "Expected to be a 2D tensor but: ", tv->toString());
-    for (const auto i : c10::irange(2)) {
-      TORCH_CHECK(ca_map.areMapped(
-          tv->axis(i), tv3->axis(i), IdMappingMode::PERMISSIVE));
-    }
-  }
-}
-
-TEST_F(NVFuserTest, FusionTrivialReductionForwarding2_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeSymbolicTensor(1);
-  fusion.addInput(tv0);
-
-  auto tv1 = broadcast(tv0, {true, false});
-  auto tv2 = sum(tv1, {0});
-  auto tv3 = add(tv2, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv3);
-
-  // Merging a trivial reduction with a non-reduction domain
-  tv2->merge(0, 1);
-  tv2->split(0, 4);
-
-  tv3->split(0, 4);
-
-  // tv2 and tv3 are different as tv3 lacks the trivial reduction, but
-  // they are mapped with each other by BestEffortReplay as the merge
-  // of trivial reduciton dim is forwarded.
-
-  PairwiseRootDomainMap root_map(tv2, tv3);
-
-  auto p2c = BestEffortReplay::replayCasP(tv3, tv2, 2, root_map).getReplay();
-  for (const auto i : c10::irange(tv2->nDims())) {
-    auto tv2_id = tv2->axis(i);
-    auto it = p2c.find(tv2_id);
-    TORCH_CHECK(
-        it != p2c.end(),
-        "Expected mapped consumer ID but not found: ",
-        tv2_id->toString());
-    auto tv3_mapped_id = it->second;
-    TORCH_CHECK(
-        tv3_mapped_id == tv3->axis(i),
-        "Unexpected mapped consumer ID: ",
-        tv3_mapped_id->toString());
-  }
-
-  auto c2p = BestEffortReplay::replayPasC(tv2, tv3, 2, root_map).getReplay();
-  for (const auto i : c10::irange(tv3->nDims())) {
-    auto tv3_id = tv3->axis(i);
-    auto it = c2p.find(tv3_id);
-    TORCH_CHECK(
-        it != c2p.end(),
-        "Expected mapped producer ID but not found: ",
-        tv3_id->toString());
-    auto tv2_mapped_id = it->second;
-    TORCH_CHECK(
-        tv2_mapped_id == tv2->axis(i),
-        "Unexpected mapped consumer ID: ",
-        tv2_mapped_id->toString());
-  }
-}
-
 TEST_F(NVFuserTest, FusionTrivialReductionForwarding3_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
@@ -3760,374 +3672,6 @@ TEST_F(NVFuserTest, FusionRedundantUseCheck_CUDA) {
       "TV4 is not redundantly used but not detected.");
 }
 
-// Test a basic swizzle pattern
-TEST_F(NVFuserTest, FusionSimpleSwizzle0_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 32});
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv2);
-
-  // Make a 2x8 Zshape tile
-  tv1->split(-1, 16);
-  tv1->split(-1, 8);
-  // [O, 2, 8]
-
-  tv2->split(-1, 16);
-  tv2->split(-1, 4);
-  //[O, 4, 4]
-
-  tv1->computeAt(tv2, 1);
-  tv1->swizzle(Swizzle2DType::ZShape, -2, -1);
-
-  GpuLower gpulw(&fusion);
-  auto exprs = gpulw.kernel()->topLevelExprs();
-  auto str = ir_utils::toString(exprs);
-  TORCH_CHECK(str.find("ZShape2D") != string::npos);
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  auto t0 = at::randn({2, 32}, options);
-  auto t2 = t0 + 2.0;
-  auto cg_outputs = fe.runFusion({t0});
-
-  testValidate(&fusion, cg_outputs, {t0}, {t2}, __LINE__, __FILE__);
-}
-
-// Test swizzle inlining
-TEST_F(NVFuserTest, FusionSimpleSwizzle1_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 32});
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-  auto tv3 = add(tv2, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv3);
-
-  // Make a 2x8 Zshape tile
-  tv2->split(-1, 16);
-  tv2->split(-1, 8);
-  // [O, 2, 8]
-
-  tv3->split(-1, 16);
-  tv3->split(-1, 4);
-  //[O, 4, 4]
-
-  tv2->computeAt(tv3, 1);
-  tv2->swizzle(Swizzle2DType::ZShape, -2, -1);
-
-  // Inlining a producer into a swizzled consumer is ok
-  tv1->computeAt(tv2, -1);
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  auto t0 = at::randn({2, 32}, options);
-  auto t3 = t0 + 3.0;
-  auto cg_outputs = fe.runFusion({t0});
-
-  testValidate(&fusion, cg_outputs, {t0}, {t3}, __LINE__, __FILE__);
-}
-
-// Test sync insertion and memory check in parallelized swizzles.
-//  In this test, data is parallel written into smem in zcurve
-//   pattern and then read out and output to global mem unswizzled.
-TEST_F(NVFuserTest, FusionSimpleSwizzle2_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({32, 32});
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv2);
-
-  tv1->swizzle(Swizzle2DType::ZShape, -2, -1);
-
-  tv1->axis(0)->parallelize(ParallelType::TIDx);
-  tv1->axis(1)->parallelize(ParallelType::TIDy);
-
-  tv2->axis(0)->parallelize(ParallelType::TIDx);
-  tv2->axis(1)->parallelize(ParallelType::TIDy);
-
-  // Validation should fail since TV1 is not in shared
-  //  memory as required by sync info pass.
-  ASSERT_ANY_THROW(GpuLower gpulw_throw(&fusion));
-
-  tv1->setMemoryType(MemoryType::Shared);
-
-  // Make sure that a sync is inserted:
-  bool sync_found = false;
-  GpuLower gpu_lw(&fusion);
-  auto flattened_exps =
-      ir_utils::flattenScopedExprs(gpu_lw.kernel()->topLevelExprs());
-
-  for (auto expr : flattened_exps) {
-    if (expr->isA<kir::BlockSync>()) {
-      sync_found = true;
-    }
-    // Will require a sync thread before any shared memory read.
-    for (auto inp_tv : ir_utils::filterByType<TensorView>(expr->inputs())) {
-      if (inp_tv->getMemoryType() == MemoryType::Shared) {
-        TORCH_INTERNAL_ASSERT(
-            sync_found, "Block sync required but not inserted");
-      }
-    }
-  }
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  auto t0 = at::randn({32, 32}, options);
-  auto t2 = t0 + 2.0;
-  auto cg_outputs = fe.runFusion({t0});
-
-  testValidate(&fusion, cg_outputs, {t0}, {t2}, __LINE__, __FILE__);
-}
-
-// Test BestEffortReplay behavior with swizzle op
-TEST_F(NVFuserTest, FusionSwizzleMapping_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 32});
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-  auto tv3 = add(tv2, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv3);
-
-  // Make a 2x8 Zshape tile
-  tv2->split(-1, 16);
-  tv2->split(-1, 8);
-  // [O, 2, 8]
-
-  tv3->split(-1, 16);
-  tv3->split(-1, 4);
-  //[O, 4, 4]
-
-  tv2->computeAt(tv3, 1);
-  tv2->swizzle(Swizzle2DType::ZShape, -2, -1);
-
-  // Inlining a producer into a swizzled consumer is ok
-  tv1->computeAt(tv2, -1);
-
-  // Check BestEffortReplay behavior with skip swizzles option on.
-  PairwiseRootDomainMap root_map(tv1, tv2);
-
-  // Check producer to consumer map,
-  //  i.e. unswizzled tensor to swizzled tensor map
-  //----------------------------------------------------------
-  auto p2c = BestEffortReplay::replayCasP(tv2, tv1, -1, root_map).getReplay();
-  auto swizzle_x_it0 = p2c.find(tv1->axis(-2));
-  auto swizzle_y_it0 = p2c.find(tv1->axis(-1));
-  // P2C map should exist and both the x and y map should
-  //  map to the output of the swizzle op.
-  TORCH_INTERNAL_ASSERT(
-      swizzle_x_it0 != p2c.end() && swizzle_y_it0 != p2c.end());
-  TORCH_INTERNAL_ASSERT(
-      swizzle_x_it0->second == tv2->axis(-2) &&
-      swizzle_y_it0->second == tv2->axis(-1));
-
-  // Check consumer to producer map,
-  //  i.e. swizzled tensor to unswizzled tensor map
-  //----------------------------------------------------------
-  auto c2p = BestEffortReplay::replayPasC(tv1, tv2, -1, root_map).getReplay();
-
-  auto swizzle_op = tv2->axis(-1)->definition()->as<Swizzle2D>();
-
-  // Find mapping for swizzle inputs
-  auto swizzle_x_it1 = c2p.find(swizzle_op->inX());
-  auto swizzle_y_it1 = c2p.find(swizzle_op->inY());
-
-  // Find mapping for swizzle outputs
-  auto swizzle_x_it2 = c2p.find(swizzle_op->outX());
-  auto swizzle_y_it2 = c2p.find(swizzle_op->outY());
-
-  // Input of swizzle ops will not be mapped to any
-  //  by BestEffortReplay, as BestEffortReplay has to be
-  //  one to one. IdGraph will further map them together.
-  TORCH_INTERNAL_ASSERT(
-      swizzle_x_it1 == c2p.end() && swizzle_y_it1 == c2p.end());
-
-  // Mapping for swizzle outputs should be mapped and should
-  //  also map to the corresponding axes on the unswizzled tensor.
-  TORCH_INTERNAL_ASSERT(
-      swizzle_x_it2 != c2p.end() && swizzle_y_it2 != c2p.end());
-  TORCH_INTERNAL_ASSERT(
-      swizzle_x_it2->second == tv1->axis(-2) &&
-      swizzle_y_it2->second == tv1->axis(-1));
-
-  // Check id graph behavior
-  //----------------------------------------------------------
-  ComputeAtMap ca_map(&fusion);
-  // Corresponding inputs and outputs of swizzle ops are
-  //  map through by exact and permissive map.
-  TORCH_INTERNAL_ASSERT(
-      ca_map.areMapped(tv1->axis(-2), swizzle_op->inX(), IdMappingMode::EXACT));
-  TORCH_INTERNAL_ASSERT(
-      ca_map.areMapped(tv1->axis(-1), swizzle_op->inY(), IdMappingMode::EXACT));
-  TORCH_INTERNAL_ASSERT(ca_map.areMapped(
-      tv1->axis(-2), swizzle_op->outX(), IdMappingMode::EXACT));
-  TORCH_INTERNAL_ASSERT(ca_map.areMapped(
-      tv1->axis(-1), swizzle_op->outY(), IdMappingMode::EXACT));
-
-  TORCH_INTERNAL_ASSERT(ca_map.areMapped(
-      tv1->axis(-2), swizzle_op->inX(), IdMappingMode::PERMISSIVE));
-  TORCH_INTERNAL_ASSERT(ca_map.areMapped(
-      tv1->axis(-1), swizzle_op->inY(), IdMappingMode::PERMISSIVE));
-  TORCH_INTERNAL_ASSERT(ca_map.areMapped(
-      tv1->axis(-2), swizzle_op->outX(), IdMappingMode::PERMISSIVE));
-  TORCH_INTERNAL_ASSERT(ca_map.areMapped(
-      tv1->axis(-1), swizzle_op->outY(), IdMappingMode::PERMISSIVE));
-}
-
-// Test a basic loop swizzle pattern
-TEST_F(NVFuserTest, FusionLoopSwizzle0_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 32});
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv2);
-
-  tv2->split(-1, 16);
-  tv2->split(-1, 4);
-  //[O, 4, 4]
-
-  tv2->swizzle(Swizzle2DType::ZShape, -2, -1, SwizzleMode::Loop);
-
-  tv0->computeAt(tv2, -1);
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  auto t0 = at::randn({2, 32}, options);
-  auto t2 = t0 + 2.0;
-  auto cg_outputs = fe.runFusion({t0});
-
-  testValidate(&fusion, cg_outputs, {t0}, {t2}, __LINE__, __FILE__);
-}
-
-// Outer block zshape pattern
-TEST_F(NVFuserTest, FusionLoopSwizzle1_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeContigTensor(2);
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv2);
-
-  tv2->split(-2, 8);
-  tv2->split(-1, 4);
-  //[I0o, I0i, I1o, I1i]
-  tv2->reorder({{1, 2}, {2, 1}});
-  //[I0o, I1o, I0i, I1i]
-
-  tv2->swizzle(Swizzle2DType::ZShape, 0, 1, SwizzleMode::Loop);
-  tv0->computeAt(tv2, -1);
-
-  tv2->axis(0)->parallelize(ParallelType::BIDx);
-  tv2->axis(1)->parallelize(ParallelType::BIDy);
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion);
-
-  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  auto t0 = at::randn({45, 77}, options);
-  auto t2 = t0 + 2.0;
-  auto cg_outputs = fe.runFusion({t0});
-
-  testValidate(&fusion, cg_outputs, {t0}, {t2}, __LINE__, __FILE__);
-}
-
-// Test assertion in unsupported pattern: non-leaf loop swizzle.
-TEST_F(NVFuserTest, FusionLoopSwizzleCheck0_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 32});
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv2);
-
-  tv2->split(-1, 16);
-  tv2->split(-1, 4);
-  //[O, 4, 4]
-
-  // Swizzle the inner tile.
-  tv2->swizzle(Swizzle2DType::ZShape, -2, -1, SwizzleMode::Loop);
-
-  // Make swizzle output not a leaf domain.
-  tv2->merge(-2);
-
-  tv0->computeAt(tv2, -1);
-
-  FusionExecutor fe;
-  ASSERT_ANY_THROW(fe.compileFusion(&fusion));
-}
-
-// Test assertion in unsupported pattern: half-inlined loop swizzle.
-TEST_F(NVFuserTest, FusionLoopSwizzleCheck1_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 32});
-  fusion.addInput(tv0);
-
-  auto tv1 = add(tv0, IrBuilder::create<Double>(1));
-  auto tv2 = add(tv1, IrBuilder::create<Double>(1));
-  auto tv3 = add(tv2, IrBuilder::create<Double>(1));
-
-  fusion.addOutput(tv3);
-
-  //[O, 4, 4]
-  tv2->split(-1, 16);
-  tv2->split(-1, 4);
-
-  //[O, 4, 4]
-  tv3->split(-1, 16);
-  tv3->split(-1, 4);
-
-  // Swizzle inner tile of tv2
-  tv2->swizzle(Swizzle2DType::ZShape, -2, -1, SwizzleMode::Loop);
-
-  // Make tv2 swizzled and partially-inlined (unsupported).
-  tv0->computeAt(tv3, -2);
-
-  FusionExecutor fe;
-  ASSERT_ANY_THROW(fe.compileFusion(&fusion));
-}
-
 TEST_F(NVFuserTest, FusionUnsqueeze1_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
@@ -5423,53 +4967,6 @@ TEST_F(NVFuserTest, FusionInliningMismatchedDims2_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInliningMismatchedDims3_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 3, 4});
-  fusion.addInput(tv0);
-  auto tv1 = sin(tv0);
-  // broadcasting
-  auto tv2 = broadcast(tv1, {false, true, false, true, false, true});
-  auto tv3 = relu(tv2);
-  // trivial reduction
-  auto tv4 = sum(tv3, {1, 3, 5});
-  auto tv5 = cos(tv4);
-  auto tv6 = transpose(tv5, 1, 2);
-  auto tv7 = exp(tv6);
-  auto tv8 = tan(tv7);
-  fusion.addOutput(tv8);
-
-  for (auto tv : {tv2, tv3, tv4}) {
-    tv->merge(0);
-    tv->merge(1);
-    tv->merge(2);
-  }
-
-  inlineMost();
-
-  TORCH_CHECK(tv8->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv7->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv6->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv5->getComputeAtPosition() == 1);
-  TORCH_CHECK(tv4->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv3->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv2->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv1->getComputeAtPosition() == 3);
-
-  const auto options =
-      at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  at::Tensor input = at::randn({2, 3, 4}, options);
-  auto output = input.sin().relu().cos().transpose(1, 2).exp().tan();
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion, {input});
-  auto cg_outputs = fe.runFusion({input});
-
-  testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
-}
-
 TEST_F(NVFuserTest, FusionInliningMismatchedDims4_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
@@ -5542,75 +5039,6 @@ TEST_F(NVFuserTest, FusionInliningBroadcast_CUDA) {
   testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionInliningBroadcastTrivialReduction_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 3, 4});
-  fusion.addInput(tv0);
-  auto tv1 = sin(tv0);
-  // broadcasting
-  auto tv2 = broadcast(tv1, {false, true, false, true, false, true});
-  auto tv3 = tan(tv2);
-  // trivial reduction
-  auto tv4 = sum(tv3, {1, 3, 5});
-  auto tv5 = cos(tv4);
-  auto tv6 = exp(tv5);
-  fusion.addOutput(tv6);
-
-  for (auto tv : {tv2, tv3, tv4}) {
-    tv->merge(0);
-    tv->merge(1);
-    tv->merge(2);
-  }
-
-  inlineMost();
-
-  TORCH_CHECK(tv6->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv5->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv4->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv3->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv2->getComputeAtPosition() == 3);
-  TORCH_CHECK(tv1->getComputeAtPosition() == 3);
-
-  const auto options =
-      at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
-  at::Tensor input = at::randn({2, 3, 4}, options);
-  auto output = input.sin().tan().cos().exp();
-
-  FusionExecutor fe;
-  fe.compileFusion(&fusion, {input});
-  auto cg_outputs = fe.runFusion({input});
-
-  testValidate(&fusion, cg_outputs, {input}, {output}, __LINE__, __FILE__);
-}
-
-TEST_F(NVFuserTest, FusionMatchedLeafPosWithoutReplayTrivialReduction_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 1, 3, 1, 4, 1});
-  fusion.addInput(tv0);
-  auto tv1 = sum(tv0, {1, 3, 5});
-  auto tv2 = sin(tv1);
-  fusion.addOutput(tv1);
-
-  for (auto tv : {tv0, tv1}) {
-    tv->merge(0);
-    tv->merge(1);
-    tv->merge(2);
-  }
-
-  TORCH_CHECK(
-      TransformReplay::getMatchedLeafPosWithoutReplayPasC(tv0, tv1, 3) == 3);
-  TORCH_CHECK(
-      TransformReplay::getMatchedLeafPosWithoutReplayCasP(tv1, tv0, 3) == 3);
-  TORCH_CHECK(
-      TransformReplay::getMatchedLeafPosWithoutReplayPasC(tv1, tv2, 3) == 3);
-  TORCH_CHECK(
-      TransformReplay::getMatchedLeafPosWithoutReplayCasP(tv2, tv1, 3) == 3);
-}
-
 TEST_F(NVFuserTest, FusionMatchedLeafPosWithoutReplayBroadcast_CUDA) {
   Fusion fusion;
   FusionGuard fg(&fusion);
@@ -5635,43 +5063,6 @@ TEST_F(NVFuserTest, FusionMatchedLeafPosWithoutReplayBroadcast_CUDA) {
       TransformReplay::getMatchedLeafPosWithoutReplayPasC(tv1, tv2, 3) == 3);
   TORCH_CHECK(
       TransformReplay::getMatchedLeafPosWithoutReplayCasP(tv2, tv1, 3) == 3);
-}
-
-TEST_F(NVFuserTest, FusionIdGraphTrivialReduction_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-
-  auto tv0 = makeConcreteTensor({2, 3, 4});
-  fusion.addInput(tv0);
-  auto tv1 = broadcast(tv0, {false, true, false, true, false, true});
-  auto tv2 = sum(tv1, {1, 3, 5});
-  auto tv3 = sin(tv2);
-  fusion.addOutput(tv3);
-
-  for (auto tv : {tv1, tv2}) {
-    tv->merge(0);
-    tv->merge(1);
-    tv->merge(2);
-  }
-
-  inlineMost();
-
-  ComputeAtMap ca_map(&fusion);
-
-  auto all_tvs = ir_utils::allTvs(&fusion);
-  for (auto tv1 : all_tvs) {
-    for (auto tv2 : all_tvs) {
-      if (tv1->isFusionInput() || tv2->isFusionInput()) {
-        continue;
-      }
-      for (int i : c10::irange(3)) {
-        auto id1 = tv1->axis(i);
-        auto id2 = tv2->axis(i);
-        TORCH_CHECK(ca_map.areMapped(id1, id2, IdMappingMode::LOOP));
-        TORCH_CHECK(ca_map.areMapped(id1, id2, IdMappingMode::PERMISSIVE));
-      }
-    }
-  }
 }
 
 TEST_F(NVFuserTest, FusionPrint_CUDA) {
@@ -6026,41 +5417,6 @@ TEST_F(NVFuserTest, FusionMergeBroadcastingTrivialReduction1_CUDA) {
       fusion, {out}, {t0, t1}, {t1 + t0.flatten()}, __LINE__, __FILE__);
 }
 
-TEST_F(NVFuserTest, FusionMergeBroadcastingTrivialReduction2_CUDA) {
-  std::unique_ptr<Fusion> fusion_ptr = std::make_unique<Fusion>();
-  auto fusion = fusion_ptr.get();
-  FusionGuard fg(fusion);
-
-  TensorView* tv0 = makeConcreteTensor({-1, 1, 1});
-  TensorView* tv1 = makeConcreteTensor({-1, -1});
-  fusion->addInput(tv0);
-  fusion->addInput(tv1);
-  auto tv2 = sum(tv0, {1});
-  auto tv3 = add(tv2, tv1);
-  fusion->addOutput(tv3);
-
-  tv2->merge(1);
-  tv2->merge(0);
-
-  MaxRootDomainInfoSpanningTree tree(tv0);
-  TransformPropagatorWithCheck tp(tv0);
-  tree.traverse(&tp);
-
-  inlineMost();
-
-  auto options = at::TensorOptions().dtype(kFloat).device(at::kCUDA, 0);
-  at::Tensor t0 = at::randn({10, 1, 1}, options);
-  at::Tensor t1 = at::randn({10, 10}, options);
-
-  FusionExecutor fe;
-  fe.compileFusion(fusion, {t0, t1});
-  auto cg_outputs = fe.runFusion({t0, t1});
-  auto out = cg_outputs[0];
-
-  testValidate(
-      fusion, {out}, {t0, t1}, {t1 + t0.squeeze(-1)}, __LINE__, __FILE__);
-}
-
 // Simple test case exercising the null scheduler path.
 TEST_F(NVFuserTest, FusionNullScheduler_CUDA) {
   auto fusion = std::make_unique<Fusion>();
@@ -6103,7 +5459,7 @@ TEST_F(NVFuserTest, FusionNullScheduler2_CUDA) {
   auto tv0 = makeConcreteTensor({0, 1, 9223372036854775807L});
   fusion->addInput(tv0);
 
-  auto tv1 = sum(tv0, {0, 1, 2});
+  auto tv1 = sum(tv0, {1, 2});
 
   fusion->addOutput(tv1);
 
@@ -6115,7 +5471,7 @@ TEST_F(NVFuserTest, FusionNullScheduler2_CUDA) {
   FusionExecutorCache executor_cache(std::move(fusion));
   auto cg_outputs = executor_cache.runFusionWithInputs(aten_inputs);
 
-  auto t1 = t0.sum({0, 1, 2});
+  auto t1 = t0.sum({1, 2});
 
   testValidate(
       executor_cache.fusion(), cg_outputs, {t0}, {t1}, __LINE__, __FILE__);
@@ -6165,6 +5521,31 @@ TEST_F(NVFuserTest, FusionNullScheduler3_CUDA) {
   for (auto group : groups) {
     TORCH_INTERNAL_ASSERT(group->heuristic() == ScheduleHeuristic::NoOp);
   }
+}
+
+TEST_F(NVFuserTest, FusionReducingZeroElements_CUDA) {
+  auto fusion = std::make_unique<Fusion>();
+  FusionGuard fg(fusion.get());
+
+  auto tv0 = makeConcreteTensor({0, 1, 9223372036854775807L});
+  fusion->addInput(tv0);
+
+  auto tv1 = sum(tv0, {0, 1, 2});
+
+  fusion->addOutput(tv1);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+  at::Tensor t0 = at::randn({0, 1, 9223372036854775807L}, options);
+
+  std::vector<IValue> aten_inputs({t0});
+
+  FusionExecutorCache executor_cache(std::move(fusion));
+  auto cg_outputs = executor_cache.runFusionWithInputs(aten_inputs);
+
+  auto t1 = t0.sum({0, 1, 2});
+
+  testValidate(
+      executor_cache.fusion(), cg_outputs, {t0}, {t1}, __LINE__, __FILE__);
 }
 
 TEST_F(NVFuserTest, FusionEmpty_CUDA) {
@@ -6659,10 +6040,37 @@ TEST_F(NVFuserTest, FusionVectorizeRepro1843_CUDA) {
   testValidate(fusion, cg_outputs, {t1, t0}, {ref}, __LINE__, __FILE__);
 }
 
+TEST_F(NVFuserTest, FusionBroadcastPersistentReduction_CUDA) {
+  // Simplified repro for
+  // https://github.com/csarofeen/pytorch/issues/2094
+  std::unique_ptr<Fusion> fusion_ptr = std::make_unique<Fusion>();
+  auto fusion = fusion_ptr.get();
+  FusionGuard fg(fusion);
+
+  auto tv0 = makeContigTensor(2, DataType::Half);
+  auto tv1 = castOp(DataType::Float, tv0);
+  auto tv2 = broadcast(tv1, {true, true, false, false});
+  auto tv3 = sum(tv2, {-1}, true);
+  auto tv4 = add(tv2, tv3); // TODO: changing this to tv1 there is still errors
+  auto tv5 = sum(tv4, {-1});
+  fusion->addInput(tv0);
+  fusion->addOutput(tv5);
+
+  auto options = at::TensorOptions().dtype(kHalf).device(at::kCUDA, 0);
+  auto t0 = at::randn({1024, 768}, options);
+  auto t1 = t0.view({1, 1, 1024, 768}).to(kFloat);
+  auto t3 = t1.sum({-1}, true);
+  auto t4 = t1 + t3;
+  auto t5 = t4.sum({-1});
+
+  FusionExecutorCache fec(std::move(fusion_ptr));
+  auto cg_outputs = fec.runFusionWithInputs({t0});
+  testValidate(fusion, cg_outputs, {t0}, {t5}, __LINE__, __FILE__);
+}
+
 // Repro for
 // https://github.com/csarofeen/pytorch/issues/2094
 TEST_F(NVFuserTest, FusionRepro2094_CUDA) {
-  return;
   std::unique_ptr<Fusion> fusion_ptr = std::make_unique<Fusion>();
   auto fusion = fusion_ptr.get();
   FusionGuard fg(fusion);

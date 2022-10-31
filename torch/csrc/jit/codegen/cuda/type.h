@@ -33,8 +33,7 @@ enum class ValType {
   Scalar,
   NamedScalar,
   Predicate,
-  TensorIndex,
-  IntPair
+  TensorIndex
 };
 
 // Manual - The user provides the Bool value. Predicate generation is bypassed.
@@ -155,8 +154,10 @@ enum class ExprType {
 enum class UnaryOpType {
   Abs,
   Acos,
+  Acosh,
   Address,
   Asin,
+  Asinh,
   Atan,
   Atanh,
   Cast,
@@ -164,9 +165,12 @@ enum class UnaryOpType {
   Cos,
   Cosh,
   Exp,
+  Exp2,
   Expm1,
   Erf,
   Erfc,
+  Erfinv,
+  Erfcinv,
   Floor,
   Frac,
   Gelu,

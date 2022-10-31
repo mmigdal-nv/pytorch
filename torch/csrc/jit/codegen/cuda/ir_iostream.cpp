@@ -161,6 +161,8 @@ void IrPrinter::handle(const TensorView* tv) {
     case MemoryType::Local:
       os_ << "_l";
       break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "Unknown tensor memory type.");
   }
   handle(tv->domain());
 
@@ -711,6 +713,8 @@ void IrPrinter::handle(const kir::TensorIndex* ti) {
     case MemoryType::Local:
       os_ << "_l";
       break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "Unknown tensor memory type.");
   }
   os_ << "[";
   for (auto index : ti->indices()) {
@@ -987,51 +991,6 @@ void IrPrinter::handle(const kir::AllocateFusedReduction* node) {
   indent() << "AllocateFusedReduction(reduction buffer=";
   handle(node->out());
   os_ << ")\n";
-}
-
-void IrPrinter::handle(const kir::IntPair* node) {
-  if (print_inline_) {
-    if (node->definition()) {
-      handle(node->definition());
-      return;
-    }
-  }
-  os_ << "iPair" << varName(node);
-}
-
-void IrPrinter::handle(const kir::Swizzle2DInt* node) {
-  if (!print_inline_) {
-    indent();
-    handle(node->out());
-    os_ << " = ";
-  }
-
-  os_ << node->swizzleType() << "2D(";
-  handle(node->inX());
-  os_ << ",";
-  handle(node->inY());
-  os_ << ")";
-}
-
-void IrPrinter::handle(const kir::PairSelect* node) {
-  if (!print_inline_) {
-    indent();
-    handle(node->out());
-    os_ << " = ";
-  }
-
-  handle(node->in());
-
-  switch (node->selection()) {
-    case kir::PairSelect::Selection::X:
-      os_ << ".x";
-      break;
-    case kir::PairSelect::Selection::Y:
-      os_ << ".y";
-      break;
-    default:
-      break;
-  }
 }
 
 void IrTransformPrinter::handle(Fusion* f) {
