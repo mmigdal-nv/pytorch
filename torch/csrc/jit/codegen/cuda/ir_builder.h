@@ -125,7 +125,6 @@ class TORCH_CUDA_CU_API SimplifyingIrBuilder : public IrBuilder {
   static Val* minExpr(Val* lhs, Val* rhs);
   static Val* divExpr(Val* lhs, Val* rhs);
   static Val* modExpr(Val* lhs, Val* rhs);
-  static Val* pairSelectExpr(Val* in, kir::PairSelect::Selection sel);
 };
 
 } // namespace cuda

@@ -405,23 +405,6 @@ Val* SimplifyingIrBuilder::andExpr(Val* lhs, Val* rhs) {
 
   return IrBuilder::andExpr(lhs, rhs);
 }
-
-Val* SimplifyingIrBuilder::pairSelectExpr(
-    Val* in,
-    kir::PairSelect::Selection sel) {
-  TORCH_INTERNAL_ASSERT(
-      in->definition() != nullptr, "no support for int pair input");
-  if (auto swizzle = dynamic_cast<kir::Swizzle2DInt*>(in->definition())) {
-    // Note: assumes that all swizzles map 0,0 to 0,0.
-    //  Will need to opt out in here if any new 2D swizzle doesn't
-    // have this property.
-    if (swizzle->inX()->isZeroInt() && swizzle->inY()->isZeroInt()) {
-      return in->container()->zeroVal();
-    }
-  }
-  return IrBuilder::pairSelectExpr(in, sel);
-}
-
 namespace {
 
 template <typename IrBuilderFunc, typename IntFunc>
