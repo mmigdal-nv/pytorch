@@ -433,8 +433,6 @@ class MisalignedVectorizationModifier : public kir::ExprMutator {
 
   // Get full extent for the inner-most, merged root domain
   Val* getVectorizeExtent(TensorView* producer_tv, TensorView* consumer_tv) {
-    const auto gpu_lower = GpuLower::current();
-
     auto p2c = PairwiseRootDomainMap(producer_tv, consumer_tv)
                    .mapProducerToConsumer(
                        producer_tv->domain(), consumer_tv->domain());
@@ -459,11 +457,6 @@ class MisalignedVectorizationModifier : public kir::ExprMutator {
         int(consumer_tv->getMaybeRFactorDomain().size()) - 1;
     for (int i = int(producer_root_domain.size()) - 1; i >= 0; --i) {
       auto producer_root_id = producer_root_domain.at(i);
-
-      TORCH_INTERNAL_ASSERT(
-          !gpu_lower->trivialReductionInfo().isDerived(producer_root_id),
-          "No trivial reduciton axis should exist: ",
-          producer_root_id);
 
       // If the producer ID is reduction or broadcast, it should be safe
       // to ignore.

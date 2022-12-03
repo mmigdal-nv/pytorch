@@ -19,7 +19,6 @@
 #include <torch/csrc/jit/codegen/cuda/lower_sync_information.h>
 #include <torch/csrc/jit/codegen/cuda/lower_thread_predicate.h>
 #include <torch/csrc/jit/codegen/cuda/lower_trivial_broadcast.h>
-#include <torch/csrc/jit/codegen/cuda/lower_trivial_reductions.h>
 #include <torch/csrc/jit/codegen/cuda/lower_warp_reduce.h>
 #include <torch/csrc/jit/codegen/cuda/non_divisible_split.h>
 #include <torch/csrc/jit/codegen/cuda/parallel_dimension_map.h>
@@ -84,10 +83,6 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
     return std::const_pointer_cast<const ComputeAtMap>(compute_at_map_);
   }
 
-  const TrivialReductionInfo& trivialReductionInfo() const {
-    return trivial_reduction_info_;
-  }
-
   std::shared_ptr<const HaloInfo> haloInfo() const {
     return std::const_pointer_cast<const HaloInfo>(halo_info_);
   }
@@ -101,11 +96,13 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   }
 
   PredicateElimination& predicateElimination() {
-    return pred_elimination_;
+    TORCH_INTERNAL_ASSERT(pred_elimination_.get() != nullptr);
+    return *pred_elimination_;
   }
 
   const PredicateElimination& predicateElimination() const {
-    return pred_elimination_;
+    TORCH_INTERNAL_ASSERT(pred_elimination_.get() != nullptr);
+    return *pred_elimination_;
   }
 
   LocalAllocationInfoMap& localAllocationInfoMap() {
@@ -217,6 +214,8 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   //  warp size.
   void collectPaddedParallelDims();
 
+  bool resolveComputeWith(Fusion* fusion);
+
  private:
   // Lowered Kernel IR
   std::unique_ptr<kir::Kernel> kernel_;
@@ -229,9 +228,8 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   std::shared_ptr<const ConcretizedBroadcastDomains>
       concretized_broadcast_domains_;
   ThreadPredicateMap thread_pred_map_;
-  PredicateElimination pred_elimination_;
+  std::unique_ptr<PredicateElimination> pred_elimination_;
   std::shared_ptr<ComputeAtMap> compute_at_map_;
-  TrivialReductionInfo trivial_reduction_info_;
   std::shared_ptr<HaloInfo> halo_info_;
   LocalAllocationInfoMap local_allocation_info_map_;
   WarpPaddedParallelInfo warp_pad_info_;

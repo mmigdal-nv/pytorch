@@ -29,14 +29,15 @@ TORCH_CUDA_CU_API void multiReductionInliner(
     TensorView* reference_tv,
     std::vector<TensorView*> reduction_tvs,
     std::vector<TensorView*> cached_inputs,
-    std::vector<std::pair<TensorView*, TensorView*>> cached_outputs);
+    std::vector<std::pair<TensorView*, TensorView*>> cached_outputs,
+    std::vector<TensorView*> dummy_outputs = {});
 
 // Sort and rfactor the reference tv in a consistent way for reduction inliner.
 // Order of the sort is:
 //
 // [i-block dims, i-thread dims, i-non-constant sized, i-constant sized,
 //  r-block dims, r-thread dims, r-non-constant sized, r-constant sized,
-//  i/r-unswitched, i/r-unroll/vectorized, broadcasted dims, trivial reductions]
+//  i/r-unswitched, i/r-unroll/vectorized, broadcasted dims]
 //
 // Rfactored axes are reductions bound to grid or blocks. If no axes are bound
 // to a grid or block dimension it will rfactor the r-unswitch dimension.

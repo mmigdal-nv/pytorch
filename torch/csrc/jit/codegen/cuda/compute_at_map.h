@@ -4,7 +4,6 @@
 #include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/lower_trivial_broadcast.h>
-#include <torch/csrc/jit/codegen/cuda/lower_trivial_reductions.h>
 
 #include <deque>
 #include <unordered_map>
@@ -113,6 +112,9 @@ class TORCH_CUDA_CU_API IterDomainGraph {
     return self_mapping_info_.has_value();
   }
 
+  // Update the LOOP nodes with resolved computeWith
+  void updateComputeWith(TensorView* compute_with_tv);
+
  private:
   void build(Fusion* fusion);
 
@@ -142,8 +144,6 @@ class TORCH_CUDA_CU_API IterDomainGraph {
   c10::optional<std::tuple<TensorView*, IterDomain*, IterDomain*, std::string>>
       self_mapping_info_ = c10::nullopt;
 };
-
-class TrivialReductionInfo;
 
 using DoubleBufferIndices = std::unordered_map<DoubleBufferLoopStage, Int*>;
 
@@ -258,6 +258,9 @@ class TORCH_CUDA_CU_API ComputeAtMap {
       IterDomain* id,
       IdMappingMode mode) const;
 
+  // Update the LOOP map with resolved computeWith
+  void updateComputeWith(TensorView* compute_with_tv);
+
  private:
   // Traverses through definitions of exact maps (unique_exact_definitions_) to
   // input ID's from provided ID. Returns all the exact map concrete IDs of the
@@ -301,9 +304,6 @@ class TORCH_CUDA_CU_API ComputeAtMap {
   // Used specifically for concrete ID computation
   ConcretizedBroadcastDomains concretized_bcasts_;
 
-  // TODO: Remove
-  TrivialReductionInfo trivial_reduction_info_;
-
   // Prevent needing to recompute concrete_id's in compute at map.
   // VectorOfUniqueEntries is unique across mapping modes, so don't need to use
   // mapping mode directly in this cache. const
@@ -319,7 +319,7 @@ class TORCH_CUDA_CU_API ComputeAtMap {
   // If another expression is already in the set where inputs and outputs
   // exactly match with the expression to add along with the other parameters of
   // the transformation (like split's factor, or swizzles types) then the
-  // expression will not be added as it would be an "duplicate" transformation.
+  // expression will not be added as it would be a "duplicate" transformation.
   std::unordered_map<
       std::shared_ptr<VectorOfUniqueEntries<IterDomain*>>,
       std::vector<Expr*>>

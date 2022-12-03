@@ -6,6 +6,8 @@
 #include <torch/csrc/jit/codegen/cuda/python_frontend/fusion_definition.h>
 #include <torch/csrc/jit/codegen/cuda/utils.h>
 
+#include <algorithm>
+
 namespace nvfuser {
 
 //! This enum it to give a Record Type for record hashing given that the
@@ -15,7 +17,9 @@ namespace nvfuser {
 enum class RecordType {
   Base = 0,
   Op,
+  BatchNormOp,
   BroadcastOp,
+  BroadcastInDimOp,
   CastOp,
   Constant,
   End,
@@ -25,9 +29,12 @@ enum class RecordType {
   Scalar,
   SqueezeOp,
   Start,
+  TensorSizes,
   VarianceOp,
   VarianceMeanOp,
+  ViewOp,
   PermuteOp,
+  IndexSelectOp,
 };
 
 //! RecordFunctor is the base class record for operations recorded by
@@ -116,14 +123,7 @@ struct RecordFunctor {
       } else {
         os << ", ";
       }
-      if (output.stype == StateType::Scalar) {
-        os << "S";
-      } else if (output.stype == StateType::Tensor) {
-        os << "T";
-      } else {
-        TORCH_INTERNAL_ASSERT(false, "Unsupported StateType");
-      }
-      os << output.index;
+      os << output;
     }
     if (outputs_.size() > 0) {
       os << " = "
@@ -138,14 +138,7 @@ struct RecordFunctor {
       } else {
         os << ", ";
       }
-      if (arg.stype == StateType::Scalar) {
-        os << "S";
-      } else if (arg.stype == StateType::Tensor) {
-        os << "T";
-      } else {
-        TORCH_INTERNAL_ASSERT(false, "Unsupported StateType");
-      }
-      os << arg.index;
+      os << arg;
     }
     if (close_function) {
       os << ")";
@@ -275,17 +268,110 @@ struct OpRecord : RecordFunctor {
   std::function<OutType(ArgTypes...)> fusion_op_;
 };
 
+struct ViewOpRecord : RecordFunctor {
+  ViewOpRecord(
+      std::vector<State> _args,
+      std::vector<State> _outputs,
+      std::vector<int64_t>& original_shape,
+      std::vector<int64_t>& new_shape)
+      : RecordFunctor(
+            std::move(_args),
+            std::move(_outputs),
+            "ops.view",
+            RecordType::ViewOp),
+        original_shape_(std::move(original_shape)),
+        new_shape_(std::move(new_shape)) {}
+  virtual ~ViewOpRecord() = default;
+  virtual RecordFunctor* clone() final {
+    return new ViewOpRecord(*this);
+  }
+
+  //! Child specific hash function in lower 32 bits.
+  //! | 31 -------------- 16 | 15 --------------  0 |
+  //! | original_shape hash  | new_shape hash       |
+  virtual size_t hash() const final {
+    auto result = RecordFunctor::hash();
+    size_t new_shape_hash = 0;
+    for (auto shape : new_shape_) {
+      new_shape_hash ^= static_cast<size_t>(shape);
+    }
+    size_t original_shape_hash = 0;
+    for (auto shape : original_shape_) {
+      original_shape_hash |= 1 << ((new_shape_.size() - 1) - shape);
+    }
+    original_shape_hash = (original_shape_hash & 0xffff) << 16;
+    return result | original_shape_hash | (new_shape_hash & 0xffff);
+  }
+
+  virtual bool operator==(const RecordFunctor& other) const final {
+    auto result = false;
+    if (auto child_ptr = dynamic_cast<const ViewOpRecord*>(&other)) {
+      result = RecordFunctor::operator==(other);
+      result &= std::equal(
+          original_shape_.begin(),
+          original_shape_.end(),
+          child_ptr->original_shape_.begin());
+      result &= std::equal(
+          new_shape_.begin(), new_shape_.end(), child_ptr->new_shape_.begin());
+    }
+    return result;
+  }
+
+  void operator()(FusionDefinition& fd) final {
+    auto arg =
+        fd.getFusionState(args_.at(0).index)->template as<Nvf::TensorView>();
+    auto output =
+        torch::jit::fuser::cuda::view(arg, original_shape_, new_shape_);
+    fd.setFusionState(outputs_.at(0).index, output);
+  }
+
+  virtual void print(std::ostream& os, bool close_function = true) const {
+    RecordFunctor::print(os, false);
+    os << ", original_shape=[";
+    bool first_arg = true;
+    for (auto shape : original_shape_) {
+      if (first_arg) {
+        first_arg = false;
+      } else {
+        os << ", ";
+      }
+      os << shape;
+    }
+    os << "]";
+    os << ", new_shape=[";
+    first_arg = true;
+    for (auto shape : new_shape_) {
+      if (first_arg) {
+        first_arg = false;
+      } else {
+        os << ", ";
+      }
+      os << shape;
+    }
+    os << "]";
+    if (close_function) {
+      os << ")";
+    }
+  }
+
+ private:
+  //! Represents the tensor dimensions of the input tensor.
+  std::vector<int64_t> original_shape_;
+  //! Represents the tensor dimensions of the output tensor.
+  std::vector<int64_t> new_shape_;
+};
+
 struct PermuteOpRecord : RecordFunctor {
   PermuteOpRecord(
       std::vector<State> _args,
       std::vector<State> _outputs,
-      std::vector<int64_t>& permutation)
+      std::vector<int64_t>& dims)
       : RecordFunctor(
             std::move(_args),
             std::move(_outputs),
-            "permute",
+            "ops.permute",
             RecordType::PermuteOp),
-        permutation_(std::move(permutation)) {}
+        dims_(std::move(dims)) {}
   virtual ~PermuteOpRecord() = default;
   virtual RecordFunctor* clone() final {
     return new PermuteOpRecord(*this);
@@ -293,11 +379,11 @@ struct PermuteOpRecord : RecordFunctor {
 
   virtual size_t hash() const final {
     auto result = RecordFunctor::hash();
-    size_t permutation_hash = 0;
-    for (auto p : permutation_) {
-      permutation_hash ^= static_cast<size_t>(p);
+    size_t dims_hash = 0;
+    for (auto dim : dims_) {
+      dims_hash ^= static_cast<size_t>(dim);
     }
-    return result | (permutation_hash & 0xffff);
+    return result | (dims_hash & 0xffff);
   }
 
   virtual bool operator==(const RecordFunctor& other) const final {
@@ -305,10 +391,10 @@ struct PermuteOpRecord : RecordFunctor {
     if (auto child_ptr = dynamic_cast<const PermuteOpRecord*>(&other)) {
       result = RecordFunctor::operator==(other);
       if (result) {
-        result = (permutation_.size() == child_ptr->permutation_.size());
+        result = (dims_.size() == child_ptr->dims_.size());
         if (result) {
-          for (size_t i = 0; i < permutation_.size(); ++i) {
-            if (permutation_[i] != child_ptr->permutation_[i]) {
+          for (size_t i = 0; i < dims_.size(); ++i) {
+            if (dims_[i] != child_ptr->dims_[i]) {
               result = false;
               break;
             }
@@ -322,13 +408,31 @@ struct PermuteOpRecord : RecordFunctor {
   void operator()(FusionDefinition& fd) final {
     auto arg =
         fd.getFusionState(args_.at(0).index)->template as<Nvf::TensorView>();
-    auto output = torch::jit::fuser::cuda::permute(arg, permutation_);
+    auto output = Nvf::permute(arg, dims_);
     fd.setFusionState(outputs_.at(0).index, output);
+  }
+
+  virtual void print(std::ostream& os, bool close_function = true) const {
+    RecordFunctor::print(os, false);
+    os << ", dims=[";
+    bool first_arg = true;
+    for (auto dim : dims_) {
+      if (first_arg) {
+        first_arg = false;
+      } else {
+        os << ", ";
+      }
+      os << dim;
+    }
+    os << "]";
+    if (close_function) {
+      os << ")";
+    }
   }
 
  private:
   //! Represents the mapping from the original shape to the new shape
-  std::vector<int64_t> permutation_;
+  std::vector<int64_t> dims_;
 };
 
 struct SqueezeOpRecord : RecordFunctor {
@@ -340,7 +444,7 @@ struct SqueezeOpRecord : RecordFunctor {
       : RecordFunctor(
             std::move(_args),
             std::move(_outputs),
-            "squeeze",
+            "ops.squeeze",
             RecordType::SqueezeOp),
         original_shape_(std::move(original_shape)),
         dim_(dim) {}
@@ -420,45 +524,51 @@ struct SqueezeOpRecord : RecordFunctor {
 
 //! Specialized Record Functor for the FusionDefinition's broadcast_in_dim op.
 
-struct BroadcastOpRecord : RecordFunctor {
-  BroadcastOpRecord(
+template <typename OutputShapeType>
+struct BroadcastInDimOpRecord : RecordFunctor {
+  BroadcastInDimOpRecord(
       std::vector<State> _args,
       std::vector<State> _outputs,
       std::string _name,
-      std::vector<int64_t>& output_shape,
+      std::vector<OutputShapeType>& output_shape,
       std::vector<int64_t>& broadcast_dims)
       : RecordFunctor(
             std::move(_args),
             std::move(_outputs),
             _name,
-            RecordType::BroadcastOp),
+            RecordType::BroadcastInDimOp),
         output_shape_(std::move(output_shape)),
         broadcast_dims_(std::move(broadcast_dims)) {}
-  virtual ~BroadcastOpRecord() = default;
+  virtual ~BroadcastInDimOpRecord() = default;
   virtual RecordFunctor* clone() final {
-    return new BroadcastOpRecord(*this);
+    return new BroadcastInDimOpRecord(*this);
   }
+
+  inline size_t outputShapeHash(
+      const std::vector<OutputShapeType>& shape) const;
 
   //! Child specific hash function in lower 32 bits.
   //! | 31 -------------- 16 | 15 --------------  0 |
   //! | broadcast_dims hash  | output_shape hash    |
+  //!
+  //! The output_shape hash is specialized in 2 ways using the method
+  //! outputShapeHash:
+  //! 1. int64_t - hashes dimension sizes.
+  //! 2. State - hashes number of dimensions
   virtual size_t hash() const final {
     auto result = RecordFunctor::hash();
-    size_t output_shape_hash = 0;
-    for (auto shape : output_shape_) {
-      output_shape_hash ^= static_cast<size_t>(shape);
-    }
     size_t broadcast_dims_hash = 0;
     for (auto dim : broadcast_dims_) {
       broadcast_dims_hash |= 1 << ((output_shape_.size() - 1) - dim);
     }
     broadcast_dims_hash = (broadcast_dims_hash & 0xffff) << 16;
-    return result | broadcast_dims_hash | (output_shape_hash & 0xffff);
+    return result | broadcast_dims_hash |
+        (outputShapeHash(output_shape_) & 0xffff);
   }
 
   virtual bool operator==(const RecordFunctor& other) const final {
     auto result = false;
-    if (auto child_ptr = dynamic_cast<const BroadcastOpRecord*>(&other)) {
+    if (auto child_ptr = dynamic_cast<const BroadcastInDimOpRecord*>(&other)) {
       result = RecordFunctor::operator==(other);
       if (result) {
         result =
@@ -485,6 +595,13 @@ struct BroadcastOpRecord : RecordFunctor {
     return result;
   }
 
+  inline c10::optional<std::vector<Nvf::Val*>> expandShape(
+      const FusionDefinition& fd,
+      const std::vector<bool>& expand_dim,
+      const std::vector<OutputShapeType>& shape) const;
+
+  //! The operator() call is specialize with th expandShape() method based on
+  //! the OutputShapeType template parameter
   virtual void operator()(FusionDefinition& fd) final {
     auto arg =
         fd.getFusionState(args_.at(0).index)->template as<Nvf::TensorView>();
@@ -521,25 +638,12 @@ struct BroadcastOpRecord : RecordFunctor {
           arg_domains_nr[idx]->isBroadcast();
     }
 
-    std::vector<torch::jit::fuser::cuda::Val*> output_shape_on_bcast(
-        output_shape_.size(), nullptr);
-    bool has_expand = false;
-    for (const auto idx : c10::irange(output_shape_.size())) {
-      if (is_expand_dim[idx] && output_shape_[idx] != 1 &&
-          output_shape_[idx] != -1) {
-        // TODO: this would be tricky to handle on dynamic shapes, we'll
-        // need to pass-in a symbol instead somehow.
-        output_shape_on_bcast[idx] =
-            Nvf::IrBuilder::create<Nvf::Int>(output_shape_[idx]);
-        has_expand = true;
-      } else {
-        output_shape_on_bcast[idx] = Nvf::IrBuilder::create<Nvf::Int>(-1);
-      }
-    }
-
     auto output = Nvf::broadcast(arg, is_broadcast_dim);
-    if (has_expand) {
-      output = Nvf::expand(output, output_shape_on_bcast);
+
+    c10::optional<std::vector<Nvf::Val*>> expand_shape =
+        expandShape(fd, is_expand_dim, output_shape_);
+    if (expand_shape.has_value()) {
+      output = Nvf::expand(output, expand_shape.value());
     }
     fd.setFusionState(outputs_.at(0).index, output);
   }
@@ -575,11 +679,144 @@ struct BroadcastOpRecord : RecordFunctor {
 
  private:
   //! Represents the tensor dimensions of the output tensor.
-  std::vector<int64_t> output_shape_;
+  std::vector<OutputShapeType> output_shape_;
   //! Communicates which dimensions of the output the input tensor maps.
   //! For instance, for output [2, 3, 4] and input [3]. This vector would
   //! contain [1].
   std::vector<int64_t> broadcast_dims_;
+};
+
+//! ouputShapeHash Specializations used by hash()
+
+template <>
+inline size_t BroadcastInDimOpRecord<int64_t>::outputShapeHash(
+    const std::vector<int64_t>& shape) const {
+  size_t shape_hash = 0;
+  for (auto size : shape) {
+    shape_hash ^= static_cast<size_t>(size);
+  }
+  return shape_hash;
+}
+
+template <>
+inline size_t BroadcastInDimOpRecord<nvfuser::State>::outputShapeHash(
+    const std::vector<nvfuser::State>& shape) const {
+  return shape.size();
+}
+
+//! expandShape Specializations used by operator()
+
+template <>
+inline c10::optional<std::vector<Nvf::Val*>> BroadcastInDimOpRecord<int64_t>::
+    expandShape(
+        const FusionDefinition& fd,
+        const std::vector<bool>& expand_dim,
+        const std::vector<int64_t>& shape) const {
+  std::vector<Nvf::Val*> expand_shape(shape.size(), nullptr);
+  bool has_expand = false;
+  for (const auto idx : c10::irange(shape.size())) {
+    if (expand_dim[idx] && shape[idx] != 1 && shape[idx] != -1) {
+      expand_shape[idx] = Nvf::IrBuilder::create<Nvf::Int>(shape[idx]);
+      has_expand = true;
+    } else {
+      expand_shape[idx] = Nvf::IrBuilder::create<Nvf::Int>(-1);
+    }
+  }
+
+  if (has_expand) {
+    return c10::optional<std::vector<Nvf::Val*>>(expand_shape);
+  } else {
+    return c10::nullopt;
+  }
+}
+
+template <>
+inline c10::optional<std::vector<Nvf::Val*>> BroadcastInDimOpRecord<
+    nvfuser::State>::
+    expandShape(
+        const FusionDefinition& fd,
+        const std::vector<bool>& expand_dim,
+        const std::vector<nvfuser::State>& shape) const {
+  std::vector<Nvf::Val*> expand_shape(shape.size(), nullptr);
+  std::transform(
+      shape.begin(),
+      shape.end(),
+      expand_shape.begin(),
+      [&fd](const State& state) {
+        return fd.getFusionState(state.index)->template as<Nvf::Val>();
+      });
+  return c10::optional<std::vector<Nvf::Val*>>(expand_shape);
+}
+
+//! Specialized Record Functor for the FusionDefinition's broadcast op.
+
+struct BroadcastOpRecord : RecordFunctor {
+  BroadcastOpRecord(
+      std::vector<State> _args,
+      std::vector<State> _outputs,
+      std::string _name,
+      std::vector<bool>& is_broadcast_dim)
+      : RecordFunctor(
+            std::move(_args),
+            std::move(_outputs),
+            _name,
+            RecordType::BroadcastOp),
+        is_broadcast_dim_(std::move(is_broadcast_dim)) {}
+  virtual ~BroadcastOpRecord() = default;
+  virtual RecordFunctor* clone() final {
+    return new BroadcastOpRecord(*this);
+  }
+
+  virtual size_t hash() const final {
+    auto result = RecordFunctor::hash();
+    size_t is_broadcast_dim_hash = 0;
+    for (size_t i = 0; i < is_broadcast_dim_.size(); ++i) {
+      is_broadcast_dim_hash |=
+          (is_broadcast_dim_[i] << (is_broadcast_dim_.size() - 1 - i));
+    }
+    return result | (is_broadcast_dim_hash & 0xfff);
+  }
+
+  virtual bool operator==(const RecordFunctor& other) const final {
+    auto result = false;
+    if (auto child_ptr = dynamic_cast<const BroadcastOpRecord*>(&other)) {
+      result = RecordFunctor::operator==(other);
+      result &= std::equal(
+          is_broadcast_dim_.begin(),
+          is_broadcast_dim_.end(),
+          child_ptr->is_broadcast_dim_.begin());
+    }
+    return result;
+  }
+
+  virtual void operator()(FusionDefinition& fd) final {
+    auto arg =
+        fd.getFusionState(args_.at(0).index)->template as<Nvf::TensorView>();
+    auto output = Nvf::broadcast(arg, is_broadcast_dim_);
+    fd.setFusionState(outputs_.at(0).index, output);
+  }
+
+  virtual void print(std::ostream& os, bool close_function = true) const {
+    RecordFunctor::print(os, false);
+    os << ", is_broadcast_dim=[";
+    bool first_arg = true;
+    for (auto dim : is_broadcast_dim_) {
+      if (first_arg) {
+        first_arg = false;
+      } else {
+        os << ", ";
+      }
+      os << (dim ? "True" : "False");
+    }
+    os << "]";
+    if (close_function) {
+      os << ")";
+    }
+  }
+
+ private:
+  //! Communicates which dimensions in the output are broadcasted.
+  std::vector<bool> is_broadcast_dim_;
 };
 
 template <class OutType, class ArgType>
@@ -876,6 +1113,7 @@ struct TensorRecord : RecordFunctor {
       }
     }
     os << "], dtype=" << dtypeToPyString(dtype_);
+    os << ", is_cpu=" << (is_cpu_ ? "True" : "False");
     if (close_function) {
       os << ")";
     }
@@ -1075,6 +1313,37 @@ struct ReductionOpRecord : RecordFunctor {
   bool keep_dim_;
   //! The output data type.
   Nvf::DataType dtype_;
+};
+
+struct IndexSelectOpRecord : RecordFunctor {
+  IndexSelectOpRecord(
+      std::vector<State> _args,
+      std::vector<State> _outputs,
+      int64_t dim)
+      : RecordFunctor(
+            std::move(_args),
+            std::move(_outputs),
+            "index_select",
+            RecordType::IndexSelectOp),
+        dim_(dim) {}
+  virtual ~IndexSelectOpRecord() = default;
+  virtual RecordFunctor* clone() final {
+    return new IndexSelectOpRecord(*this);
+  }
+
+  void operator()(FusionDefinition& fd) final {
+    auto arg1 =
+        fd.getFusionState(args_.at(0).index)->template as<Nvf::TensorView>();
+    auto arg3 =
+        fd.getFusionState(args_.at(1).index)->template as<Nvf::TensorView>();
+
+    Nvf::Val* output = Nvf::index_select(arg1, dim_, arg3);
+    fd.setFusionState(outputs_.at(0).index, output);
+  }
+
+ private:
+  //! Dimension to select.
+  int64_t dim_;
 };
 
 //! Specialized Record Functor for recording FusionDefinition input scalars.
@@ -1313,6 +1582,116 @@ struct VarianceMeanOpRecord : NormOpRecord {
   }
 };
 
+struct BatchNormOpRecord : RecordFunctor {
+  BatchNormOpRecord(
+      std::vector<State> args,
+      std::vector<State> outputs,
+      bool training,
+      bool channels_last)
+      : RecordFunctor(
+            std::move(args),
+            std::move(outputs),
+            "ops.batch_norm",
+            RecordType::BatchNormOp),
+        training_(training),
+        channels_last_(channels_last) {}
+  virtual ~BatchNormOpRecord() = default;
+  virtual RecordFunctor* clone() final {
+    return new BatchNormOpRecord(*this);
+  }
+
+  virtual bool operator==(const RecordFunctor& other) const final {
+    auto result = false;
+    if (auto child_ptr = dynamic_cast<const BatchNormOpRecord*>(&other)) {
+      result = RecordFunctor::operator==(other);
+      result = result && (training_ == child_ptr->training_);
+      result = result && (channels_last_ == child_ptr->channels_last_);
+    }
+    return result;
+  }
+
+  virtual size_t hash() const final {
+    auto result = RecordFunctor::hash();
+    return result | (static_cast<size_t>(training_) << 28) |
+        (static_cast<size_t>(channels_last_) << 29);
+  }
+
+  void operator()(FusionDefinition& fd) final {
+    auto x = fd.getFusionState(args_.at(0).index)->as<Nvf::TensorView>();
+    auto weight = (args_.at(1).stype == StateType::Tensor)
+        ? fd.getFusionState(args_.at(1).index)->as<Nvf::TensorView>()
+        : nullptr;
+    auto bias = (args_.at(2).stype == StateType::Tensor)
+        ? fd.getFusionState(args_.at(2).index)->as<Nvf::TensorView>()
+        : nullptr;
+    auto running_mean = (args_.at(3).stype == StateType::Tensor)
+        ? fd.getFusionState(args_.at(3).index)->as<Nvf::TensorView>()
+        : nullptr;
+    auto running_var = (args_.at(4).stype == StateType::Tensor)
+        ? fd.getFusionState(args_.at(4).index)->as<Nvf::TensorView>()
+        : nullptr;
+    auto momentum = fd.getFusionState(args_.at(5).index)->as<Nvf::Val>();
+    auto eps = fd.getFusionState(args_.at(6).index)->as<Nvf::Val>();
+    auto output = Nvf::batch_norm(
+        x,
+        weight,
+        bias,
+        running_mean,
+        running_var,
+        training_,
+        momentum,
+        eps,
+        channels_last_);
+    fd.setFusionState(outputs_.at(0).index, output.output);
+    fd.setFusionState(outputs_.at(1).index, output.mean);
+    fd.setFusionState(outputs_.at(2).index, output.invstd);
+  }
+
+  virtual void print(std::ostream& os, bool close_function = true) const final {
+    RecordFunctor::print(os, false);
+    os << ", training=" << (training_ ? "True" : "False");
+    os << ", channels_last=" << (channels_last_ ? "True" : "False");
+    if (close_function) {
+      os << ")";
+    }
+  }
+
+ private:
+  bool training_;
+  bool channels_last_;
+};
+
+//! Specialized Record Functor for the FusionDefinition's tensor_size op.
+//! Uses the default hash() and print() methods of Record Functor
+
+struct TensorSizesRecord : RecordFunctor {
+  TensorSizesRecord(std::vector<State> args, std::vector<State> outputs)
+      : RecordFunctor(
+            std::move(args),
+            std::move(outputs),
+            "ops.tensor_sizes",
+            RecordType::TensorSizes) {}
+  virtual ~TensorSizesRecord() = default;
+  virtual RecordFunctor* clone() final {
+    return new TensorSizesRecord(*this);
+  }
+
+  virtual bool operator==(const RecordFunctor& other) const final {
+    auto result = false;
+    if (dynamic_cast<const TensorSizesRecord*>(&other)) {
+      result = RecordFunctor::operator==(other);
+    }
+    return result;
+  }
+
+  void operator()(FusionDefinition& fd) final {
+    auto arg = fd.getFusionState(args_.at(0).index)->as<Nvf::TensorView>();
+    auto sizes = Nvf::tensor_sizes(arg);
+    for (const auto idx : c10::irange(sizes.size())) {
+      fd.setFusionState(outputs_.at(idx).index, sizes[idx]);
+    }
+  }
+};
 } // namespace nvfuser
 
 //! Creating the template specialized hash and equal_to functions for a

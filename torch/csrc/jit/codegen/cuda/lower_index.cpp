@@ -13,10 +13,14 @@ namespace jit {
 namespace fuser {
 namespace cuda {
 
-Val* IndexLowering::lowerSrcIndex(Val* src, Val* dst) const {
+Val* IndexLowering::lowerSrcIndex(
+    Val* src,
+    Val* dst,
+    const std::unordered_map<IterDomain*, Val*>& override_index) const {
   if (auto tv = dynamic_cast<TensorView*>(src)) {
     TORCH_INTERNAL_ASSERT(dst->isA<TensorView>());
-    return Index::getProducerIndex(tv, dst->as<TensorView>(), for_loops_);
+    return Index::getProducerIndex(
+        tv, dst->as<TensorView>(), for_loops_, override_index);
   } else {
     return src;
   }
@@ -204,6 +208,39 @@ void IndexLowering::handle(const TernaryOp* top) {
   pushBack(IrBuilder::create<TernaryOp>(
       top->getTernaryOpType(), out, in1, in2, in3));
   GpuLower::current()->propagateExprInfo(top, back());
+}
+
+void IndexLowering::handle(const IndexSelectOp* sop) {
+  auto lowered_index = lowerSrcIndex(sop->input(1), sop->output(0));
+  auto lowered_index_cast = lowered_index;
+
+  // If the type of the index tensor is different from the kernel
+  // index type, promote it to the kernel index type
+  if (GpuLower::current()->kernel()->indexType() !=
+      sop->input(1)->getDataType().value()) {
+    lowered_index_cast =
+        IrBuilder::newScalar(GpuLower::current()->kernel()->indexType());
+    IrBuilder::create<UnaryOp>(
+        UnaryOpType::Cast, lowered_index_cast, lowered_index);
+  }
+
+  const std::unordered_map<IterDomain*, Val*> override_index = {
+      {sop->getSelectAxis(), lowered_index_cast}};
+  const auto lookup =
+      lowerSrcIndex(sop->input(0), sop->output(0), override_index);
+
+  const auto out = lowerDstIndex(sop->output(0));
+  pushBack(IrBuilder::create<IndexSelectOp>(
+      out, lookup, sop->dim(), sop->getSelectAxis(), lowered_index));
+  GpuLower::current()->propagateExprInfo(sop, back());
+}
+
+void IndexLowering::handle(const SelectOp* sop) {
+  const auto input = lowerSrcIndex(
+      sop->input(0), sop->output(0), sop->getIndexOverridingMap());
+  const auto out = lowerDstIndex(sop->output(0));
+  pushBack(IrBuilder::create<UnaryOp>(UnaryOpType::Set, out, input));
+  GpuLower::current()->propagateExprInfo(sop, back());
 }
 
 void IndexLowering::handle(const ViewAsScalar* uop) {
@@ -858,9 +895,12 @@ void IndexLowering::handle(const GroupedWelfordOp* grouped_wop) {
   std::vector<WelfordTriplet> indexed_outputs(grouped_wop->numExprs());
   std::vector<WelfordTriplet> indexed_inputs(grouped_wop->numExprs());
 
+  auto output_vals = grouped_wop->outputVals();
+  auto input_vals = grouped_wop->inputVals();
+
   for (const auto i : c10::irange(grouped_wop->numExprs())) {
-    const auto& output = grouped_wop->outputVals().at(i);
-    const auto& input = grouped_wop->inputVals().at(i);
+    const auto& output = output_vals.at(i);
+    const auto& input = input_vals.at(i);
     WelfordTriplet indexed_output;
     WelfordTriplet indexed_input;
     for (const auto j : c10::irange(3)) {
@@ -1231,29 +1271,24 @@ void IndexLowering::allocateUniqueFusedReduction(
   }
 
   kir::AllocateFusedReduction* fused_reduction_alloc_reduction = nullptr;
-  switch (expr->getExprType().value()) {
-    case ExprType::GridReduction:
-      fused_reduction_alloc_reduction =
-          IrBuilder::create<kir::AllocateFusedReduction>(
-              expr->as<kir::GridReduction>());
-      break;
-    case ExprType::GridWelford:
-      fused_reduction_alloc_reduction =
-          IrBuilder::create<kir::AllocateFusedReduction>(
-              expr->as<kir::GridWelford>());
-      break;
-    case ExprType::GroupedGridReduction:
-      fused_reduction_alloc_reduction =
-          IrBuilder::create<kir::AllocateFusedReduction>(
-              expr->as<kir::GroupedGridReduction>());
-      break;
-    case ExprType::GroupedGridWelford:
-      fused_reduction_alloc_reduction =
-          IrBuilder::create<kir::AllocateFusedReduction>(
-              expr->as<kir::GroupedGridWelford>());
-      break;
-    default:
-      TORCH_INTERNAL_ASSERT(false, "Invalid expr: ", expr->toString());
+  if (expr->isStrictlyA<kir::GridReduction>()) {
+    fused_reduction_alloc_reduction =
+        IrBuilder::create<kir::AllocateFusedReduction>(
+            expr->as<kir::GridReduction>());
+  } else if (expr->isStrictlyA<kir::GridWelford>()) {
+    fused_reduction_alloc_reduction =
+        IrBuilder::create<kir::AllocateFusedReduction>(
+            expr->as<kir::GridWelford>());
+  } else if (expr->isStrictlyA<kir::GroupedGridReduction>()) {
+    fused_reduction_alloc_reduction =
+        IrBuilder::create<kir::AllocateFusedReduction>(
+            expr->as<kir::GroupedGridReduction>());
+  } else if (expr->isStrictlyA<kir::GroupedGridWelford>()) {
+    fused_reduction_alloc_reduction =
+        IrBuilder::create<kir::AllocateFusedReduction>(
+            expr->as<kir::GroupedGridWelford>());
+  } else {
+    TORCH_INTERNAL_ASSERT(false, "Invalid expr: ", expr->toString());
   }
 
   fused_reduction_map_.emplace(out_tv, fused_reduction_alloc_reduction);

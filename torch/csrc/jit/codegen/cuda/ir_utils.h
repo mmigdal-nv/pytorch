@@ -304,9 +304,11 @@ TORCH_CUDA_CU_API std::vector<TensorView*> allTvsExcept(
     Fusion* fusion,
     const std::unordered_set<TensorView*>& except);
 
-TORCH_CUDA_CU_API std::vector<Expr*> getReductionOps(
-    Fusion* fusion,
-    bool ignore_trivial = true);
+TORCH_CUDA_CU_API std::vector<Expr*> getReductionOps(Fusion* fusion);
+
+TORCH_CUDA_CU_API std::vector<IndexSelectOp*> getIndexSelectOps(Fusion* fusion);
+
+TORCH_CUDA_CU_API std::vector<SelectOp*> getSelectOps(Fusion* fusion);
 
 // Returns the initialization value of tv or nullptr if not initialized.
 TORCH_CUDA_CU_API Val* getReductionInitValOf(TensorView* tv);
@@ -354,6 +356,19 @@ TORCH_CUDA_CU_API bool isSqueezedID(const TensorView* tv, const IterDomain* id);
 // Get all IDs of a tensor. Returned values are topologicaly ordered, and
 // unique.
 TORCH_CUDA_CU_API std::vector<IterDomain*> allIDsOf(const TensorView* tv);
+
+// Check if the given tv is an input of SelectOp
+TORCH_CUDA_CU_API bool isSelectInput(TensorView* tv);
+
+// Check if the given tv is first argment of index_select(lookup, dim, indices)
+TORCH_CUDA_CU_API bool isIndexSelectLookupTv(const TensorView* tv);
+
+// Check if the given tv is third argment of index_select(lookup, dim, indices)
+TORCH_CUDA_CU_API bool isIndexSelectIndicesTv(const TensorView* tv);
+
+// Get selected domain if tv is index select's output or return nullptr
+TORCH_CUDA_CU_API IterDomain* getSelectedDomainIfTvIsIndexSelectOutput(
+    const TensorView* tv);
 
 } // namespace ir_utils
 } // namespace cuda

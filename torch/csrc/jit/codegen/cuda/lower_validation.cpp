@@ -1,7 +1,6 @@
 #include <torch/csrc/jit/codegen/cuda/lower_validation.h>
 
 #include <torch/csrc/jit/codegen/cuda/contiguity.h>
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
@@ -73,23 +72,21 @@ class ValidateSiblings : public IterVisitor {
         id_map[ref_root[i]] = sibling->getRootDomain().at(i);
       }
 
-      BestEffortReplay replay(
-          sibling->domain()->domain(), ref_output->domain()->domain(), id_map);
+      auto replay = BestEffortReplay(
+                        sibling->domain()->domain(),
+                        ref_output->domain()->domain(),
+                        id_map)
+                        .getIterDomainEquivalence();
+
       for (const auto i : c10::irange(ref_ndims)) {
-        auto it = replay.getReplay().find(ref_output->axis(i));
         TORCH_INTERNAL_ASSERT(
-            it != replay.getReplay().end(),
+            replay.strictAreMapped(ref_output->axis(i), sibling->axis(i)),
             "Matching sibling ID not found. Expr: ",
             expr->toString(),
             "Ref ID: ",
-            ref_output->axis(i)->toString());
-        auto sibling_id = it->second;
-        TORCH_INTERNAL_ASSERT(
-            sibling->axis(i) == sibling_id,
-            "Invalid matching sinbling ID detected. Expr: ",
-            expr->toString(),
+            ref_output->axis(i)->toString(),
             "Sibling ID: ",
-            sibling_id->toString());
+            sibling->axis(i)->toString());
       }
     }
   }
@@ -379,22 +376,13 @@ class VectorizeValidator : public OptInDispatch {
       return;
     }
 
-    auto fusion = FusionGuard::getCurFusion();
-
     TORCH_CHECK(
-        v_id->extent()->isConstScalar(),
-        "Vectorizing a domain requires a constant size.");
+        v_id->extent()->isConstInt(),
+        "Vectorizing a domain requires a constant integer size.");
 
-    ExpressionEvaluator const_expr_eval(fusion);
-
-    auto vector_size_optional = const_expr_eval.evaluate(v_id->extent());
-
-    TORCH_CHECK(
-        vector_size_optional.has_value(),
-        "Could not evaluate constant value bound to vectorized dim.");
-
-    auto vector_size = ((int64_t)dataTypeSize(tv->getDataType().value())) *
-        vector_size_optional.value();
+    auto vector_word_size = v_id->extent()->evaluateInt();
+    auto vector_size =
+        ((int64_t)dataTypeSize(tv->getDataType().value())) * vector_word_size;
 
     // Allow half2, float2, float4 and same sized vtypes.
     std::array<int64_t, 4> allowed_vector_sizes = {2, 4, 8, 16}; // NOLINT
@@ -432,7 +420,7 @@ class VectorizeValidator : public OptInDispatch {
       if (tv->getMemoryType() == MemoryType::Global) {
         checkContiguity(validator.domains_, tv);
       } else if (
-          tv->definition()->getExprType() == ExprType::UnaryOp &&
+          tv->definition()->isA<UnaryOp>() &&
           tv->definition()->as<UnaryOp>()->getUnaryOpType() ==
               UnaryOpType::Set) {
         auto input = tv->definition()->input(0);
@@ -475,22 +463,22 @@ class VectorizeValidator : public OptInDispatch {
         GpuLower::current()->vectorizedAccesses().find(tv);
     if (consumer_word_size_it !=
         GpuLower::current()->vectorizedAccesses().end()) {
-      consumer_word_size_it->second = std::max(
-          (int)vector_size_optional.value(), consumer_word_size_it->second);
+      consumer_word_size_it->second =
+          std::max((int)vector_word_size, consumer_word_size_it->second);
     } else {
       GpuLower::current()->vectorizedAccesses().emplace(
-          tv, (int)vector_size_optional.value());
+          tv, (int)vector_word_size);
     }
     auto producer_tv = tv->definition()->inputs().at(0)->as<TensorView>();
     auto producer_word_size_it =
         GpuLower::current()->vectorizedAccesses().find(producer_tv);
     if (producer_word_size_it !=
         GpuLower::current()->vectorizedAccesses().end()) {
-      producer_word_size_it->second = std::max(
-          (int)vector_size_optional.value(), producer_word_size_it->second);
+      producer_word_size_it->second =
+          std::max((int)vector_word_size, producer_word_size_it->second);
     } else {
       GpuLower::current()->vectorizedAccesses().emplace(
-          producer_tv, (int)vector_size_optional.value());
+          producer_tv, (int)vector_word_size);
     }
 
     VectorizedSetInfo vectorized_set_info;
@@ -499,7 +487,7 @@ class VectorizeValidator : public OptInDispatch {
     // Note that VectorizedSetInfo is about each instance of
     // vectorized set operations, so the word size is the size of this
     // specific vectorized set.
-    vectorized_set_info.word_size = (int)vector_size_optional.value();
+    vectorized_set_info.word_size = (int)vector_word_size;
     vectorized_set_info.vectorized_leaf_id = v_id;
     vectorized_set_info.vectorized_root_id = validator.vectorized_id_;
     // For aligned vectorize, the extent of a vectorized domain must
@@ -551,7 +539,7 @@ void validateAndCollectVectorizeInfo(Fusion* fusion) {
         // on it to make sure their compute at position isn't to the right of
         // the vectorize dim.
         TORCH_INTERNAL_ASSERT(
-            i >= tv->getComputeAtPosition(),
+            i >= tv->getMaxComputePosition(),
             "IterDomains to the left of the compute at point cannot be vectorized: ",
             tv,
             "\n");
@@ -560,8 +548,8 @@ void validateAndCollectVectorizeInfo(Fusion* fusion) {
 
       if (concrete_id->getParallelType() == ParallelType::MisalignedVectorize) {
         TORCH_INTERNAL_ASSERT(
-            !tv->hasComputeAt() ||
-                tv->getComputeAtPosition() == tv->nDims() - 1,
+            tv->getMaxComputePosition() == 0 ||
+                tv->getMaxComputePosition() == tv->nDims() - 1,
             "Only allow misaligned vectorization in the -2 computeAt position.");
         TORCH_INTERNAL_ASSERT(
             tv->getMemoryType() == MemoryType::Local ||
@@ -717,20 +705,16 @@ std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> getLiveRangeOffsets
 
   std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> map;
 
-  ExpressionEvaluator ee(fusion);
-
   for (auto it = exprs.rbegin(); it != exprs.rend(); ++it) {
     auto expr = *it;
     for (auto consumer : ir_utils::filterByType<TensorView>(expr->outputs())) {
       for (auto consumer_root : consumer->getRootDomain()) {
-        auto consumer_start_offset = ee.evaluate(consumer_root->start());
-        auto consumer_stop_offset = ee.evaluate(consumer_root->stopOffset());
         TORCH_INTERNAL_ASSERT(
-            consumer_start_offset.has_value(),
+            consumer_root->start()->isConstInt(),
             "Can't evaluate start value of ",
             consumer_root->start());
         TORCH_INTERNAL_ASSERT(
-            consumer_stop_offset.has_value(),
+            consumer_root->stopOffset()->isConstInt(),
             "Can't evaluate stop value of ",
             consumer_root->stopOffset());
         auto it = map.find(consumer_root);
@@ -746,8 +730,8 @@ std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> getLiveRangeOffsets
           // is visible to outside of the fusion.
           map.insert(
               {consumer_root,
-               {consumer_start_offset->as<int64_t>(),
-                consumer_stop_offset->as<int64_t>()}});
+               {consumer_root->start()->evaluateInt(),
+                consumer_root->stopOffset()->evaluateInt()}});
         } else {
           // When the range of this root domain is already set, it
           // must be set by its consumers. Make sure the required
@@ -755,9 +739,10 @@ std::unordered_map<IterDomain*, std::pair<int64_t, int64_t>> getLiveRangeOffsets
           // this root domain.
           auto& consumer_range = it->second;
           TORCH_INTERNAL_ASSERT(
-              consumer_start_offset->as<int64_t>() <= consumer_range.first);
+              consumer_root->start()->evaluateInt() <= consumer_range.first);
           TORCH_INTERNAL_ASSERT(
-              consumer_stop_offset->as<int64_t>() <= consumer_range.second);
+              consumer_root->stopOffset()->evaluateInt() <=
+              consumer_range.second);
         }
       }
 
@@ -807,22 +792,18 @@ void validateSplit(
     Val* split_offset,
     int64_t domain_offset,
     const std::string& err_msg_prefix) {
-  ExpressionEvaluator ee(split_offset->fusion());
-
-  TORCH_INTERNAL_ASSERT(split_offset->isA<Int>());
-  auto split_offset_value = ee.evaluate(split_offset);
   TORCH_INTERNAL_ASSERT(
-      split_offset_value.has_value(),
+      split_offset->isConstInt(),
       err_msg_prefix,
       ": Unknown offset of split: ",
       split_offset);
 
   TORCH_INTERNAL_ASSERT(
-      split_offset_value.value() <= domain_offset,
+      split_offset->evaluateInt() <= domain_offset,
       err_msg_prefix,
       ": Split offset is larger than the domain offset.",
       " Split offset: ",
-      split_offset_value.value(),
+      split_offset->evaluateInt(),
       ". Domain offset: ",
       domain_offset);
 }
@@ -1130,11 +1111,11 @@ void validateSwizzle(Fusion* fusion) {
       auto inlined_swizzles = ir_utils::getAllSwizzlesBetween(
           tv->getMaybeRFactorDomain(),
           {tv->domain()->domain().begin(),
-           tv->domain()->domain().begin() + tv->getComputeAtPosition()});
+           tv->domain()->domain().begin() + tv->getMaxComputePosition()});
 
       auto not_inlined_swizzles = ir_utils::getAllSwizzlesBetween(
           tv->getMaybeRFactorDomain(),
-          {tv->domain()->domain().begin() + tv->getComputeAtPosition(),
+          {tv->domain()->domain().begin() + tv->getMaxComputePosition(),
            tv->domain()->domain().end()});
 
       // Check inlined swizzles: only loop swizzles can be inlined currently
@@ -1203,7 +1184,7 @@ void validateAndConvertIterDomainGrouping(Fusion* fusion) {
 
       // The CA position must be left of any grouped ID
       TORCH_CHECK(
-          tv->getComputeAtPosition() <= id_idx,
+          tv->getMaxComputePosition() <= id_idx,
           "Invalid use of ParallelType::Group.",
           " ComputeAt position must be left of grouped IDs: ",
           tv->toString());
@@ -1327,6 +1308,17 @@ void validateGroupedReductions(Fusion* fusion) {
           ". Up to ",
           kMaxNumGroupedReductions,
           " reductions are allowed.");
+    }
+  }
+}
+
+void validateLookupTV(Fusion* fusion) {
+  for (auto expr : fusion->exprs()) {
+    if (expr->isA<SelectOp>() || expr->isA<IndexSelectOp>()) {
+      TORCH_CHECK(
+          expr->input(0)->isFusionInput(),
+          "Lookup input must be a fusion input: ",
+          expr->toString());
     }
   }
 }

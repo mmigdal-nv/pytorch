@@ -196,7 +196,15 @@ std::vector<at::Tensor> FusionExecutorCache::runFusionWithInputs(
 
   auto kernel_runtime = getKernelRuntimeFor(args);
   most_recent_runtime_ = kernel_runtime;
+  int seq_id = 0;
+  // Record kernel input and output tensors so profiler can construct
+  // the data flow graph
+  RECORD_FUNCTION(
+      "run_fused_kernel",
+      std::vector<c10::IValue>(inputs.begin(), inputs.end()),
+      seq_id);
   auto outputs = kernel_runtime->runWithInput(args);
+  RECORD_OUTPUTS(outputs);
 
   // permute output tensor returned by kernel execution. See Part_3 in Note [
   // Permutation support in nvfuser ]
@@ -285,8 +293,7 @@ FusionKernelRuntime::FusionKernelRuntime(
   SchedulerRuntimeInfo runtime_info(fusion_copy.get(), args, true);
 
   // Initialize the evaluator simplifer
-  precomputed_values_ =
-      std::make_unique<FusionPrecomputedValues>(fusion_copy.get());
+  precomputed_values_ = std::make_unique<PrecomputedValues>(fusion_copy.get());
 
   //! Try to schedule the complete fusion
   scheduler_debug_utils::canScheduleMessage(
@@ -382,7 +389,7 @@ std::vector<at::Tensor> FusionKernelRuntime::runKernelWithInput(
     }
     std::cout << "With inputs:\n";
     for (auto i : c10::irange(args.size())) {
-      args[i]->print();
+      std::cout << "  " << args[i]->toString() << std::endl;
     }
     std::cout << "Compiler log: " << executor.compilerLog() << "\n";
     std::cout << scheduler_entry->params()->toString() << "\n";
@@ -757,7 +764,7 @@ c10::optional<FusionKernelRuntime::HeuristicsPtr> FusionKernelRuntime::
   FUSER_PERF_SCOPE("FusionKernelRuntime::getMaybeHeuristicsFor");
   auto complete_fusion = segmented_fusion_->completeFusion();
   SchedulerRuntimeInfo runtime_info(complete_fusion, args);
-  precomputed_values_->bindFusionInputs(args);
+  precomputed_values_->bindInputs(args);
   precomputed_values_->evaluate();
   runtime_info.expressionEvaluator().bindPrecomputedValues(
       precomputed_values_.get());
@@ -817,6 +824,14 @@ std::vector<at::Tensor> GraphCache::runGraphWithInputs(
       num_of_outputs_);
 
   return outputs;
+}
+
+std::string KernelArgumentHolder::toString() const {
+  std::stringstream ss;
+  for (const auto& arg : arguments_) {
+    ss << arg->toString() << "\n";
+  }
+  return ss.str();
 }
 
 } // namespace cuda

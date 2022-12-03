@@ -1,10 +1,10 @@
 #include <torch/csrc/jit/codegen/cuda/lower_loops.h>
 
 #include <torch/csrc/jit/codegen/cuda/arith.h>
+#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 #include <torch/csrc/jit/codegen/cuda/transform_replay.h>
@@ -152,7 +152,7 @@ void LoopNestGenerator::generate(const std::vector<Expr*>& exprs) {
   TORCH_INTERNAL_ASSERT(lowered_exprs_.empty());
 
   // Figure out loop structure of each expression. This can be a bit convoluted,
-  // for an example why see FusionAdvancedLowering6
+  // for an example why see Indexing17 test
 
   // Grab iteration domain dependencies, similar to the logic in
   // lower_expr_sort, EXCEPT dependencies are in opposite order,

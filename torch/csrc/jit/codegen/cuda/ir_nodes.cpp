@@ -72,85 +72,9 @@ bool areEqualScalars(Val* v1, Val* v2) {
   return ScalarCheck::sameAs(v1, v2);
 }
 
-Bool::Bool(IrBuilderPasskey passkey)
-    : Val(passkey, ValType::Scalar, DataType::Bool),
-      maybe_value_{c10::nullopt} {}
-
-Bool::Bool(IrBuilderPasskey passkey, bool value)
-    : Val(passkey, ValType::Scalar, DataType::Bool), maybe_value_{value} {}
-
-Bool::Bool(IrBuilderPasskey passkey, c10::optional<bool> value)
-    : Val(passkey, ValType::Scalar, DataType::Bool), maybe_value_{value} {}
-
-Bool::Bool(const Bool* src, IrCloner* ir_cloner)
-    : Val(src, ir_cloner), maybe_value_(src->maybe_value_) {}
-
-bool Bool::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<Bool>()) {
-    return false;
-  }
-  const auto other_bool = other->as<Bool>();
-  if (isConst() && other_bool->isConst()) {
-    return *value() == *(other_bool->value());
-  }
-  return false;
-}
-
-Double::Double(IrBuilderPasskey passkey)
-    : Val(passkey, ValType::Scalar, DataType::Double),
-      maybe_value_{c10::nullopt} {}
-
-Double::Double(IrBuilderPasskey passkey, ScalarType value)
-    : Val(passkey, ValType::Scalar, DataType::Double), maybe_value_{value} {}
-
-Double::Double(IrBuilderPasskey passkey, c10::optional<ScalarType> value)
-    : Val(passkey, ValType::Scalar, DataType::Double), maybe_value_{value} {}
-
-Double::Double(const Double* src, IrCloner* ir_cloner)
-    : Val(src, ir_cloner), maybe_value_(src->maybe_value_) {}
-
-bool Double::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<Double>()) {
-    return false;
-  }
-  const auto other_double = other->as<Double>();
-  if (isConst() && other_double->isConst())
-    return *value() == *(other_double->value());
-  return false;
-}
-
-Int::Int(IrBuilderPasskey passkey)
-    : Val(passkey, ValType::Scalar, DataType::Int),
-      maybe_value_{c10::nullopt} {}
-
-Int::Int(IrBuilderPasskey passkey, ScalarType value)
-    : Val(passkey, ValType::Scalar, DataType::Int), maybe_value_{value} {}
-
-Int::Int(IrBuilderPasskey passkey, c10::optional<ScalarType> value)
-    : Val(passkey, ValType::Scalar, DataType::Int), maybe_value_{value} {}
-
-Int::Int(const Int* src, IrCloner* ir_cloner)
-    : Val(src, ir_cloner), maybe_value_(src->maybe_value_) {}
-
-bool Int::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<Int>()) {
-    return false;
-  }
-  const auto other_int = other->as<Int>();
-  if (isConst() && other_int->isConst()) {
-    return *value() == *(other_int->value());
-  }
-  return false;
-}
+template class Scalar<bool>;
+template class Scalar<int64_t>;
+template class Scalar<double>;
 
 ComplexDouble::ComplexDouble(IrBuilderPasskey passkey)
     : Val(passkey, ValType::Scalar, DataType::ComplexDouble),
@@ -168,6 +92,8 @@ ComplexDouble::ComplexDouble(
 
 ComplexDouble::ComplexDouble(const ComplexDouble* src, IrCloner* ir_cloner)
     : Val(src, ir_cloner), maybe_value_(src->maybe_value_) {}
+
+NVFUSER_DEFINE_CLONE(ComplexDouble)
 
 bool ComplexDouble::sameAs(const Statement* other) const {
   if (this == other) {
@@ -187,7 +113,7 @@ FullOp::FullOp(
     Val* out,
     Val* fill_value,
     DataType dtype)
-    : Expr(passkey, ExprType::FullOp), dtype_(dtype), fill_value_(fill_value) {
+    : Expr(passkey) {
   if (out->isA<TensorView>()) {
     auto tv_root = out->as<TensorView>()->getRootDomain();
     for (auto id : tv_root) {
@@ -196,32 +122,44 @@ FullOp::FullOp(
   }
   addInput(fill_value);
   addOutput(out);
+  addAttribute(
+      IrBuilder::create<Attribute<DataType>>(passkey.ir_container_, dtype));
 }
 
-FullOp::FullOp(const FullOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      dtype_(src->dtype()),
-      fill_value_(ir_cloner->clone(src->fill_value_)) {}
+NVFUSER_DEFINE_CLONE_AND_CREATE(FullOp)
 
-Expr* FullOp::shallowCopy() const {
-  auto result = IrBuilder::create<FullOp>(output(0), fill_value_, dtype_);
-  result->copyPredicatesFrom(this);
-  return result;
+SelectOp::SelectOp(
+    IrBuilderPasskey passkey,
+    Val* out,
+    Val* in,
+    IterDomain* select_id,
+    Val* index)
+    : Expr(passkey) {
+  addInput(in);
+  addInput(index);
+  addOutput(out);
+  addAttribute(select_id);
+  addAttribute(index);
 }
 
-bool FullOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<FullOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<FullOp>();
-  if (dtype_ != other_op->dtype_) {
-    return false;
-  }
-  return Expr::sameAs(other);
+NVFUSER_DEFINE_CLONE_AND_CREATE(SelectOp)
+
+IndexSelectOp::IndexSelectOp(
+    IrBuilderPasskey passkey,
+    Val* out,
+    Val* in,
+    int dim,
+    IterDomain* select_id,
+    Val* indices)
+    : Expr(passkey) {
+  addInput(in);
+  addInput(indices);
+  addOutput(out);
+  addAttribute(select_id);
+  addAttribute(IrBuilder::create<Attribute<int>>(passkey.ir_container_, dim));
 }
+
+NVFUSER_DEFINE_CLONE_AND_CREATE(IndexSelectOp)
 
 ARangeOp::ARangeOp(
     IrBuilderPasskey passkey,
@@ -231,62 +169,17 @@ ARangeOp::ARangeOp(
     Val* step,
     DataType dtype,
     Val* linear_index)
-    : Expr(passkey, ExprType::ARangeOp),
-      dtype_(dtype),
-      start_(start),
-      end_(end),
-      step_(step),
-      linear_index_(linear_index) {
+    : Expr(passkey) {
   addInput(start);
   addInput(end);
   addInput(step);
   addOutput(out);
+  addAttribute(
+      IrBuilder::create<Attribute<DataType>>(passkey.ir_container_, dtype));
+  addAttribute(linear_index);
 }
 
-ARangeOp::ARangeOp(const ARangeOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      dtype_(src->dtype()),
-      start_(ir_cloner->clone(src->start_)),
-      end_(ir_cloner->clone(src->end_)),
-      step_(ir_cloner->clone(src->step_)),
-      linear_index_(ir_cloner->clone(src->linear_index_)) {}
-
-Expr* ARangeOp::shallowCopy() const {
-  auto result = IrBuilder::create<ARangeOp>(
-      output(0), start_, end_, step_, dtype_, linear_index_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool ARangeOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<ARangeOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<ARangeOp>();
-  if (dtype_ != other_op->dtype_) {
-    return false;
-  }
-  if (!start_->sameAs(other_op->start_)) {
-    return false;
-  }
-  if (!end_->sameAs(other_op->end_)) {
-    return false;
-  }
-  if (!step_->sameAs(other_op->step_)) {
-    return false;
-  }
-  if ((linear_index_ == nullptr) != (other_op->linear_index_ == nullptr)) {
-    return false;
-  }
-  if ((linear_index_ != nullptr) &&
-      !linear_index_->sameAs(other_op->linear_index_)) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(ARangeOp)
 
 EyeOp::EyeOp(
     IrBuilderPasskey passkey,
@@ -294,10 +187,7 @@ EyeOp::EyeOp(
     DataType dtype,
     Val* index1,
     Val* index2)
-    : Expr(passkey, ExprType::EyeOp),
-      dtype_(dtype),
-      index1_(index1),
-      index2_(index2) {
+    : Expr(passkey) {
   if (out->isA<TensorView>()) {
     addInput(out->as<TensorView>()->getRootDomain()[0]->extent());
     if (out->as<TensorView>()->getRootDomain()[1] !=
@@ -306,85 +196,23 @@ EyeOp::EyeOp(
     }
   }
   addOutput(out);
+  addAttribute(
+      IrBuilder::create<Attribute<DataType>>(passkey.ir_container_, dtype));
+  addAttribute(index1);
+  addAttribute(index2);
 }
 
-EyeOp::EyeOp(const EyeOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      dtype_(src->dtype_),
-      index1_(ir_cloner->clone(src->index1_)),
-      index2_(ir_cloner->clone(src->index2_)) {}
+NVFUSER_DEFINE_CLONE_AND_CREATE(EyeOp)
 
-Expr* EyeOp::shallowCopy() const {
-  auto result = IrBuilder::create<EyeOp>(output(0), dtype_, index1_, index2_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool EyeOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<EyeOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<EyeOp>();
-  if (dtype_ != other_op->dtype_) {
-    return false;
-  }
-  if ((index1_ == nullptr) != (other_op->index1_ == nullptr)) {
-    return false;
-  }
-  if ((index2_ == nullptr) != (other_op->index2_ == nullptr)) {
-    return false;
-  }
-  if ((index1_ != nullptr) && !index1_->sameAs(other_op->index1_)) {
-    return false;
-  }
-  if ((index2_ != nullptr) && !index2_->sameAs(other_op->index2_)) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
-
-UnaryOp::UnaryOp(
-    IrBuilderPasskey passkey,
-    UnaryOpType type,
-    Val* out,
-    Val* in,
-    int rng_offset)
-    : Expr(passkey, ExprType::UnaryOp),
-      unary_op_type_{type},
-      out_{out},
-      in_{in} {
+UnaryOp::UnaryOp(IrBuilderPasskey passkey, UnaryOpType type, Val* out, Val* in)
+    : Expr(passkey) {
   addOutput(out);
   addInput(in);
+  addAttribute(
+      IrBuilder::create<Attribute<UnaryOpType>>(passkey.ir_container_, type));
 }
 
-UnaryOp::UnaryOp(const UnaryOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      unary_op_type_(src->unary_op_type_),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)) {}
-
-Expr* UnaryOp::shallowCopy() const {
-  auto result = IrBuilder::create<UnaryOp>(unary_op_type_, out_, in_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool UnaryOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<UnaryOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<UnaryOp>();
-  if (getUnaryOpType() != other_op->getUnaryOpType()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(UnaryOp)
 
 BinaryOp::BinaryOp(
     IrBuilderPasskey passkey,
@@ -392,42 +220,15 @@ BinaryOp::BinaryOp(
     Val* out,
     Val* lhs,
     Val* rhs)
-    : Expr(passkey, ExprType::BinaryOp),
-      binary_op_type_{type},
-      out_{out},
-      lhs_{lhs},
-      rhs_{rhs} {
+    : Expr(passkey) {
   addOutput(out);
   addInput(lhs);
   addInput(rhs);
+  addAttribute(
+      IrBuilder::create<Attribute<BinaryOpType>>(passkey.ir_container_, type));
 }
 
-BinaryOp::BinaryOp(const BinaryOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      binary_op_type_(src->binary_op_type_),
-      out_(ir_cloner->clone(src->out_)),
-      lhs_(ir_cloner->clone(src->lhs_)),
-      rhs_(ir_cloner->clone(src->rhs_)) {}
-
-Expr* BinaryOp::shallowCopy() const {
-  auto result = IrBuilder::create<BinaryOp>(binary_op_type_, out_, lhs_, rhs_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool BinaryOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<BinaryOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<BinaryOp>();
-  if (getBinaryOpType() != other_op->getBinaryOpType()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(BinaryOp)
 
 TernaryOp::TernaryOp(
     IrBuilderPasskey passkey,
@@ -436,46 +237,16 @@ TernaryOp::TernaryOp(
     Val* in1,
     Val* in2,
     Val* in3)
-    : Expr(passkey, ExprType::TernaryOp),
-      ternary_op_type_{type},
-      out_{out},
-      in1_{in1},
-      in2_{in2},
-      in3_{in3} {
+    : Expr(passkey) {
   addOutput(out);
   addInput(in1);
   addInput(in2);
   addInput(in3);
+  addAttribute(
+      IrBuilder::create<Attribute<TernaryOpType>>(passkey.ir_container_, type));
 }
 
-TernaryOp::TernaryOp(const TernaryOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      ternary_op_type_(src->ternary_op_type_),
-      out_(ir_cloner->clone(src->out_)),
-      in1_(ir_cloner->clone(src->in1_)),
-      in2_(ir_cloner->clone(src->in2_)),
-      in3_(ir_cloner->clone(src->in3_)) {}
-
-Expr* TernaryOp::shallowCopy() const {
-  auto result =
-      IrBuilder::create<TernaryOp>(ternary_op_type_, out_, in1_, in2_, in3_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool TernaryOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<TernaryOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<TernaryOp>();
-  if (getTernaryOpType() != other_op->getTernaryOpType()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(TernaryOp)
 
 RNGOp::RNGOp(
     IrBuilderPasskey passkey,
@@ -485,74 +256,31 @@ RNGOp::RNGOp(
     std::vector<Val*> parameters,
     int rng_offset,
     Val* philox_index)
-    : Expr(passkey, ExprType::RNGOp),
-      rng_op_type_(type),
-      dtype_(dtype),
-      parameters_(std::move(parameters)),
-      rng_offset_(rng_offset),
-      philox_index_(philox_index) {
-  if (out->isA<TensorView>()) {
-    for (auto id : out->as<TensorView>()->getRootDomain()) {
-      shape_.emplace_back(id->extent());
+    : Expr(passkey) {
+  if (auto tv_out = dynamic_cast<TensorView*>(out)) {
+    for (auto id : tv_out->getRootDomain()) {
+      TORCH_CHECK(!id->isReduction(), "Output of RNGOp can not have reduction");
+      addInput(id->extent());
     }
   }
-  for (auto v : shape_) {
-    addInput(v);
-  }
-  for (auto v : parameters_) {
+  for (auto v : parameters) {
     addInput(v);
   }
   addOutput(out);
+  RNGOp::Attributes attr{type, dtype, rng_offset};
+  addAttribute(IrBuilder::create<Attribute<RNGOp::Attributes>>(
+      passkey.ir_container_, attr));
+  addAttribute(philox_index);
 }
 
-RNGOp::RNGOp(const RNGOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      rng_op_type_(src->rng_op_type_),
-      dtype_(src->dtype()),
-      parameters_(ir_cloner->clone(src->parameters_)),
-      rng_offset_(src->rng_offset_),
-      philox_index_(ir_cloner->clone(src->philox_index_)) {}
+NVFUSER_DEFINE_CLONE_AND_CREATE(RNGOp)
 
-Expr* RNGOp::shallowCopy() const {
-  auto result = IrBuilder::create<RNGOp>(
-      rng_op_type_, output(0), dtype_, parameters_, rng_offset_, philox_index_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool RNGOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
+size_t RNGOp::getOutputDims() const {
+  size_t ndims = 0;
+  if (auto tv_out = dynamic_cast<TensorView*>(output(0))) {
+    ndims = tv_out->getRootDomain().size();
   }
-  if (!other->isA<RNGOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<RNGOp>();
-  if (getRNGOpType() != other_op->getRNGOpType()) {
-    return false;
-  }
-  if (dtype_ != other_op->dtype_) {
-    return false;
-  }
-  if (parameters_.size() != other_op->parameters_.size()) {
-    return false;
-  }
-  for (auto i : c10::irange(parameters_.size())) {
-    if (!parameters_[i]->sameAs(other_op->parameters_[i])) {
-      return false;
-    }
-  }
-  if (getRNGOffset() != other_op->getRNGOffset()) {
-    return false;
-  }
-  if ((philox_index_ == nullptr) != (other_op->philox_index_ == nullptr)) {
-    return false;
-  }
-  if ((philox_index_ != nullptr) &&
-      !philox_index_->sameAs(other_op->philox_index_)) {
-    return false;
-  }
-  return Expr::sameAs(other);
+  return ndims;
 }
 
 BroadcastOp::BroadcastOp(
@@ -560,10 +288,7 @@ BroadcastOp::BroadcastOp(
     Val* out,
     Val* in,
     std::vector<bool> is_broadcast_dims)
-    : Expr(passkey, ExprType::BroadcastOp),
-      out_(out),
-      in_(in),
-      is_broadcast_dims_(std::move(is_broadcast_dims)) {
+    : Expr(passkey) {
   auto out_type = out->getValType().value();
   auto in_type = in->getValType().value();
 
@@ -574,6 +299,8 @@ BroadcastOp::BroadcastOp(
 
   addOutput(out);
   addInput(in);
+  addAttribute(IrBuilder::create<Attribute<std::vector<bool>>>(
+      passkey.ir_container_, std::move(is_broadcast_dims)));
 
   if (!out->isA<TensorView>() || !in->isA<TensorView>()) {
     return;
@@ -584,13 +311,13 @@ BroadcastOp::BroadcastOp(
   auto in_dom = TensorDomain::noReductions(in_tv->getMaybeRFactorDomain());
   auto& out_dom = out_tv->getRootDomain();
   TORCH_INTERNAL_ASSERT(
-      is_broadcast_dims_.size() == out_dom.size(),
+      is_broadcast_dims.size() == out_dom.size(),
       "The dimensions of output tensor and does not match with is_broadcast_dims");
 
-  auto out_size = is_broadcast_dims_.size();
+  auto out_size = is_broadcast_dims.size();
   auto num_new_broadcasts = 0;
   for (const auto i : c10::irange(out_size)) {
-    if (is_broadcast_dims_[i]) {
+    if (is_broadcast_dims[i]) {
       num_new_broadcasts++;
       auto id = out_dom[i];
       TORCH_INTERNAL_ASSERT(
@@ -614,41 +341,14 @@ BroadcastOp::BroadcastOp(
       "The dimensions of output tensor and does not match with is_broadcast_dims and input tensor");
 }
 
-BroadcastOp::BroadcastOp(const BroadcastOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      is_broadcast_dims_(src->is_broadcast_dims_) {}
-
-Expr* BroadcastOp::shallowCopy() const {
-  auto result = IrBuilder::create<BroadcastOp>(out_, in_, is_broadcast_dims_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool BroadcastOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<BroadcastOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<BroadcastOp>();
-  if (getBroadcastDimFlags() != other_op->getBroadcastDimFlags()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(BroadcastOp)
 
 SqueezeOp::SqueezeOp(
     IrBuilderPasskey passkey,
     Val* out,
     Val* in,
     std::vector<bool> is_squeeze_dims)
-    : Expr(passkey, ExprType::SqueezeOp),
-      out_(out),
-      in_(in),
-      is_squeeze_dims_(std::move(is_squeeze_dims)) {
+    : Expr(passkey) {
   auto out_type = out->getValType().value();
   auto in_type = in->getValType().value();
 
@@ -659,6 +359,8 @@ SqueezeOp::SqueezeOp(
 
   addOutput(out);
   addInput(in);
+  addAttribute(IrBuilder::create<Attribute<std::vector<bool>>>(
+      passkey.ir_container_, std::move(is_squeeze_dims)));
 
   if (!out->isA<TensorView>() || !in->isA<TensorView>()) {
     return;
@@ -669,13 +371,13 @@ SqueezeOp::SqueezeOp(
   auto in_dom = TensorDomain::noReductions(in_tv->getMaybeRFactorDomain());
   auto& out_dom = out_tv->getRootDomain();
   TORCH_INTERNAL_ASSERT(
-      is_squeeze_dims_.size() == in_dom.size(),
+      is_squeeze_dims.size() == in_dom.size(),
       "The dimensions of input tensor and does not match with is_squeeze_dims");
 
-  auto in_size = is_squeeze_dims_.size();
+  auto in_size = is_squeeze_dims.size();
   auto num_removed_broadcasts = 0;
-  for (const auto i : c10::irange(is_squeeze_dims_.size())) {
-    if (is_squeeze_dims_[i]) {
+  for (const auto i : c10::irange(is_squeeze_dims.size())) {
+    if (is_squeeze_dims[i]) {
       num_removed_broadcasts++;
       auto id = in_dom[i];
       TORCH_INTERNAL_ASSERT(
@@ -697,31 +399,7 @@ SqueezeOp::SqueezeOp(
       "The dimensions of output tensor and does not match with is_squeeze_dims and input tensor");
 }
 
-SqueezeOp::SqueezeOp(const SqueezeOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      is_squeeze_dims_(src->is_squeeze_dims_) {}
-
-Expr* SqueezeOp::shallowCopy() const {
-  auto result = IrBuilder::create<SqueezeOp>(out_, in_, is_squeeze_dims_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool SqueezeOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<SqueezeOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<SqueezeOp>();
-  if (getSqueezeDimFlags() != other_op->getSqueezeDimFlags()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(SqueezeOp)
 
 ReductionOp::ReductionOp(
     IrBuilderPasskey passkey,
@@ -729,14 +407,8 @@ ReductionOp::ReductionOp(
     Val* init,
     Val* out,
     Val* in,
-    bool is_allreduce,
-    ExprType expr_type)
-    : Expr(passkey, expr_type),
-      reduction_op_type_(reduction_op_type),
-      init_(init),
-      out_(out),
-      in_(in),
-      is_allreduce_(is_allreduce) {
+    bool is_allreduce)
+    : Expr(passkey) {
   TORCH_CHECK(
       out->getValType().value() == ValType::TensorView ||
       out->getValType().value() == ValType::TensorIndex);
@@ -761,37 +433,14 @@ ReductionOp::ReductionOp(
 
   addOutput(out);
   addInput(in);
+  addAttribute(init);
+  addAttribute(IrBuilder::create<Attribute<BinaryOpType>>(
+      passkey.ir_container_, reduction_op_type));
+  addAttribute(
+      IrBuilder::create<Attribute<bool>>(passkey.ir_container_, is_allreduce));
 }
 
-ReductionOp::ReductionOp(const ReductionOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      reduction_op_type_(src->reduction_op_type_),
-      init_(ir_cloner->clone(src->init_)),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      is_allreduce_(src->is_allreduce_) {}
-
-Expr* ReductionOp::shallowCopy() const {
-  auto result = IrBuilder::create<ReductionOp>(
-      reduction_op_type_, init_, out_, in_, is_allreduce_, etype());
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool ReductionOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<ReductionOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<ReductionOp>();
-  // Note that init is not part of input vals, so it must be checked separately.
-  return (
-      Expr::sameAs(other) &&
-      getReductionOpType() == other_op->getReductionOpType() &&
-      init()->sameAs(other_op->init()));
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(ReductionOp)
 
 GroupedReductionOp::GroupedReductionOp(
     IrBuilderPasskey passkey,
@@ -799,12 +448,8 @@ GroupedReductionOp::GroupedReductionOp(
     std::vector<Val*> init_vals,
     std::vector<Val*> outputs,
     std::vector<Val*> inputs,
-    bool is_fused,
-    ExprType expr_type)
-    : Expr(passkey, expr_type),
-      reduction_op_types_(std::move(reduction_op_types)),
-      init_vals_(std::move(init_vals)),
-      is_allreduce_(is_fused) {
+    bool is_fused)
+    : Expr(passkey) {
   for (auto out : outputs) {
     addOutput(out);
   }
@@ -812,27 +457,18 @@ GroupedReductionOp::GroupedReductionOp(
   for (auto in : inputs) {
     addInput(in);
   }
+
+  addAttribute(IrBuilder::create<Attribute<std::vector<BinaryOpType>>>(
+      passkey.ir_container_, std::move(reduction_op_types)));
+  addAttribute(
+      IrBuilder::create<Attribute<bool>>(passkey.ir_container_, is_fused));
+
+  for (auto init : init_vals) {
+    addAttribute(init);
+  }
 }
 
-GroupedReductionOp::GroupedReductionOp(
-    const GroupedReductionOp* src,
-    IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      reduction_op_types_(src->reduction_op_types_),
-      init_vals_(ir_cloner->clone(src->init_vals_)),
-      is_allreduce_(src->is_allreduce_) {}
-
-Expr* GroupedReductionOp::shallowCopy() const {
-  auto result = IrBuilder::create<GroupedReductionOp>(
-      reduction_op_types_,
-      init_vals_,
-      outputs(),
-      inputs(),
-      is_allreduce_,
-      etype());
-  result->copyPredicatesFrom(this);
-  return result;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(GroupedReductionOp)
 
 int GroupedReductionOp::getExprIndexOfOutput(Val* output_val) const {
   auto it = std::find(outputs().begin(), outputs().end(), output_val);
@@ -842,114 +478,6 @@ int GroupedReductionOp::getExprIndexOfOutput(Val* output_val) const {
 
   TORCH_INTERNAL_ASSERT(
       false, "Not an output, ", output_val->toString(), ", of ", toString());
-}
-
-bool GroupedReductionOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-
-  auto grouped_rop = dynamic_cast<const GroupedReductionOp*>(other);
-  if (grouped_rop == nullptr) {
-    return false;
-  }
-
-  if (!Expr::sameAs(other) ||
-      getReductionOpTypes() != grouped_rop->getReductionOpTypes()) {
-    return false;
-  }
-
-  for (const auto i : c10::irange(numExprs())) {
-    if (!initVal(i)->sameAs(grouped_rop->initVal(i))) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-WelfordOp::WelfordOp(
-    IrBuilderPasskey passkey,
-    const WelfordTriplet& output,
-    const WelfordTriplet& input,
-    const WelfordTriplet& init,
-    bool is_fused)
-    : Expr(passkey, ExprType::WelfordOp),
-      output_(output),
-      input_(input),
-      init_(init),
-      is_allreduce_(is_fused) {
-  // Previously, nullptr was accepted and implicitly replaced by
-  // default values. Looks like we always pass some non-null values,
-  // so removed the implicit default behavior for code simplicity.
-  TORCH_INTERNAL_ASSERT(output.avg() != nullptr);
-  TORCH_INTERNAL_ASSERT(output.var() != nullptr);
-  TORCH_INTERNAL_ASSERT(output.N() != nullptr);
-  TORCH_INTERNAL_ASSERT(init.avg() != nullptr);
-  TORCH_INTERNAL_ASSERT(init.var() != nullptr);
-  TORCH_INTERNAL_ASSERT(init.N() != nullptr);
-  TORCH_INTERNAL_ASSERT(input.avg() != nullptr);
-  TORCH_INTERNAL_ASSERT(input.var() != nullptr);
-  TORCH_INTERNAL_ASSERT(input.N() != nullptr);
-
-  // Check output type
-  TORCH_INTERNAL_ASSERT(
-      output.avg()->getValType().value() == ValType::TensorView ||
-      output.avg()->getValType().value() == ValType::TensorIndex);
-  TORCH_INTERNAL_ASSERT(
-      output.var()->getValType().value() == ValType::TensorView ||
-      output.var()->getValType().value() == ValType::TensorIndex);
-  TORCH_INTERNAL_ASSERT(
-      output.N()->getValType().value() == ValType::TensorView ||
-      output.N()->getValType().value() == ValType::TensorIndex);
-  TORCH_INTERNAL_ASSERT(isIntegralType(output.N()->dtype()));
-
-  // check initial value
-  TORCH_INTERNAL_ASSERT(init.N()->getValType().value() == ValType::Scalar);
-  TORCH_INTERNAL_ASSERT(isIntegralType(init.N()->dtype()));
-  if (!init.N()->isZeroInt()) {
-    // when initial count is zero, no initial variance or average is needed
-    // initial value with a count of 1 is un-common enough that I'll push
-    // the responsibility of creating all-zero var tensors to the user
-    TORCH_INTERNAL_ASSERT(
-        init_.avg()->getValType().value() == ValType::TensorView ||
-        init_.avg()->getValType().value() == ValType::TensorIndex);
-    TORCH_INTERNAL_ASSERT(
-        init_.var()->getValType().value() == ValType::TensorView ||
-            init_.var()->getValType().value() == ValType::TensorIndex,
-        "Invalid initial var: ",
-        init_.var()->toString());
-  }
-
-  // check input
-  TORCH_INTERNAL_ASSERT(
-      input_.avg()->getValType().value() == ValType::TensorView ||
-          input_.avg()->getValType().value() == ValType::TensorIndex,
-      input_.avg()->getValType().value());
-  TORCH_INTERNAL_ASSERT(
-      input_.N()->getValType().value() == ValType::Scalar ||
-      input_.N()->getValType().value() == ValType::TensorView ||
-      input_.N()->getValType().value() == ValType::TensorIndex);
-  TORCH_INTERNAL_ASSERT(isIntegralType(input_.N()->dtype()));
-  if (!input_.N()->isOneInt()) {
-    // when input is only one value, only the value is required through avg
-    // input the var part is implicitly 0 and codegen will handle that.
-    TORCH_INTERNAL_ASSERT(
-        input_.var()->getValType().value() == ValType::TensorView ||
-        input_.var()->getValType().value() == ValType::TensorIndex);
-  } else {
-    TORCH_INTERNAL_ASSERT(
-        input_.var() == nullptr || input_.var()->isZeroInt(),
-        "Invalid var input, which must be either nullptr or scalar zero when the N input is one.");
-  }
-
-  addOutput(output_.avg());
-  addOutput(output_.var());
-  addOutput(output_.N());
-
-  addInput(input_.avg());
-  addInput(input_.var());
-  addInput(input_.N());
 }
 
 c10::optional<WelfordTriplet::ValName> WelfordTriplet::getNameOf(
@@ -984,6 +512,94 @@ std::vector<WelfordTriplet> WelfordTriplet::clone(
 
 WelfordOp::WelfordOp(
     IrBuilderPasskey passkey,
+    const WelfordTriplet& output,
+    const WelfordTriplet& input,
+    const WelfordTriplet& init,
+    bool is_fused)
+    : Expr(passkey) {
+  // Previously, nullptr was accepted and implicitly replaced by
+  // default values. Looks like we always pass some non-null values,
+  // so removed the implicit default behavior for code simplicity.
+  TORCH_INTERNAL_ASSERT(output.avg() != nullptr);
+  TORCH_INTERNAL_ASSERT(output.var() != nullptr);
+  TORCH_INTERNAL_ASSERT(output.N() != nullptr);
+  TORCH_INTERNAL_ASSERT(init.avg() != nullptr);
+  TORCH_INTERNAL_ASSERT(init.var() != nullptr);
+  TORCH_INTERNAL_ASSERT(init.N() != nullptr);
+  TORCH_INTERNAL_ASSERT(input.avg() != nullptr);
+  TORCH_INTERNAL_ASSERT(input.var() != nullptr);
+  TORCH_INTERNAL_ASSERT(input.N() != nullptr);
+
+  // Check output type
+  TORCH_INTERNAL_ASSERT(
+      output.avg()->getValType().value() == ValType::TensorView ||
+      output.avg()->getValType().value() == ValType::TensorIndex);
+  TORCH_INTERNAL_ASSERT(
+      output.var()->getValType().value() == ValType::TensorView ||
+      output.var()->getValType().value() == ValType::TensorIndex);
+  TORCH_INTERNAL_ASSERT(
+      output.N()->getValType().value() == ValType::TensorView ||
+      output.N()->getValType().value() == ValType::TensorIndex);
+  TORCH_INTERNAL_ASSERT(isIntegralType(output.N()->dtype()));
+
+  // check initial value
+  TORCH_INTERNAL_ASSERT(init.N()->getValType().value() == ValType::Scalar);
+  TORCH_INTERNAL_ASSERT(isIntegralType(init.N()->dtype()));
+  if (!init.N()->isZeroInt()) {
+    // when initial count is zero, no initial variance or average is needed
+    // initial value with a count of 1 is un-common enough that I'll push
+    // the responsibility of creating all-zero var tensors to the user
+    TORCH_INTERNAL_ASSERT(
+        init.avg()->getValType().value() == ValType::TensorView ||
+        init.avg()->getValType().value() == ValType::TensorIndex);
+    TORCH_INTERNAL_ASSERT(
+        init.var()->getValType().value() == ValType::TensorView ||
+            init.var()->getValType().value() == ValType::TensorIndex,
+        "Invalid initial var: ",
+        init.var()->toString());
+  }
+
+  // check input
+  TORCH_INTERNAL_ASSERT(
+      input.avg()->getValType().value() == ValType::TensorView ||
+          input.avg()->getValType().value() == ValType::TensorIndex,
+      input.avg()->getValType().value());
+  TORCH_INTERNAL_ASSERT(
+      input.N()->getValType().value() == ValType::Scalar ||
+      input.N()->getValType().value() == ValType::TensorView ||
+      input.N()->getValType().value() == ValType::TensorIndex);
+  TORCH_INTERNAL_ASSERT(isIntegralType(input.N()->dtype()));
+  if (!input.N()->isOneInt()) {
+    // when input is only one value, only the value is required through avg
+    // input the var part is implicitly 0 and codegen will handle that.
+    TORCH_INTERNAL_ASSERT(
+        input.var()->getValType().value() == ValType::TensorView ||
+        input.var()->getValType().value() == ValType::TensorIndex);
+  } else {
+    TORCH_INTERNAL_ASSERT(
+        input.var() == nullptr || input.var()->isZeroInt(),
+        "Invalid var input, which must be either nullptr or scalar zero when the N input is one.");
+  }
+
+  addOutput(output.avg());
+  addOutput(output.var());
+  addOutput(output.N());
+
+  addInput(input.avg());
+  addInput(input.var());
+  addInput(input.N());
+
+  addAttribute(init.avg());
+  addAttribute(init.var());
+  addAttribute(init.N());
+  addAttribute(
+      IrBuilder::create<Attribute<bool>>(passkey.ir_container_, is_fused));
+
+  TORCH_INTERNAL_ASSERT(attributes().size() == kNumAttrs);
+}
+
+WelfordOp::WelfordOp(
+    IrBuilderPasskey passkey,
     Val* out_avg,
     Val* out_var,
     Val* out_N,
@@ -1001,22 +617,10 @@ WelfordOp::WelfordOp(
           WelfordTriplet(init_avg, init_var, init_N),
           is_fused) {}
 
-WelfordOp::WelfordOp(const WelfordOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      output_(src->output_.clone(ir_cloner)),
-      input_(src->input_.clone(ir_cloner)),
-      init_(src->init_.clone(ir_cloner)),
-      is_allreduce_(src->is_allreduce_) {}
-
-Expr* WelfordOp::shallowCopy() const {
-  auto result =
-      IrBuilder::create<WelfordOp>(output_, input_, init_, is_allreduce_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(WelfordOp)
 
 Val* WelfordOp::getInitValOfOutput(Val* output_val) const {
-  auto val_name = output().getNameOf(output_val);
+  auto val_name = outputTriplet().getNameOf(output_val);
 
   TORCH_INTERNAL_ASSERT(
       val_name.has_value(),
@@ -1025,21 +629,11 @@ Val* WelfordOp::getInitValOfOutput(Val* output_val) const {
       " of ",
       toString());
 
-  return init().get(*val_name);
-}
-
-bool WelfordOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (auto other_wop = dynamic_cast<const WelfordOp*>(other)) {
-    return input_.sameAs(other_wop->input_) && init_.sameAs(other_wop->init_);
-  }
-  return false;
+  return initTriplet().get(*val_name);
 }
 
 std::vector<Val*> WelfordOp::getInitVals() const {
-  std::vector<Val*> init_vals({init_.avg(), init_.var(), init_.N()});
+  std::vector<Val*> init_vals({initAvg(), initVar(), initN()});
   return init_vals;
 }
 
@@ -1048,45 +642,40 @@ GroupedWelfordOp::GroupedWelfordOp(
     std::vector<WelfordTriplet> output_vals,
     std::vector<WelfordTriplet> input_vals,
     std::vector<WelfordTriplet> init_vals,
-    bool is_allreduce,
-    ExprType expr_type)
-    : Expr(passkey, expr_type),
-      output_vals_(std::move(output_vals)),
-      input_vals_(std::move(input_vals)),
-      init_vals_(std::move(init_vals)),
-      is_allreduce_(is_allreduce) {
-  const auto num_grouped_ops = output_vals_.size();
+    bool is_allreduce)
+    : Expr(passkey) {
+  const auto num_grouped_ops = output_vals.size();
 
   TORCH_INTERNAL_ASSERT(
-      input_vals_.size() == num_grouped_ops,
+      input_vals.size() == num_grouped_ops,
       "Invalid number of input arguments. Expected: ",
       num_grouped_ops,
       ", Given: ",
-      input_vals_.size());
+      input_vals.size());
   TORCH_INTERNAL_ASSERT(
-      init_vals_.size() == num_grouped_ops,
+      init_vals.size() == num_grouped_ops,
       "Invalid number of N arguments. Expected: ",
       num_grouped_ops,
       ", Given: ",
-      init_vals_.size());
+      init_vals.size());
 
   for (const auto i : c10::irange(num_grouped_ops)) {
     // Check output type
     TORCH_INTERNAL_ASSERT(
-        output_vals_[i].avg()->getValType().value() == ValType::TensorView ||
-        output_vals_[i].avg()->getValType().value() == ValType::TensorIndex);
+        output_vals[i].avg()->getValType().value() == ValType::TensorView ||
+        output_vals[i].avg()->getValType().value() == ValType::TensorIndex);
     TORCH_INTERNAL_ASSERT(
-        output_vals_[i].var()->getValType().value() == ValType::TensorView ||
-        output_vals_[i].var()->getValType().value() == ValType::TensorIndex);
+        output_vals[i].var()->getValType().value() == ValType::TensorView ||
+        output_vals[i].var()->getValType().value() == ValType::TensorIndex);
     TORCH_INTERNAL_ASSERT(
-        output_vals_[i].N()->getValType().value() == ValType::TensorView ||
-        output_vals_[i].N()->getValType().value() == ValType::TensorIndex);
-    TORCH_INTERNAL_ASSERT(isIntegralType(output_vals_[i].N()->dtype()));
+        output_vals[i].N()->getValType().value() == ValType::TensorView ||
+        output_vals[i].N()->getValType().value() == ValType::TensorIndex);
+    TORCH_INTERNAL_ASSERT(isIntegralType(output_vals[i].N()->dtype()));
 
     // check initial value
-    auto init_avg = init_vals_[i].avg();
-    auto init_var = init_vals_[i].var();
-    auto init_N = init_vals_[i].N();
+    auto init_avg = init_vals[i].avg();
+    auto init_var = init_vals[i].var();
+    auto init_N = init_vals[i].N();
     TORCH_INTERNAL_ASSERT(
         init_avg != nullptr && init_var != nullptr && init_N != nullptr,
         "nullptr init vals are not allowed");
@@ -1111,9 +700,9 @@ GroupedWelfordOp::GroupedWelfordOp(
         init_var->toString());
 
     // check input
-    auto in_avg = input_vals_[i].avg();
-    auto in_var = input_vals_[i].var();
-    auto in_N = input_vals_[i].N();
+    auto in_avg = input_vals[i].avg();
+    auto in_var = input_vals[i].var();
+    auto in_N = input_vals[i].N();
     TORCH_INTERNAL_ASSERT(
         in_avg != nullptr && in_var != nullptr && in_N != nullptr,
         "nullptr input vals are not allowed");
@@ -1145,56 +734,22 @@ GroupedWelfordOp::GroupedWelfordOp(
     }
   }
 
+  addAttribute(
+      IrBuilder::create<Attribute<bool>>(passkey.ir_container_, is_allreduce));
   for (const auto i : c10::irange(num_grouped_ops)) {
-    addOutput(output_vals_[i].avg());
-    addOutput(output_vals_[i].var());
-    addOutput(output_vals_[i].N());
-    addInput(input_vals_[i].avg());
-    addInput(input_vals_[i].var());
-    addInput(input_vals_[i].N());
+    addOutput(output_vals[i].avg());
+    addOutput(output_vals[i].var());
+    addOutput(output_vals[i].N());
+    addInput(input_vals[i].avg());
+    addInput(input_vals[i].var());
+    addInput(input_vals[i].N());
+    addAttribute(init_vals[i].avg());
+    addAttribute(init_vals[i].var());
+    addAttribute(init_vals[i].N());
   }
 }
 
-GroupedWelfordOp::GroupedWelfordOp(
-    const GroupedWelfordOp* src,
-    IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      output_vals_(WelfordTriplet::clone(src->output_vals_, ir_cloner)),
-      input_vals_(WelfordTriplet::clone(src->input_vals_, ir_cloner)),
-      init_vals_(WelfordTriplet::clone(src->init_vals_, ir_cloner)),
-      is_allreduce_(src->is_allreduce_) {}
-
-Expr* GroupedWelfordOp::shallowCopy() const {
-  auto result = IrBuilder::create<GroupedWelfordOp>(
-      output_vals_, input_vals_, init_vals_, is_allreduce_, etype());
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool GroupedWelfordOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-
-  auto grouped_op = dynamic_cast<const GroupedWelfordOp*>(other);
-  if (grouped_op == nullptr) {
-    return false;
-  }
-
-  if (!Expr::sameAs(other)) {
-    return false;
-  }
-
-  for (const auto i : c10::irange(numExprs())) {
-    if (!initAvg(i)->sameAs(grouped_op->initAvg(i)) ||
-        !initVar(i)->sameAs(grouped_op->initVar(i)) ||
-        !initN(i)->sameAs(grouped_op->initN(i))) {
-      return false;
-    }
-  }
-
-  return true;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(GroupedWelfordOp)
 
 int GroupedWelfordOp::getExprIndexOfOutput(Val* output_val) const {
   for (const auto expr_idx : c10::irange(numExprs())) {
@@ -1221,11 +776,7 @@ MmaOp::MmaOp(
     Val* in_a,
     Val* in_b,
     Val* init)
-    : Expr(passkey, ExprType::MmaOp),
-      out_(out),
-      in_a_(in_a),
-      in_b_(in_b),
-      init_(init) {
+    : Expr(passkey) {
   // Check output type
   TORCH_INTERNAL_ASSERT(
       out->getValType().value() == ValType::TensorView ||
@@ -1244,6 +795,9 @@ MmaOp::MmaOp(
   addOutput(out);
   addInput(in_a);
   addInput(in_b);
+  addAttribute(init);
+  addAttribute(
+      IrBuilder::create<Attribute<OptionsInMma>>(passkey.ir_container_));
 }
 
 MmaOp::MmaOp(
@@ -1254,34 +808,21 @@ MmaOp::MmaOp(
     Val* init,
     OptionsInMma options)
     : MmaOp(passkey, out, in_a, in_b, init) {
-  options_ = options;
+  attribute(1)->as<Attribute<OptionsInMma>>()->value = options;
 }
 
-MmaOp::MmaOp(const MmaOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_a_(ir_cloner->clone(src->in_a_)),
-      in_b_(ir_cloner->clone(src->in_b_)),
-      init_(ir_cloner->clone(src->init_)),
-      options_(src->options_) {}
+NVFUSER_DEFINE_CLONE_AND_CREATE(MmaOp)
 
-Expr* MmaOp::shallowCopy() const {
-  auto result = IrBuilder::create<MmaOp>(out_, in_a_, in_b_, init_);
-  result->options_ = options_;
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool MmaOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (auto other_mma = dynamic_cast<const MmaOp*>(other)) {
-    return out_->sameAs(other_mma->out_) && in_a_->sameAs(other_mma->in_a_) &&
-        in_b_->sameAs(other_mma->in_b_) && init_->sameAs(other_mma->init_) &&
-        options_ == other_mma->options_;
-  }
-  return false;
+void MmaOp::configureOptions(MmaOptions options) {
+  OptionsInMma& opt = attribute(1)->as<Attribute<OptionsInMma>>()->value;
+  TORCH_INTERNAL_ASSERT(
+      options.macro != MmaOptions::MacroType::NoMMA,
+      "Un-configured mma type from options.");
+  TORCH_INTERNAL_ASSERT(
+      options.accumulator_stride > 0, "Un-configured accumulator stride.");
+  opt.accumulator_stride = options.accumulator_stride;
+  opt.macro = options.macro;
+  opt.operand_layout = options.operand_layout;
 }
 
 TransposeOp::TransposeOp(
@@ -1289,10 +830,7 @@ TransposeOp::TransposeOp(
     TensorView* out,
     TensorView* in,
     std::vector<int64_t> new2old)
-    : Expr(passkey, ExprType::TransposeOp),
-      out_(out),
-      in_(in),
-      new2old_(std::move(new2old)) {
+    : Expr(passkey) {
   // Sanity check of the input parameters. Maybe not necessary as they
   // should be checked at function transpose.
 
@@ -1300,44 +838,36 @@ TransposeOp::TransposeOp(
       TensorDomain::noReductions(in->getMaybeRFactorDomain()).size() ==
       out->getMaybeRFactorDomain().size());
 
-  TORCH_INTERNAL_ASSERT(new2old_.size() == out->getMaybeRFactorDomain().size());
+  TORCH_INTERNAL_ASSERT(new2old.size() == out->getMaybeRFactorDomain().size());
 
   // Make sure the entries of new2old are unique and range from 0 to
   // N-1, where N == new2old.size().
-  std::set<int64_t> old_positions(new2old_.begin(), new2old_.end());
-  TORCH_INTERNAL_ASSERT(old_positions.size() == new2old_.size());
+  std::set<int64_t> old_positions(new2old.begin(), new2old.end());
+  TORCH_INTERNAL_ASSERT(old_positions.size() == new2old.size());
   // old_positions is sorted, so the first entry must be 0.
   TORCH_INTERNAL_ASSERT(
       *(old_positions.begin()) == 0,
       "Invalid new2old vector detected: ",
-      new2old_);
+      new2old);
   // The last entry must be N-1, since old_positions is sorted, starts
   // with 0, and its length is N.
   TORCH_INTERNAL_ASSERT(
-      *(old_positions.rbegin()) == (int)(new2old_.size() - 1),
+      *(old_positions.rbegin()) == (int)(new2old.size() - 1),
       "Invalid new2old vector detected: ",
-      new2old_);
+      new2old);
 
   addOutput(out);
   addInput(in);
+  addAttribute(IrBuilder::create<Attribute<std::vector<int64_t>>>(
+      passkey.ir_container_, std::move(new2old)));
 }
 
-TransposeOp::TransposeOp(const TransposeOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      new2old_(src->new2old_) {}
-
-Expr* TransposeOp::shallowCopy() const {
-  auto result = IrBuilder::create<TransposeOp>(out_, in_, new2old_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(TransposeOp)
 
 std::vector<int64_t> TransposeOp::old2new() const {
-  std::vector<int64_t> old2new(new2old_.size());
-  for (auto new_axis : c10::irange(new2old_.size())) {
-    auto old_axis = new2old_.at(new_axis);
+  std::vector<int64_t> old2new(new2old().size());
+  for (auto new_axis : c10::irange(new2old().size())) {
+    auto old_axis = new2old().at(new_axis);
     old2new[old_axis] = new_axis;
   }
   return old2new;
@@ -1348,13 +878,10 @@ ExpandOp::ExpandOp(
     TensorView* out,
     TensorView* in,
     std::vector<Val*> _expanded_extents)
-    : Expr(passkey, ExprType::ExpandOp),
-      out_(out),
-      in_(in),
-      expanded_extents_(std::move(_expanded_extents)) {
+    : Expr(passkey) {
   addOutput(out);
   addInput(in);
-  for (auto expanded_extent : expanded_extents_) {
+  for (auto expanded_extent : _expanded_extents) {
     TORCH_INTERNAL_ASSERT(expanded_extent != nullptr);
     TORCH_INTERNAL_ASSERT(
         expanded_extent->dtype() == DataType::Int,
@@ -1363,21 +890,7 @@ ExpandOp::ExpandOp(
   }
 }
 
-ExpandOp::ExpandOp(const ExpandOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)) {
-  expanded_extents_.reserve(src->expanded_extents_.size());
-  for (const auto expanded_extent : src->expanded_extents_) {
-    expanded_extents_.push_back(ir_cloner->clone(expanded_extent));
-  }
-}
-
-Expr* ExpandOp::shallowCopy() const {
-  auto result = IrBuilder::create<ExpandOp>(out_, in_, expanded_extents_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(ExpandOp)
 
 ShiftOp::ShiftOp(
     IrBuilderPasskey passkey,
@@ -1385,14 +898,10 @@ ShiftOp::ShiftOp(
     Val* in,
     std::vector<int> offsets,
     std::vector<int> pad_width)
-    : Expr(passkey, ExprType::ShiftOp),
-      out_(out),
-      in_(in),
-      offsets_(std::move(offsets)),
-      pad_width_(std::move(pad_width)) {
-  // clang-tidy complains about out_ that it may be null.
-  TORCH_INTERNAL_ASSERT(out_ != nullptr);
-  TORCH_INTERNAL_ASSERT(in_ != nullptr);
+    : Expr(passkey) {
+  // clang-tidy complains about out that it may be null.
+  TORCH_INTERNAL_ASSERT(out != nullptr);
+  TORCH_INTERNAL_ASSERT(in != nullptr);
 
   auto out_type = out->getValType().value();
   auto in_type = in->getValType().value();
@@ -1402,49 +911,28 @@ ShiftOp::ShiftOp(
       "Cannot shift a non-tensor object.");
 
   TORCH_INTERNAL_ASSERT(
-      offsets_.size() ==
-          TensorDomain::noReductions(in_->as<TensorView>()->getRootDomain())
+      offsets.size() ==
+          TensorDomain::noReductions(in->as<TensorView>()->getRootDomain())
               .size(),
       "Invalid offset vector: ",
-      offsets_);
+      offsets);
 
   TORCH_INTERNAL_ASSERT(
-      pad_width_.size() ==
-          TensorDomain::noReductions(in_->as<TensorView>()->getRootDomain())
+      pad_width.size() ==
+          TensorDomain::noReductions(in->as<TensorView>()->getRootDomain())
               .size(),
       "Invalid padding width vector: ",
-      pad_width_);
+      pad_width);
 
   addOutput(out);
   addInput(in);
+  addAttribute(IrBuilder::create<Attribute<std::vector<int>>>(
+      passkey.ir_container_, std::move(offsets)));
+  addAttribute(IrBuilder::create<Attribute<std::vector<int>>>(
+      passkey.ir_container_, std::move(pad_width)));
 }
 
-ShiftOp::ShiftOp(const ShiftOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      offsets_(src->offsets_),
-      pad_width_(src->pad_width_) {}
-
-Expr* ShiftOp::shallowCopy() const {
-  auto result = IrBuilder::create<ShiftOp>(out_, in_, offsets_, pad_width_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool ShiftOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<ShiftOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<ShiftOp>();
-  if (offsets() != other_op->offsets()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(ShiftOp)
 
 GatherOp::GatherOp(
     IrBuilderPasskey passkey,
@@ -1452,14 +940,10 @@ GatherOp::GatherOp(
     Val* in,
     std::vector<int> window_shape,
     std::vector<std::vector<int>> pad_width)
-    : Expr(passkey, ExprType::GatherOp),
-      out_(out),
-      in_(in),
-      window_shape_(std::move(window_shape)),
-      pad_width_(std::move(pad_width)) {
+    : Expr(passkey) {
   // clang-tidy complains about out_ that it may be null.
-  TORCH_INTERNAL_ASSERT(out_ != nullptr);
-  TORCH_INTERNAL_ASSERT(in_ != nullptr);
+  TORCH_INTERNAL_ASSERT(out != nullptr);
+  TORCH_INTERNAL_ASSERT(in != nullptr);
 
   auto out_type = out->getValType().value();
   auto in_type = in->getValType().value();
@@ -1469,52 +953,29 @@ GatherOp::GatherOp(
       "Cannot shift a non-tensor object.");
 
   const auto ndims =
-      TensorDomain::noReductions(in_->as<TensorView>()->getRootDomain()).size();
+      TensorDomain::noReductions(in->as<TensorView>()->getRootDomain()).size();
 
   TORCH_INTERNAL_ASSERT(
-      window_shape_.size() == ndims,
+      window_shape.size() == ndims,
       "Invalid window_shape vector: ",
-      window_shape_);
+      window_shape);
   TORCH_INTERNAL_ASSERT(
-      pad_width_.size() == ndims, "Invalid pad_width vector: ", pad_width_);
+      pad_width.size() == ndims, "Invalid pad_width vector: ", pad_width);
 
-  for (const auto& pad : pad_width_) {
+  for (const auto& pad : pad_width) {
     TORCH_INTERNAL_ASSERT(
         pad.size() == 2, "Padding size for each axis must have two Int vals.");
   }
 
   addOutput(out);
   addInput(in);
+  addAttribute(IrBuilder::create<Attribute<std::vector<int>>>(
+      passkey.ir_container_, std::move(window_shape)));
+  addAttribute(IrBuilder::create<Attribute<std::vector<std::vector<int>>>>(
+      passkey.ir_container_, std::move(pad_width)));
 }
 
-GatherOp::GatherOp(const GatherOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      window_shape_(src->window_shape_),
-      pad_width_(src->pad_width_) {}
-
-Expr* GatherOp::shallowCopy() const {
-  auto result =
-      IrBuilder::create<GatherOp>(out_, in_, window_shape_, pad_width_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool GatherOp::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<GatherOp>()) {
-    return false;
-  }
-  const auto other_op = other->as<GatherOp>();
-  if (windowShape() != other_op->windowShape() ||
-      padWidth() != other_op->padWidth()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(GatherOp)
 
 int GatherOp::gatherAxis(int axis) const {
   if (axis < 0) {
@@ -1531,69 +992,35 @@ ViewAsScalar::ViewAsScalar(
     Val* in,
     IterDomain* vector_id,
     Val* index)
-    : Expr(passkey, ExprType::ViewAsScalar),
-      out_(out),
-      in_(in),
-      vector_id_(vector_id),
-      index_(index) {
+    : Expr(passkey) {
+  addOutput(out);
+  addInput(in);
+  addAttribute(vector_id);
+  addAttribute(index);
+}
+
+NVFUSER_DEFINE_CLONE_AND_CREATE(ViewAsScalar)
+
+ViewOp::ViewOp(IrBuilderPasskey passkey, Val* out, Val* in) : Expr(passkey) {
   addOutput(out);
   addInput(in);
 }
 
-ViewAsScalar::ViewAsScalar(const ViewAsScalar* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)),
-      vector_id_(ir_cloner->clone(src->vector_id_)),
-      index_(ir_cloner->clone(src->index_)) {}
-
-Expr* ViewAsScalar::shallowCopy() const {
-  auto result = IrBuilder::create<ViewAsScalar>(out_, in_, vector_id_, index_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-ViewOp::ViewOp(IrBuilderPasskey passkey, TensorView* out, TensorView* in)
-    : Expr(passkey, ExprType::ViewOp), out_(out), in_(in) {
-  addOutput(out);
-  addInput(in);
-}
-
-ViewOp::ViewOp(const ViewOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)) {}
-
-Expr* ViewOp::shallowCopy() const {
-  auto result = IrBuilder::create<ViewOp>(out_, in_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(ViewOp)
 
 LoadStoreOp::LoadStoreOp(
     IrBuilderPasskey passkey,
     LoadStoreOpType op_type,
     Val* out,
     Val* in)
-    : Expr(passkey, ExprType::LoadStoreOp),
-      load_store_type_(op_type),
-      out_(out),
-      in_(in) {
+    : Expr(passkey) {
   addOutput(out);
   addInput(in);
+  addAttribute(IrBuilder::create<Attribute<LoadStoreOpType>>(
+      passkey.ir_container_, op_type));
 }
 
-LoadStoreOp::LoadStoreOp(const LoadStoreOp* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      load_store_type_(src->load_store_type_),
-      out_(ir_cloner->clone(src->out_)),
-      in_(ir_cloner->clone(src->in_)) {}
-
-Expr* LoadStoreOp::shallowCopy() const {
-  auto result = IrBuilder::create<LoadStoreOp>(load_store_type_, out_, in_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(LoadStoreOp)
 
 IterDomainBuilder::IterDomainBuilder(Val* _start, Val* _extent)
     : start_(_start), extent_(_extent) {
@@ -1701,7 +1128,7 @@ IterDomain::IterDomain(
     bool is_padded_dimension,
     c10::optional<int64_t> padded_to_size,
     bool is_mma_swizzled)
-    : Val(passkey, ValType::IterDomain, DataType::Int),
+    : Val(passkey, ValType::IterDomain),
       start_(start),
       extent_(extent),
       expanded_extent_(expanded_extent),
@@ -1761,6 +1188,8 @@ IterDomain::IterDomain(const IterDomain* src, IrCloner* ir_cloner)
       padded_to_size_(src->padded_to_size_),
       is_mma_swizzled_(src->is_mma_swizzled_) {}
 
+NVFUSER_DEFINE_CLONE(IterDomain)
+
 bool IterDomain::sameAs(const Statement* other) const {
   if (other == this) {
     return true;
@@ -1795,37 +1224,6 @@ IterDomain* IterDomain::cloneWithoutRFactor() const {
   return cloned;
 }
 
-bool IterDomain::isTrivialReduction() const {
-  if (!isReduction()) {
-    return false;
-  }
-
-  if (extent()->isOneInt()) {
-    return true;
-  }
-
-  // If this domain is an output of an expression, i.e., not a root
-  // domain, check if all root domains are trivial reductions. This is
-  // almost the same as the analysis done in TrivialReductionInfo, but
-  // is limited within a single tensor, whereas TrivialReductionInfo
-  // does more expensive analysis potentially traversing through
-  // rfactor domains
-  if (definition()) {
-    // Note: There's no const version of IterVisitor.
-    auto id_inputs = InputsOf::output(fusion(), const_cast<IterDomain*>(this));
-    if (std::all_of(
-            ir_utils::filterByType<IterDomain>(id_inputs).begin(),
-            ir_utils::filterByType<IterDomain>(id_inputs).end(),
-            [](IterDomain* root_id) {
-              return root_id->isReduction() && root_id->extent()->isOneInt();
-            })) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 std::vector<IterDomain*> IterDomain::clone(
     const std::vector<IterDomain*>& domains) {
   std::vector<IterDomain*> cloned_domains;
@@ -1847,9 +1245,7 @@ IterDomain* IterDomain::merge(IterDomain* outer, IterDomain* inner) {
       !outer->extent()->isZeroInt() && !inner->extent()->isZeroInt(),
       "Merging IterDomains with ending values that are 0 is not supported at this time.");
   TORCH_CHECK(
-      outer->isReduction() == inner->isReduction() ||
-          (!outer->isReduction() && inner->isTrivialReduction()) ||
-          (outer->isTrivialReduction() && !inner->isReduction()),
+      outer->isReduction() == inner->isReduction(),
       "Merging IterDomains requires that their iteration types match. ",
       "Outer: ",
       outer->toString(),
@@ -1876,21 +1272,6 @@ IterDomain* IterDomain::merge(IterDomain* outer, IterDomain* inner) {
       (outer->getIterType() == IterType::Iteration ||
        inner->getIterType() == IterType::Iteration)) {
     itype = IterType::Iteration;
-  }
-
-  // Merging trivial reduction with iter domain, that's fine, just make it an
-  // iter domain.
-  if ((outer->isTrivialReduction() || inner->isTrivialReduction()) &&
-      (outer->getIterType() == IterType::Iteration ||
-       inner->getIterType() == IterType::Iteration)) {
-    itype = IterType::Iteration;
-  }
-
-  // Merging trivial reduction with broadcasting, that's fine, just make it a
-  // broadcasting.
-  if ((outer->isTrivialReduction() || inner->isTrivialReduction()) &&
-      (outer->isBroadcast() || inner->isBroadcast())) {
-    itype = IterType::Broadcast;
   }
 
   Val* expanded_extent = nullptr;
@@ -2142,7 +1523,7 @@ TensorDomain::TensorDomain(
       root_domain_.size());
 
   // Just due to clang-tidy, correct value set in resetDomains
-  has_nontrivial_reduction_ = false;
+  has_reduction_ = false;
   domain_ = root_domain_;
   resetDomains();
 }
@@ -2181,7 +1562,7 @@ TensorDomain::TensorDomain(
   });
 
   // Just due to clang-tidy, correct value set in resetDomains
-  has_nontrivial_reduction_ = false;
+  has_reduction_ = false;
   resetDomains();
 }
 
@@ -2231,7 +1612,7 @@ TensorDomain::TensorDomain(
   });
 
   // Just due to clang-tidy, correct value set in resetDomains
-  has_nontrivial_reduction_ = false;
+  has_reduction_ = false;
   resetDomains();
 }
 
@@ -2243,7 +1624,9 @@ TensorDomain::TensorDomain(const TensorDomain* src, IrCloner* ir_cloner)
       no_reduction_domain_(ir_cloner->clone(src->no_reduction_domain_)),
       rfactor_domain_(ir_cloner->clone(src->rfactor_domain_)),
       contiguity_(src->contiguity()),
-      has_nontrivial_reduction_(src->has_nontrivial_reduction_) {}
+      has_reduction_(src->has_reduction_) {}
+
+NVFUSER_DEFINE_CLONE(TensorDomain)
 
 bool TensorDomain::hasBlockBroadcast() const {
   return std::any_of(domain_.begin(), domain_.end(), [](IterDomain* id) {
@@ -2331,7 +1714,7 @@ void TensorDomain::setContiguity(const std::vector<bool>& contig) {
 }
 
 bool TensorDomain::hasReduction() const {
-  return has_nontrivial_reduction_;
+  return has_reduction_;
 }
 
 bool TensorDomain::hasBlockReduction() const {
@@ -2621,15 +2004,8 @@ bool TensorDomain::hasBroadcast(const std::vector<IterDomain*>& td) {
 }
 
 bool TensorDomain::hasReduction(const std::vector<IterDomain*>& td) {
-  for (auto id : td)
-    if (id->isReduction())
-      return true;
-  return false;
-}
-
-bool TensorDomain::hasNontrivialReduction(const std::vector<IterDomain*>& td) {
   for (auto id : td) {
-    if (id->isReduction() && !id->isTrivialReduction()) {
+    if (id->isReduction()) {
       return true;
     }
   }
@@ -2724,44 +2100,29 @@ Split::Split(
     bool inner_split,
     Val* start_offset,
     Val* stop_offset)
-    : Expr(passkey, ExprType::Split),
-      outer_{outer},
-      inner_{inner},
-      in_{in},
-      factor_{factor},
-      inner_split_{inner_split},
-      start_offset_{
-          start_offset != nullptr ? start_offset
-                                  : passkey.ir_container_->zeroVal()},
-      stop_offset_{
-          stop_offset != nullptr ? stop_offset
-                                 : passkey.ir_container_->zeroVal()} {
+    : Expr(passkey) {
   TORCH_INTERNAL_ASSERT(
-      factor_->isAnInt(),
+      factor->isAnInt(),
       "Attempted to create a Split node with a non-integer factor.");
+  if (start_offset == nullptr) {
+    start_offset = passkey.ir_container_->zeroVal();
+  }
+  if (stop_offset == nullptr) {
+    stop_offset = passkey.ir_container_->zeroVal();
+  }
   addOutput(outer);
   addOutput(inner);
   addInput(in);
   // TODO add factor as an input, need to check Split::Split during validation
   // and need to check BestEffortReplay::findFirstMismatchedID addInput(factor);
+  addAttribute(factor);
+  addAttribute(
+      IrBuilder::create<Attribute<bool>>(passkey.ir_container_, inner_split));
+  addAttribute(start_offset);
+  addAttribute(stop_offset);
 }
 
-Split::Split(const Split* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      outer_(ir_cloner->clone(src->outer_)),
-      inner_(ir_cloner->clone(src->inner_)),
-      in_(ir_cloner->clone(src->in_)),
-      factor_(ir_cloner->clone(src->factor_)),
-      inner_split_(src->inner_split_),
-      start_offset_(ir_cloner->clone(src->start_offset_)),
-      stop_offset_(ir_cloner->clone(src->stop_offset_)) {}
-
-Expr* Split::shallowCopy() const {
-  auto result = IrBuilder::create<Split>(
-      outer_, inner_, in_, factor_, inner_split_, start_offset_, stop_offset_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(Split)
 
 Val* Split::extent(Val* in_extent, Val* start_offset, Val* stop_offset) {
   TORCH_INTERNAL_ASSERT(in_extent != nullptr);
@@ -2777,52 +2138,18 @@ Val* Split::extent(Val* in_extent, Val* start_offset, Val* stop_offset) {
   return in_extent;
 }
 
-bool Split::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<Split>()) {
-    return false;
-  }
-  return Expr::sameAs(other) &&
-      factor()->sameAs(other->as<Split>()->factor()) &&
-      innerSplit() == other->as<Split>()->innerSplit() &&
-      startOffset()->sameAs(other->as<Split>()->startOffset()) &&
-      stopOffset()->sameAs(other->as<Split>()->stopOffset());
-}
-
 Merge::Merge(
     IrBuilderPasskey passkey,
     IterDomain* out,
     IterDomain* outer,
     IterDomain* inner)
-    : Expr(passkey, ExprType::Merge), out_{out}, outer_{outer}, inner_{inner} {
+    : Expr(passkey) {
   addOutput(out);
   addInput(outer);
   addInput(inner);
 }
 
-Merge::Merge(const Merge* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_(ir_cloner->clone(src->out_)),
-      outer_(ir_cloner->clone(src->outer_)),
-      inner_(ir_cloner->clone(src->inner_)) {}
-
-Expr* Merge::shallowCopy() const {
-  auto result = IrBuilder::create<Merge>(out_, outer_, inner_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool Merge::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<Merge>()) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
+NVFUSER_DEFINE_CLONE_AND_CREATE(Merge)
 
 Swizzle2D::Swizzle2D(
     IrBuilderPasskey passkey,
@@ -2832,47 +2159,18 @@ Swizzle2D::Swizzle2D(
     IterDomain* in_y,
     Swizzle2DType swizzle_type,
     SwizzleMode swizzle_mode)
-    : Expr(passkey, ExprType::Swizzle2D),
-      out_x_{out_x},
-      out_y_{out_y},
-      in_x_{in_x},
-      in_y_{in_y},
-      swizzle_type_(swizzle_type),
-      swizzle_mode_(swizzle_mode) {
+    : Expr(passkey) {
   addOutput(out_x);
   addOutput(out_y);
   addInput(in_x);
   addInput(in_y);
+  addAttribute(IrBuilder::create<Attribute<Swizzle2DType>>(
+      passkey.ir_container_, swizzle_type));
+  addAttribute(IrBuilder::create<Attribute<SwizzleMode>>(
+      passkey.ir_container_, swizzle_mode));
 }
 
-Expr* Swizzle2D::shallowCopy() const {
-  auto result = IrBuilder::create<Swizzle2D>(
-      out_x_, out_y_, in_x_, in_y_, swizzle_type_, swizzle_mode_);
-  result->copyPredicatesFrom(this);
-  return result;
-}
-
-bool Swizzle2D::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<Swizzle2D>()) {
-    return false;
-  }
-  if (!(swizzle_type_ == other->as<Swizzle2D>()->swizzle_type_)) {
-    return false;
-  }
-  return Expr::sameAs(other);
-}
-
-Swizzle2D::Swizzle2D(const Swizzle2D* src, IrCloner* ir_cloner)
-    : Expr(src, ir_cloner),
-      out_x_(ir_cloner->clone(src->out_x_)),
-      out_y_(ir_cloner->clone(src->out_y_)),
-      in_x_(ir_cloner->clone(src->in_x_)),
-      in_y_(ir_cloner->clone(src->in_y_)),
-      swizzle_type_(src->swizzle_type_),
-      swizzle_mode_(src->swizzle_mode_) {}
+NVFUSER_DEFINE_CLONE_AND_CREATE(Swizzle2D)
 
 NamedScalar::NamedScalar(
     IrBuilderPasskey passkey,
@@ -2882,6 +2180,8 @@ NamedScalar::NamedScalar(
 
 NamedScalar::NamedScalar(const NamedScalar* src, IrCloner* ir_cloner)
     : Val(src, ir_cloner), name_(src->name_) {}
+
+NVFUSER_DEFINE_CLONE(NamedScalar)
 
 bool NamedScalar::sameAs(const Statement* other) const {
   if (this == other) {

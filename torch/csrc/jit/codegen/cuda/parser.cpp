@@ -1513,6 +1513,37 @@ class IrParser {
             nullptr);
       }
     }
+    {
+      if (isOptionEnabled(EnableOption::GraphOp)) {
+        auto ptr_op = getOperatorForLiteral(
+            "aten::index_select(Tensor self, int dim, Tensor index) -> Tensor");
+        REGISTER_PARSE_RULE(
+            ptr_op,
+            {
+              MemoryFormat format;
+              std::list<Val*> list_val;
+              std::tie(format, list_val) = getPWFormatValues(
+                  c10::nullopt,
+                  value_map[node->inputs()[0]->unique()],
+                  value_map[node->inputs()[2]->unique()]);
+              auto input = list_val.front();
+              list_val.pop_front();
+              auto dim_value = constant_as<int>(node->input(1));
+              TORCH_INTERNAL_ASSERT(
+                  dim_value.has_value(), "dim in index_select is not valid");
+              auto index = list_val.front();
+              list_val.pop_front();
+              Val* out = index_select(
+                  input->as<TensorView>(),
+                  dim_value.value(),
+                  index->as<TensorView>());
+              value_map.emplace(
+                  node->output()->unique(), ValueHolder(out, format));
+            },
+            isInputNonSizeZeroTensor,
+            nullptr);
+      }
+    }
 
     {
       auto ptr_op = getOperatorForLiteral(
@@ -4301,6 +4332,22 @@ bool insertProfileIValue(ProfilingRecord* pr, Node* node, size_t offset) {
     return true;
   }
 
+  static auto index_select_schema =
+      getOperatorForLiteral(
+          "aten::index_select(Tensor self, int dim, Tensor index) -> Tensor")
+          ->schema();
+  if (node->matches(index_select_schema)) {
+    switch (offset) {
+      // argument 1: unsqueeze dim;
+      case 1:
+        profileInt(pr, node, offset);
+        break;
+      default:
+        return false;
+    }
+    return true;
+  }
+
   static auto batch_norm_impl_index_schema =
       getOperatorForLiteral(
           "aten::_batch_norm_impl_index(Tensor input, Tensor? weight, Tensor? bias, Tensor? running_mean, Tensor? running_var, bool training, float momentum, float eps, bool cudnn_enabled) -> (Tensor, Tensor, Tensor, Tensor, int)")
@@ -4506,6 +4553,30 @@ bool insertProfileIValue(ProfilingRecord* pr, Node* node, size_t offset) {
         return true;
       case 3:
         profileInt(pr, node, offset);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  static auto var_dim_schema =
+      getOperatorForLiteral(
+          "aten::var.dim(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False) -> Tensor")
+          ->schema();
+  static auto std_dim_schema =
+      getOperatorForLiteral(
+          "aten::std.dim(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False) -> Tensor")
+          ->schema();
+  if (node->matches(var_dim_schema) || node->matches(std_dim_schema)) {
+    switch (offset) {
+      case 1:
+        profileIntList(pr, node, offset);
+        return true;
+      case 2:
+        profileBool(pr, node, offset);
+        return true;
+      case 3:
+        profileBool(pr, node, offset);
         return true;
       default:
         return false;

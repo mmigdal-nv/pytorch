@@ -132,6 +132,19 @@ TORCH_CUDA_CU_API WelfordResult Welford(
     // import IrBuilder just for this one interface.
     Int* init_N = nullptr);
 
+//! Create a raw WelfordOp. Don't convert size-1 or size-0 reduction into
+//! squeeze/full.
+TORCH_CUDA_CU_API WelfordResult WelfordRaw(
+    TensorView* tv,
+    const std::vector<int>& axes,
+    TensorView* init_avg = nullptr,
+    TensorView* init_var = nullptr,
+    // Initializes to 0 in function definition, doing this so we don't have to
+    // import IrBuilder just for this one interface.
+    Int* init_N = nullptr);
+
+TORCH_CUDA_CU_API TensorView* select(TensorView* tv, int dim, Int* index);
+
 // RNG OPERATIONS
 TORCH_CUDA_CU_API TensorView* rand(
     const std::vector<Val*>& shape,
@@ -144,10 +157,19 @@ TORCH_CUDA_CU_API TensorView* uniform(
     Val* low,
     Val* high,
     DataType dtype);
+TORCH_CUDA_CU_API TensorView* normal(
+    const std::vector<Val*>& shape,
+    Val* mean,
+    Val* std,
+    DataType dtype);
 
 // TENSOR FACTORIES
 TORCH_CUDA_CU_API TensorView* full(
     const std::vector<Val*>& shape,
+    Val* fill_value,
+    DataType dtype);
+TORCH_CUDA_CU_API TensorView* full_like(
+    TensorView* tv,
     Val* fill_value,
     DataType dtype);
 TORCH_CUDA_CU_API TensorView* full_like(TensorView* tv, Val* fill_value);
@@ -349,6 +371,11 @@ TORCH_CUDA_CU_API TensorView* expand(
 // non broadcasted iter domain, inp will be expanded to other's size.
 TORCH_CUDA_CU_API TensorView* expand_as(TensorView* inp, TensorView* other);
 
+// This is a function used to give the symbolic sizes of a tensor for use
+// with functions like broadcast_in_size that take in a vector of sizes
+// to use to expand an input tensor
+TORCH_CUDA_CU_API std::vector<Val*> tensor_sizes(TensorView* inp);
+
 // BINARY OPERATIONS
 // add
 TORCH_CUDA_CU_API Val* add(Val* v1, Val* v2);
@@ -360,12 +387,14 @@ TORCH_CUDA_CU_API Val* atan2(Val* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* atan2(TensorView* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* atan2(Val* v1, TensorView* v2);
 TORCH_CUDA_CU_API TensorView* atan2(TensorView* v1, TensorView* v2);
-// div
+// div: promote to float for integer division, has the same semantics as the
+// python's operator /
 TORCH_CUDA_CU_API Val* div(Val* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* div(TensorView* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* div(Val* v1, TensorView* v2);
 TORCH_CUDA_CU_API TensorView* div(TensorView* v1, TensorView* v2);
-// cpp_div: similar to div, but don't promote to float
+// cpp_div: similar to div, but don't promote to float, this has the same
+// semantics as the C++'s operator /
 TORCH_CUDA_CU_API Val* cpp_div(Val* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* cpp_div(TensorView* v1, Val* v2);
 TORCH_CUDA_CU_API TensorView* cpp_div(Val* v1, TensorView* v2);
@@ -519,6 +548,11 @@ TORCH_CUDA_CU_API TensorView* lerp(
     TensorView* start,
     TensorView* end,
     TensorView* weight);
+// index_select
+TORCH_CUDA_CU_API TensorView* index_select(
+    TensorView* input,
+    int dim,
+    TensorView* index);
 // addcmul
 TORCH_CUDA_CU_API Val* addcmul(Val* v1, Val* v2, Val* v3, Val* s);
 TORCH_CUDA_CU_API TensorView* addcmul(TensorView* v1, Val* v2, Val* v3, Val* s);

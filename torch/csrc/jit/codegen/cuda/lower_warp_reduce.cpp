@@ -1,6 +1,5 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir_dispatch.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 #include <torch/csrc/jit/codegen/cuda/lower_utils.h>
@@ -347,22 +346,17 @@ class FuseBroadcastWithWarpReduce : private kir::IrVisitor {
         return;
       }
 
-      kir::ExpressionEvaluator ee;
-
       // Cannot replace if either the reduction buffer or broadcast buffer does
       // not have
       //  a size of 1, since it would have required re-indexing.
-      auto reduction_allocation_size =
-          ee.evaluate(reduction_allocate_it->second->size());
-      if (!reduction_allocation_size.has_value() ||
-          reduction_allocation_size.value() != 1) {
+      if (!reduction_allocate_it->second->size()->isConstInt() ||
+          reduction_allocate_it->second->size()->evaluateInt() != 1) {
         return;
       }
 
       auto broadcast_allocate = getActiveAllocateFor(out_tv);
-      auto broadcast_allocation_size = ee.evaluate(broadcast_allocate->size());
-      if (!broadcast_allocation_size.has_value() ||
-          broadcast_allocation_size.value() != 1) {
+      if (!broadcast_allocate->size()->isConstInt() ||
+          broadcast_allocate->size()->evaluateInt() != 1) {
         return;
       }
 
@@ -392,8 +386,7 @@ class FuseBroadcastWithWarpReduce : private kir::IrVisitor {
     }
 
     if (id->extent()->isConstScalar()) {
-      ExpressionEvaluator evaluator(FusionGuard::getCurFusion());
-      return evaluator.evaluate(id->extent()).value() == warp_size;
+      return id->extent()->evaluateInt() == warp_size;
     }
 
     return false;
@@ -413,8 +406,7 @@ class FuseBroadcastWithWarpReduce : private kir::IrVisitor {
     bool reduction_has_single_warp = false, broadcast_has_single_warp = false;
 
     for (auto id : reduction_out_tv->domain()->domain()) {
-      if (id->isReduction() && id->isThread() && !id->isTrivialReduction() &&
-          !isSingleWarp(id)) {
+      if (id->isReduction() && id->isThread() && !isSingleWarp(id)) {
         return false;
       }
       if (id->isReduction() && isSingleWarp(id)) {

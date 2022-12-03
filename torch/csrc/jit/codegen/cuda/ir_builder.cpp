@@ -3,86 +3,24 @@
 #include <torch/csrc/jit/codegen/cuda/ir_cloner.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
 
+#include <torch/csrc/jit/codegen/cuda/ir_all_nodes.h>
+#include <torch/csrc/jit/codegen/cuda/ir_container.h>
+
 namespace torch {
 namespace jit {
 namespace fuser {
 namespace cuda {
 
-//! Clone an IR node, forwarding the arguments to the IrCloner constructor.
-template <class T>
-T* IrBuilder::clone(const T* src, IrCloner* ir_cloner) {
-  TORCH_INTERNAL_ASSERT(
-      ir_cloner != nullptr,
-      "Cannot use create when a cloner object is set. Use clone.");
-
-  TORCH_INTERNAL_ASSERT(
-      ir_cloner->container() != nullptr,
-      "Cloner doesn't have a valid container to store cloned object.");
-
-  T* dest = new T(src, ir_cloner);
-  const Statement* src_stmt = dynamic_cast<const Statement*>(src);
-  Statement* dest_stmt = dynamic_cast<Statement*>(dest);
-
-  auto dest_container = ir_cloner->container();
-  auto src_container = src_stmt->container();
-
-  dest_container->registerStmt(IrBuilderPasskey(dest_container), dest_stmt);
-
-  if (src_container != dest_container) {
-    dest_stmt->setName(IrBuilderPasskey(dest_container), src_stmt->name());
-  }
-
-  ir_cloner->registerClone(src_stmt, dest_stmt);
-
-  return dest;
-}
-
-#define IR_BUILDER_INSTANTIATE(T) \
-  template T* IrBuilder::clone(const T* src, IrCloner* ir_cloner);
-
-// Vals
-IR_BUILDER_INSTANTIATE(IterDomain)
-IR_BUILDER_INSTANTIATE(TensorDomain)
-IR_BUILDER_INSTANTIATE(TensorView)
-IR_BUILDER_INSTANTIATE(Bool)
-IR_BUILDER_INSTANTIATE(Double)
-IR_BUILDER_INSTANTIATE(Int)
-IR_BUILDER_INSTANTIATE(ComplexDouble)
-IR_BUILDER_INSTANTIATE(NamedScalar)
-
-// Exprs
-IR_BUILDER_INSTANTIATE(Split)
-IR_BUILDER_INSTANTIATE(Merge)
-IR_BUILDER_INSTANTIATE(Swizzle2D)
-IR_BUILDER_INSTANTIATE(TransposeOp)
-IR_BUILDER_INSTANTIATE(ExpandOp)
-IR_BUILDER_INSTANTIATE(ShiftOp)
-IR_BUILDER_INSTANTIATE(GatherOp)
-IR_BUILDER_INSTANTIATE(ViewAsScalar)
-IR_BUILDER_INSTANTIATE(ViewOp)
-IR_BUILDER_INSTANTIATE(FullOp)
-IR_BUILDER_INSTANTIATE(ARangeOp)
-IR_BUILDER_INSTANTIATE(EyeOp)
-IR_BUILDER_INSTANTIATE(UnaryOp)
-IR_BUILDER_INSTANTIATE(BinaryOp)
-IR_BUILDER_INSTANTIATE(TernaryOp)
-IR_BUILDER_INSTANTIATE(RNGOp)
-IR_BUILDER_INSTANTIATE(ReductionOp)
-IR_BUILDER_INSTANTIATE(GroupedReductionOp)
-IR_BUILDER_INSTANTIATE(WelfordOp)
-IR_BUILDER_INSTANTIATE(LoadStoreOp)
-IR_BUILDER_INSTANTIATE(MmaOp)
-IR_BUILDER_INSTANTIATE(BroadcastOp)
-IR_BUILDER_INSTANTIATE(SqueezeOp)
-
-Val* IrBuilder::newResult(DataType dtype) {
+Val* IrBuilder::newScalar(DataType dtype) {
   switch (dtype) {
     case DataType::Bool:
-      return IrBuilder::create<Bool>(c10::nullopt);
+      return IrBuilder::create<Bool>();
+    case DataType::Float:
     case DataType::Double:
-      return IrBuilder::create<Double>(c10::nullopt);
+      return IrBuilder::create<Double>(dtype);
     case DataType::Int:
-      return IrBuilder::create<Int>(c10::nullopt);
+    case DataType::Int32:
+      return IrBuilder::create<Int>(dtype);
     default:
       TORCH_CHECK(false, "Unexpected data type");
   }
@@ -92,13 +30,34 @@ Val* IrBuilder::newArithmeticExpr(BinaryOpType op_type, Val* lhs, Val* rhs) {
   TORCH_CHECK(
       lhs != nullptr && rhs != nullptr,
       "Either lhs or rhs is a nullptr in newArithmeticExpr.");
-  TORCH_CHECK(
-      lhs->dtype() == rhs->dtype(),
-      "Incompatible operand types: ",
-      lhs->dtype(),
-      " and ",
-      rhs->dtype());
-  auto result = newResult(lhs->dtype());
+
+  auto dtype = lhs->dtype();
+
+  // In principle, we should keep these IrBuilder functions as
+  // simple as possible since they are just used by the lowering for
+  // scalar computations. We should enforce strict typing with no
+  // implicit type promotion unless required. However, for
+  // int and int64_t, our usages are pretty loose in many places. Originally we
+  // only had int64_t, then we added nvfuser_index_t and replaced the types of
+  // some of the values from int64_t to int just at the beginning of lowering.
+  // This resulted in inconsistent usages of integer types in many places, and
+  // fixing all of them to make everything consistent would be a lot of work
+  // than just allowing the integer type promotion for the two inputs as below.
+  // Note that this is only needed for integer types. See also PR #2228.
+  if (lhs->dtype() != rhs->dtype()) {
+    if ((lhs->dtype() == DataType::Int && rhs->dtype() == DataType::Int32) ||
+        (lhs->dtype() == DataType::Int32 && rhs->dtype() == DataType::Int)) {
+      dtype = DataType::Int;
+    } else {
+      TORCH_CHECK(
+          false,
+          "Incompatible operand types: ",
+          lhs->dtype(),
+          " and ",
+          rhs->dtype());
+    }
+  }
+  auto result = newScalar(dtype);
   IrBuilder::create<BinaryOp>(op_type, result, lhs, rhs);
   // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
   return result;
@@ -119,28 +78,28 @@ Val* IrBuilder::whereExpr(Val* pred, Val* lhs, Val* rhs) {
       pred != nullptr && lhs != nullptr && rhs != nullptr,
       "Either pred, lhs, or rhs is a nullptr in whereExpr.");
   TORCH_CHECK(lhs->dtype() == rhs->dtype(), "Incompatible operand types");
-  auto result = newResult(lhs->dtype());
+  auto result = newScalar(lhs->dtype());
   IrBuilder::create<TernaryOp>(TernaryOpType::Where, result, pred, lhs, rhs);
   return result;
 }
 
 Val* IrBuilder::negExpr(Val* val) {
   TORCH_CHECK(val != nullptr, "val is a nullptr in negExpr.");
-  auto result = newResult(val->dtype());
+  auto result = newScalar(val->dtype());
   IrBuilder::create<UnaryOp>(UnaryOpType::Neg, result, val);
   return result;
 }
 
 Val* IrBuilder::notExpr(Val* val) {
   TORCH_CHECK(val != nullptr, "val is a nullptr in notExpr.");
-  auto result = newResult(val->dtype());
+  auto result = newScalar(val->dtype());
   IrBuilder::create<UnaryOp>(UnaryOpType::Not, result, val);
   return result;
 }
 
 Val* IrBuilder::setExpr(Val* val) {
   TORCH_CHECK(val != nullptr, "val is a nullptr in setExpr.");
-  auto result = newResult(val->dtype());
+  auto result = newScalar(val->dtype());
   IrBuilder::create<UnaryOp>(UnaryOpType::Set, result, val);
   return result;
 }
@@ -350,22 +309,23 @@ Val* SimplifyingIrBuilder::mulExpr(Val* lhs, Val* rhs) {
 }
 
 Val* SimplifyingIrBuilder::divExpr(Val* lhs, Val* rhs) {
-  if (lhs != nullptr && rhs != nullptr) {
-    if (lhs->isZeroInt()) {
-      return lhs->kernel()->zeroVal();
-    }
+  if (rhs->isOneInt()) {
+    return lhs;
   }
-
   return IrBuilder::divExpr(lhs, rhs);
 }
 
-Val* SimplifyingIrBuilder::modExpr(Val* lhs, Val* rhs) {
-  if (lhs != nullptr && rhs != nullptr) {
-    if (lhs->isZeroInt()) {
-      return lhs->kernel()->zeroVal();
-    }
+Val* SimplifyingIrBuilder::ceilDivExpr(Val* lhs, Val* rhs) {
+  if (rhs->isOneInt()) {
+    return lhs;
   }
+  return IrBuilder::ceilDivExpr(lhs, rhs);
+}
 
+Val* SimplifyingIrBuilder::modExpr(Val* lhs, Val* rhs) {
+  if (rhs->isOneInt()) {
+    return FusionGuard::getCurFusion()->zeroVal();
+  }
   return IrBuilder::modExpr(lhs, rhs);
 }
 
@@ -462,6 +422,22 @@ Val* SimplifyingIrBuilder::minExpr(Val* lhs, Val* rhs) {
       rhs,
       [](Val* lhs, Val* rhs) { return IrBuilder::minExpr(lhs, rhs); },
       [](int64_t lhs, int64_t rhs) { return std::min(lhs, rhs); });
+}
+
+Val* SimplifyingIrBuilder::whereExpr(Val* pred, Val* lhs, Val* rhs) {
+  TORCH_INTERNAL_ASSERT(
+      pred->dtype() == DataType::Bool,
+      "Where requires a predicate as an input, but received");
+
+  if (pred->isConstScalar() && pred->isABool() && pred->isA<Bool>()) {
+    if (pred->evaluateBool()) {
+      return lhs;
+    } else {
+      return rhs;
+    }
+  }
+
+  return IrBuilder::whereExpr(pred, lhs, rhs);
 }
 
 } // namespace cuda

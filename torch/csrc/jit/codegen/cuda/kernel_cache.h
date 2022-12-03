@@ -140,6 +140,10 @@ class TORCH_CUDA_CU_API FusionKernelRuntime {
   //!  for kernel launch for a new input dimension but same heuristics
   void updateHeuristicsLaunchParams(FusionHeuristics* update_heuristics);
 
+  const std::vector<FusionExecutor>& executors() const {
+    return executors_;
+  }
+
  private:
   //! Interface to run a single kernel, either one kernel for single-kernel
   //! fusions, or a kernel for a segmentedGrouup in a segmented fusion. Returns
@@ -154,13 +158,6 @@ class TORCH_CUDA_CU_API FusionKernelRuntime {
   KernelArgumentHolder compileKernel(
       const KernelArgumentHolder& args,
       SegmentedGroup* sg);
-
-  //! Interface to run a the whole graph in a segmented fusion and return the
-  //! complete
-  //!  fusion outputs.
-  std::vector<at::Tensor> runMultiKernelWithInput(
-      const at::ArrayRef<IValue>& inputs,
-      size_t input_id);
 
   //! Access the list of schedulers maintained in this runtime instance
   const std::vector<SchedulerEntryPtr>& schedulers();
@@ -192,7 +189,7 @@ class TORCH_CUDA_CU_API FusionKernelRuntime {
   } runtime_workspace_;
 
   //! Utility to speed up value evaluation at runtime
-  std::unique_ptr<FusionPrecomputedValues> precomputed_values_;
+  std::unique_ptr<PrecomputedValues> precomputed_values_;
 
   // States for profiling support
   bool profiling_ = false;

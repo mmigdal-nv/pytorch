@@ -7,6 +7,7 @@
 #include <torch/csrc/jit/codegen/cuda/transform_iter.h>
 
 #include <tuple>
+#include <typeinfo>
 
 namespace torch {
 namespace jit {
@@ -18,9 +19,13 @@ namespace {
 // computeAtPosition.
 // If outside computeAt axis, we don't want to directly map consumer/producer in
 // the loop mapping as they are not sharing the same loop.
-bool idIsAComputeAtLeafDomain(IterDomain* id, TensorView* tv) {
-  auto begin = tv->domain()->domain().begin();
-  auto end = tv->domain()->domain().begin() + tv->getComputeAtPosition();
+bool idIsAComputeAtLeafDomain(
+    IterDomain* id,
+    TensorView* producer_tv,
+    TensorView* consumer_tv) {
+  auto begin = producer_tv->domain()->domain().begin();
+  auto end = producer_tv->domain()->domain().begin() +
+      producer_tv->getComputePosition(consumer_tv);
   return std::find(begin, end, id) != end;
 }
 
@@ -67,9 +72,12 @@ void mapMaybeSwizzleOp(
     IterDomain* id) {
   if (auto swizzle_2d = dynamic_cast<Swizzle2D*>(id->definition())) {
     // Map each input to its corresponding output on the given
-    //  disjoint set.
-    disjoint_sets.mapEntries(swizzle_2d->inX(), swizzle_2d->outX());
-    disjoint_sets.mapEntries(swizzle_2d->inY(), swizzle_2d->outY());
+    // disjoint set if this is a loop swizzle. Loop swizzles don't impact
+    // indexing, only iteration order.
+    if (swizzle_2d->swizzleMode() == SwizzleMode::Loop) {
+      disjoint_sets.mapEntries(swizzle_2d->inX(), swizzle_2d->outX());
+      disjoint_sets.mapEntries(swizzle_2d->inY(), swizzle_2d->outY());
+    }
   }
 }
 
@@ -82,12 +90,12 @@ bool IterDomainGraph::exprsMap(
     return false;
   }
 
-  if (first->etype() != second->etype()) {
+  if (typeid(*first) != typeid(*second)) {
     return false;
   }
 
   TORCH_INTERNAL_ASSERT(
-      first->etype() == ExprType::Merge || first->etype() == ExprType::Split,
+      first->isA<Merge>() || first->isA<Split>(),
       "Merge and split are the only expressions supported through rfactor operations in compute at map, but found:\n",
       first->toString());
 
@@ -394,20 +402,28 @@ void IterDomainGraph::build(Fusion* fusion) {
             c_tv->domain()->domain(),
             c2f_root_map);
 
-        auto c2f_map = replay_FasC.getReplay();
-
         // Map the entire replay map between the multiple
-        // consumers even for the Parallel map as they share the same
-        // loop.
-        for (auto c_id : getSortedKeys(c2f_map, Statement::lessThan)) {
-          auto f_id = c2f_map.at(c_id);
-          // Map the id's together
-          permissive_nodes_.mapEntries(f_id, c_id);
-          exact_nodes_.mapEntries(f_id, c_id);
-          if (idIsALeafDomain(f_id, first_output_tv)) {
-            loop_nodes_.mapEntries(f_id, c_id);
+        // consumers
+        auto c2f_disjoint_sets = replay_FasC.getIterDomainEquivalence();
+        for (auto disjoint_set : c2f_disjoint_sets.disjointSets()) {
+          if (disjoint_set->empty()) {
+            continue;
           }
-          sibling_sets_.mapEntries(f_id, c_id);
+          auto id0 = *disjoint_set->begin();
+          for (auto id1 : disjoint_set->vector()) {
+            permissive_nodes_.mapEntries(id0, id1);
+            exact_nodes_.mapEntries(id0, id1);
+            sibling_sets_.mapEntries(id0, id1);
+          }
+        }
+
+        // Map all entries for the Loop map as they share the same loops.
+        for (auto f_id : first_output_tv->domain()->domain()) {
+          auto disjoint_set = c2f_disjoint_sets.getDisjointSetOf(f_id);
+          auto id0 = *(disjoint_set.begin());
+          for (auto id1 : disjoint_set) {
+            loop_nodes_.mapEntries(id0, id1);
+          }
         }
       }
 
@@ -474,7 +490,7 @@ void IterDomainGraph::build(Fusion* fusion) {
               if (p_ids.count(id1) && c_ids.count(id2)) {
                 consumers_.at(id1).pushBack(id2);
                 producers_.at(id2).pushBack(id1);
-                if (idIsAComputeAtLeafDomain(id1, p_tv) &&
+                if (idIsAComputeAtLeafDomain(id1, p_tv, c_tv) &&
                     idIsALeafDomain(id2, c_tv)) {
                   loop_nodes_.mapEntries(id1, id2);
                 }
@@ -482,7 +498,7 @@ void IterDomainGraph::build(Fusion* fusion) {
               if (c_ids.count(id1) && p_ids.count(id2)) {
                 producers_.at(id1).pushBack(id2);
                 consumers_.at(id2).pushBack(id1);
-                if (idIsAComputeAtLeafDomain(id2, p_tv) &&
+                if (idIsAComputeAtLeafDomain(id2, p_tv, c_tv) &&
                     idIsALeafDomain(id1, c_tv)) {
                   loop_nodes_.mapEntries(id1, id2);
                 }
@@ -698,7 +714,6 @@ ComputeAtMap::ComputeAtMap(Fusion* fusion)
 }
 
 void ComputeAtMap::build(Fusion* fusion) {
-  trivial_reduction_info_.build(fusion);
   buildUniqueExactExprMaps();
   buildConcreteIds();
   buildUniqueExactExprMaps();
@@ -848,15 +863,6 @@ IterDomain* ComputeAtMap::computeConcreteId(
   if (disjoint_set_shared_ptr->vector().size() == 1) {
     // If only one entry in the disjoint set, by definition the existing ID has
     // to be the concrete ID.
-    return disjoint_set_shared_ptr->vector().front();
-  }
-
-  // Don't need to resolve disjoint sets mapped to a trivial reduction, just
-  // mark the first entry as concrete ID, they're all trivial.
-  if (std::any_of(
-          disjoint_set_shared_ptr->vector().begin(),
-          disjoint_set_shared_ptr->vector().end(),
-          [](IterDomain* id) { return id->isTrivialReduction(); })) {
     return disjoint_set_shared_ptr->vector().front();
   }
 
@@ -1061,9 +1067,7 @@ IterDomain* ComputeAtMap::computeConcreteId(
         concrete_id_root_sets.vector().begin(),
         concrete_id_root_sets.vector().end(),
         [&](std::shared_ptr<VectorOfUniqueEntries<IterDomain*>> set) {
-          return set->vector()[0]->isBroadcast() ||
-              set->vector()[0]->isTrivialReduction() ||
-              trivial_reduction_info_.isDerived(set->vector()[0]);
+          return set->vector()[0]->isBroadcast();
         });
 
     int iter_root_count =
@@ -1134,7 +1138,7 @@ void ComputeAtMap::buildConcreteIds() {
 }
 
 bool ComputeAtMap::areExactExprs(Expr* expr_1, Expr* expr_2) {
-  if (expr_1->getExprType() != expr_2->getExprType()) {
+  if (typeid(*expr_1) != typeid(*expr_2)) {
     return false;
   }
 
@@ -1576,6 +1580,60 @@ ComputeAtMap::getAllDisjointSetConsumers(
   }
 
   return visited;
+}
+
+void IterDomainGraph::updateComputeWith(TensorView* compute_with_tv) {
+  TORCH_INTERNAL_ASSERT(
+      compute_with_tv->hasResolvedComputeWith(),
+      "Invalid tensor: ",
+      compute_with_tv->toString());
+
+  // Can use any consumer this tensor is computed with
+  auto consumer_tv = compute_with_tv->getComputeWithConsumers().at(0);
+
+  for (auto pos = compute_with_tv->getComputeAtPosition();
+       pos < compute_with_tv->getComputeWithPosition();
+       ++pos) {
+    auto id = compute_with_tv->axis(pos);
+
+    // Find the matching consumer ID using the permissive map
+    auto it = std::find_if(
+        consumer_tv->domain()->domain().begin(),
+        consumer_tv->domain()->domain().end(),
+        [&](auto consumer_id) {
+          return permissiveNodes().disjointSetMap().at(id)->has(consumer_id);
+        });
+    TORCH_INTERNAL_ASSERT(
+        it != consumer_tv->domain()->domain().end(),
+        "No consumer leaf ID of tensor ",
+        consumer_tv->toString(),
+        " permissively mapped with: ",
+        id->toString());
+
+    IterDomain* consumer_id = *it;
+
+    loop_nodes_.mapEntries(id, consumer_id);
+  }
+}
+
+void ComputeAtMap::updateComputeWith(TensorView* compute_with_tv) {
+  TORCH_INTERNAL_ASSERT(
+      compute_with_tv->hasResolvedComputeWith(),
+      "Invalid tensor: ",
+      compute_with_tv->toString());
+
+  id_graph_.updateComputeWith(compute_with_tv);
+
+  // Update the LOOP concrete IDs
+  for (const auto& disjoint_set_shared_ptr :
+       id_graph_.loopNodes().disjointSets()) {
+    TORCH_INTERNAL_ASSERT(
+        disjoint_set_shared_ptr->vector().size(),
+        "Cannot compute concrete id of empty set.");
+    auto first_id = disjoint_set_shared_ptr->vector().front();
+    auto concrete_id = computeConcreteId(first_id, IdMappingMode::LOOP);
+    concrete_id_cache_[disjoint_set_shared_ptr] = concrete_id;
+  }
 }
 
 } // namespace cuda

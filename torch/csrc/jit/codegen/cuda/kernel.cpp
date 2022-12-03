@@ -1,7 +1,7 @@
+#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
 #include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir_dispatch.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
 
@@ -14,9 +14,6 @@ namespace torch {
 namespace jit {
 namespace fuser {
 namespace cuda {
-
-IrBuilderPasskey::IrBuilderPasskey(IrContainer* ir_container)
-    : ir_container_(ir_container) {}
 
 namespace kir {
 
@@ -72,7 +69,7 @@ class KernelIrScanner : private IrVisitor {
         summary_.dynamic_smem_allocations.push_back(allocate);
         break;
       case MemoryType::Local:
-        if (!ExpressionEvaluator::isConst(allocate->size())) {
+        if (!allocate->size()->isConstInt()) {
           summary_.has_dynamic_local_memory_allocations = true;
           summary_.dynamic_lmem_allocations.emplace_back(allocate);
         }
@@ -416,8 +413,8 @@ std::string KernelPerformanceProfile::toString(const at::Tensor& buffer) const {
     auto count = buffer[index][1].item<int64_t>();
     auto cycles_per_call = count == 0 ? 0.0 : cycles / count;
     auto us_per_call = cycles_per_call / kilo_freq * 1000.0;
-    ss << expr->getExprType().value() << ", T" << out_tv->name() << ", "
-       << us_per_call << " us, " << count << "\n";
+    ss << expr->getOpString() << ", T" << out_tv->name() << ", " << us_per_call
+       << " us, " << count << "\n";
   }
 
   return ss.str();

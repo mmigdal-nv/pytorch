@@ -221,7 +221,8 @@ void multiReductionInliner(
     TensorView* reference_tv,
     std::vector<TensorView*> reduction_tvs,
     std::vector<TensorView*> cached_inputs,
-    std::vector<std::pair<TensorView*, TensorView*>> cached_outputs) {
+    std::vector<std::pair<TensorView*, TensorView*>> cached_outputs,
+    std::vector<TensorView*> dummy_outputs) {
   // Propagate transformations before we rfactor the other reductions
   TransformPropagator propagator(reference_tv);
   MaxRootDomainInfoSpanningTree(reference_tv).traverse(&propagator);
@@ -333,13 +334,13 @@ void multiReductionInliner(
     }
   }
 
-  // Find iter domains that are mapped to a trivial reduction, these should
-  // never be inlined.
-  std::unordered_set<IterDomain*> mapped_to_trivial_reduction =
-      scheduler_utils::getTrivialReductionMap(fusion);
+  // Remove dummy outputs as they can inadvertently affect CA positions
+  for (auto output : dummy_outputs) {
+    fusion->removeOutput(output);
+  }
 
   // Inline the schedule
-  inlineMost(mapped_to_trivial_reduction);
+  inlineMost();
 }
 
 namespace {
@@ -348,13 +349,6 @@ namespace {
 int idPos(const IterDomain* id) {
   int inner_most = std::numeric_limits<int>::max();
   int outer_most = std::numeric_limits<int>::min();
-
-  // Trivial reduction
-  if (id->isReduction() && id->getParallelType() == ParallelType::Serial &&
-      id->extent()->isOneInt()) {
-    return inner_most;
-  }
-  inner_most--;
 
   // Reduction and unrolled
   if (id->isReduction() &&

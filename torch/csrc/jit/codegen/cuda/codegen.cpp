@@ -1,9 +1,8 @@
 #include <torch/csrc/jit/codegen/cuda/codegen.h>
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/instrumentation.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir_dispatch.h>
+#include <torch/csrc/jit/codegen/cuda/lower_utils.h>
 #include <torch/csrc/jit/codegen/cuda/scheduler/mma_utils.h>
 #include <torch/csrc/jit/codegen/cuda/type.h>
 #include <torch/csrc/jit/codegen/cuda/utils.h>
@@ -11,6 +10,8 @@
 #include <array>
 #include <cmath>
 #include <sstream>
+#include <typeindex>
+#include <typeinfo>
 #include <vector>
 
 namespace torch {
@@ -121,20 +122,20 @@ class ExprFinder : kir::ConstIrVisitor {
   //! expr_types
   static bool exists(
       const Expr* expr,
-      const std::unordered_set<ExprType>& expr_types) {
+      const std::unordered_set<std::type_index>& expr_types) {
     ExprFinder finder(expr_types);
     finder.handle(std::vector<const Expr*>{expr});
     return finder.is_found_;
   }
 
  private:
-  ExprFinder(const std::unordered_set<ExprType>& expr_types)
+  ExprFinder(const std::unordered_set<std::type_index>& expr_types)
       : expr_types_(expr_types) {}
 
   using kir::ConstIrVisitor::handle;
 
   void handle(const Expr* expr) final {
-    if (expr_types_.find(expr->etype()) != expr_types_.end()) {
+    if (expr_types_.find(typeid(*expr)) != expr_types_.end()) {
       is_found_ = true;
       return;
     }
@@ -142,7 +143,7 @@ class ExprFinder : kir::ConstIrVisitor {
   }
 
  private:
-  const std::unordered_set<ExprType>& expr_types_;
+  const std::unordered_set<std::type_index>& expr_types_;
   bool is_found_ = false;
 };
 
@@ -169,9 +170,23 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   void initStringStreamFormat(std::stringstream& ss) {
-    const int digits = std::numeric_limits<Double::ScalarType>::max_digits10;
     ss.imbue(std::locale("C"));
-    ss << std::scientific << std::setprecision(digits);
+    ss << std::scientific;
+    // Set the default precision as Double
+    setPrecision(ss, DataType::Double);
+  }
+
+  void setPrecision(std::stringstream& ss, DataType dtype) {
+    TORCH_INTERNAL_ASSERT(isFloatingPointType(dtype));
+    int digits = 0;
+    if (dtype == DataType::Float) {
+      digits = std::numeric_limits<float>::max_digits10;
+    } else if (dtype == DataType::Double) {
+      digits = std::numeric_limits<double>::max_digits10;
+    } else {
+      TORCH_INTERNAL_ASSERT(false, "Unexpected floating point type: ", dtype);
+    }
+    ss << std::setprecision(digits);
   }
 
   // Generates the kernel function declaration
@@ -402,7 +417,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     const auto def = pred->definition();
     const bool has_alloc = alloc_map_.find(pred) != alloc_map_.end();
     if (def != nullptr && !has_alloc) {
-      code_ << "(" << gen(def) << ")";
+      code_ << "(" << genInline(def) << ")";
     } else if (pred->isConst()) {
       code_ << (*pred->value() ? "true" : "false");
     } else {
@@ -414,7 +429,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     const auto def = d->definition();
     const bool has_alloc = alloc_map_.find(d) != alloc_map_.end();
     if (def != nullptr && !has_alloc) {
-      code_ << "(" << gen(def) << ")";
+      code_ << "(" << genInline(def) << ")";
     } else if (d->isConst()) {
       auto val = *d->value();
       // note: default inf/nan doesn't work and should be replaced with macros
@@ -428,6 +443,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       } else if (std::isnan(val)) {
         code_ << "NAN";
       } else {
+        setPrecision(code_, d->getDataType().value());
         code_ << val;
       }
     } else {
@@ -459,7 +475,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     const auto def = c->definition();
     const bool has_alloc = alloc_map_.find(c) != alloc_map_.end();
     if (def != nullptr && !has_alloc) {
-      code_ << "(" << gen(def) << ")";
+      code_ << "(" << genInline(def) << ")";
     } else if (c->isConst()) {
       code_ << "std::complex<double>" << *c->value();
     } else {
@@ -707,14 +723,11 @@ class CudaKernelGenerator : private OptOutConstDispatch {
           continue;
         }
 
-        ExpressionEvaluator expr_eval(id->fusion());
-        auto vector_size_optional = expr_eval.evaluate(id->extent());
-
         TORCH_INTERNAL_ASSERT(
-            vector_size_optional.has_value(),
+            id->extent()->isConstInt(),
             "Could not evaluate constant value bound to vectorized dim.");
 
-        vector_word_size = vector_size_optional->as<int64_t>();
+        vector_word_size = id->extent()->evaluateInt();
 
         vectorize_op = id->getParallelType() == ParallelType::Vectorize;
         misaligned_op =
@@ -901,7 +914,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     // TODO: TORCH_INTERNAL_ASSERT that the scheduler correctly creates an
     // innermost ID of size 4 (float) or size 2 (double)?
     auto index = genTensorIndex(rop->getPhiloxIndex()->as<kir::TensorIndex>());
-    int multiple = rop->dtype() == DataType::Double ? 2 : 4;
+    int multiple = rop->getPhiloxMultiple();
     indent() << "nvfuser_index_t linear_index" << rop->name() << " = " << index
              << ";\n";
     indent() << "nvfuser_index_t rng_subseq" << rop->name() << " = linear_index"
@@ -928,6 +941,12 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     code_ << "(rng_result, rng_component" << rop->name();
     switch (op_type) {
       case RNGOpType::UniformRange: {
+        auto parameters = rop->getParameters();
+        TORCH_INTERNAL_ASSERT(parameters.size() == 2);
+        code_ << ", " << gen(parameters[0]) << ", " << gen(parameters[1]);
+        break;
+      }
+      case RNGOpType::NormalGeneral: {
         auto parameters = rop->getParameters();
         TORCH_INTERNAL_ASSERT(parameters.size() == 2);
         code_ << ", " << gen(parameters[0]) << ", " << gen(parameters[1]);
@@ -1162,6 +1181,20 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     if (!print_inline_) {
       code_ << ";\n";
     }
+  }
+
+  void handle(const IndexSelectOp* sop) final {
+    // generate code
+    if (!print_inline_) {
+      indent() << gen(sop->output(0));
+      if (!sop->output(0)->isScalar()) {
+        code_ << "\n";
+        indent() << kTab;
+      }
+      code_ << " = ";
+    }
+
+    code_ << gen(sop->input(0)) << ";\n";
   }
 
   std::string genArchString(MmaOptions::MacroType macro) {
@@ -1416,17 +1449,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         continue;
       }
 
-      ExpressionEvaluator expr_eval(id->fusion());
-      auto vector_size_optional = expr_eval.evaluate(id->extent());
-
       TORCH_INTERNAL_ASSERT(
-          vector_size_optional.has_value(),
+          id->extent()->isConstInt(),
           "Could not evaluate constant value bound to vectorized dim.");
 
       TORCH_INTERNAL_ASSERT(
           id->getParallelType() != ParallelType::MisalignedVectorize,
           "LoadStoreOp: no support yet for mis-aligned vectorization");
-      vector_word_size = vector_size_optional->as<int64_t>();
+      vector_word_size = id->extent()->evaluateInt();
       vectorize_op = true;
       break;
     }
@@ -1545,6 +1575,41 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       }
       indent() << kTab << data_type << "(0));\n";
     }
+  }
+
+  void handle(const kir::VectorizedWelfordOp* wop) final {
+    const auto out_var = wop->outVar();
+    const auto out_avg = wop->outAvg();
+    const auto out_N = wop->outN();
+    const auto in_avg = wop->inAvg();
+
+    bool output_gmem =
+        std::any_of(wop->outputs().begin(), wop->outputs().end(), [](Val* out) {
+          return out->as<kir::TensorIndex>()->view()->getMemoryType() ==
+              MemoryType::Global;
+        });
+
+    auto pred_bool = wop->hoistedPredicate()->getBool();
+    bool is_predicated = !(pred_bool.has_value() && pred_bool.value());
+
+    ArgumentBuilder func_args;
+    func_args.arg(gen(out_avg));
+    func_args.arg(gen(out_var));
+    func_args.arg(gen(out_N));
+    func_args.arg(gen(in_avg));
+    func_args.arg(gen(wop->reciprocalOfCount()));
+    func_args.arg(gen(wop->count()));
+    if (is_predicated) {
+      func_args.arg(gen(wop->hoistedPredicate()));
+    }
+
+    ArgumentBuilder template_args;
+    template_args.arg(out_avg->getDataType().value());
+    if (is_predicated) {
+      template_args.arg(output_gmem);
+    }
+
+    indent() << genCall("welfordVectorized", template_args, func_args) << ";\n";
   }
 
   // Support ReductionOp and WelfordOp
@@ -2082,10 +2147,14 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     ArgumentBuilder read_preds;
     ArgumentBuilder write_preds;
 
+    auto output_vals = grouped_gwop->outputVals();
+    auto input_vals = grouped_gwop->inputVals();
+    auto init_vals = grouped_gwop->initVals();
+
     for (const auto expr_index : c10::irange(grouped_gwop->numExprs())) {
-      const auto& output = grouped_gwop->outputVals().at(expr_index);
-      const auto& input = grouped_gwop->inputVals().at(expr_index);
-      const auto& init = grouped_gwop->initVals().at(expr_index);
+      const auto& output = output_vals.at(expr_index);
+      const auto& input = input_vals.at(expr_index);
+      const auto& init = init_vals.at(expr_index);
 
       for (const auto& group_index :
            c10::irange(index_replacement_maps.size())) {
@@ -2545,7 +2614,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       return false;
     }
     return ExprFinder::exists(
-        loop, {ExprType::GroupedGridReduction, ExprType::GroupedGridWelford});
+        loop,
+        {typeid(kir::GroupedGridReduction), typeid(kir::GroupedGridWelford)});
   }
 
   void handle(const kir::ForLoop* loop) final {

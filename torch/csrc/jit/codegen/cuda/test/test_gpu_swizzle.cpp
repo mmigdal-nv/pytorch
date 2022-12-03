@@ -178,7 +178,7 @@ TEST_F(NVFuserTest, FusionSwizzleMapping_CUDA) {
   //[O, 4, 4]
 
   tv2->computeAt(tv3, 1);
-  tv2->swizzle(Swizzle2DType::ZShape, -2, -1);
+  tv2->swizzle(Swizzle2DType::ZShape, -2, -1, SwizzleMode::Loop);
 
   // Inlining a producer into a swizzled consumer is ok
   tv1->computeAt(tv2, -1);
@@ -189,45 +189,44 @@ TEST_F(NVFuserTest, FusionSwizzleMapping_CUDA) {
   // Check producer to consumer map,
   //  i.e. unswizzled tensor to swizzled tensor map
   //----------------------------------------------------------
-  auto p2c = BestEffortReplay::replayCasP(tv2, tv1, -1, root_map).getReplay();
-  auto swizzle_x_it0 = p2c.find(tv1->axis(-2));
-  auto swizzle_y_it0 = p2c.find(tv1->axis(-1));
+  auto p2c_disjoint_id_map =
+      BestEffortReplay::replayCasP(tv2, tv1, -1, root_map)
+          .getIterDomainEquivalence();
   // P2C map should exist and both the x and y map should
   //  map to the output of the swizzle op.
   TORCH_INTERNAL_ASSERT(
-      swizzle_x_it0 != p2c.end() && swizzle_y_it0 != p2c.end());
+      p2c_disjoint_id_map.mappingExists(tv1->axis(-2)) &&
+      p2c_disjoint_id_map.mappingExists(tv1->axis(-1)));
+
   TORCH_INTERNAL_ASSERT(
-      swizzle_x_it0->second == tv2->axis(-2) &&
-      swizzle_y_it0->second == tv2->axis(-1));
+      p2c_disjoint_id_map.strictAreMapped(tv1->axis(-2), tv2->axis(-2)) &&
+      p2c_disjoint_id_map.strictAreMapped(tv1->axis(-1), tv2->axis(-1)));
 
   // Check consumer to producer map,
   //  i.e. swizzled tensor to unswizzled tensor map
   //----------------------------------------------------------
-  auto c2p = BestEffortReplay::replayPasC(tv1, tv2, -1, root_map).getReplay();
+  auto c2p_disjoint_id_map =
+      BestEffortReplay::replayPasC(tv1, tv2, -1, root_map)
+          .getIterDomainEquivalence();
 
   auto swizzle_op = tv2->axis(-1)->definition()->as<Swizzle2D>();
-
-  // Find mapping for swizzle inputs
-  auto swizzle_x_it1 = c2p.find(swizzle_op->inX());
-  auto swizzle_y_it1 = c2p.find(swizzle_op->inY());
-
-  // Find mapping for swizzle outputs
-  auto swizzle_x_it2 = c2p.find(swizzle_op->outX());
-  auto swizzle_y_it2 = c2p.find(swizzle_op->outY());
 
   // Input of swizzle ops will not be mapped to any
   //  by BestEffortReplay, as BestEffortReplay has to be
   //  one to one. IdGraph will further map them together.
   TORCH_INTERNAL_ASSERT(
-      swizzle_x_it1 == c2p.end() && swizzle_y_it1 == c2p.end());
+      !p2c_disjoint_id_map.mappingExists(swizzle_op->inX()) &&
+      !p2c_disjoint_id_map.mappingExists(swizzle_op->inY()));
 
   // Mapping for swizzle outputs should be mapped and should
   //  also map to the corresponding axes on the unswizzled tensor.
   TORCH_INTERNAL_ASSERT(
-      swizzle_x_it2 != c2p.end() && swizzle_y_it2 != c2p.end());
+      p2c_disjoint_id_map.mappingExists(swizzle_op->outX()) &&
+      p2c_disjoint_id_map.mappingExists(swizzle_op->outY()));
+
   TORCH_INTERNAL_ASSERT(
-      swizzle_x_it2->second == tv1->axis(-2) &&
-      swizzle_y_it2->second == tv1->axis(-1));
+      p2c_disjoint_id_map.strictAreMapped(swizzle_op->outX(), tv1->axis(-2)) &&
+      p2c_disjoint_id_map.strictAreMapped(swizzle_op->outY(), tv1->axis(-1)));
 
   // Check id graph behavior
   //----------------------------------------------------------
@@ -446,6 +445,55 @@ TEST_F(NVFuserTest, FusionTransposeBankConflictSwizzle1_CUDA) {
         "Expecting no bank conflict after swizzle, but got ",
         bank_conflict_info.size(),
         "bank conflicting expressions.",
+        ". Something in our lowering or bank conflict checker must have changed, ",
+        "please update them or this test consistently.");
+  }
+}
+
+TEST_F(NVFuserTest, FusionTransposeBankConflictSwizzle2_CUDA) {
+  // ZShape should remove half of the bank confliction of a 32x32 non-vectorized
+  // transpose.
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  auto tv0 = makeConcreteTensor({32, 32});
+  fusion.addInput(tv0);
+  auto tv1 = set(tv0);
+  auto tv2 = transpose(tv1, 0, 1);
+  auto tv3 = set(tv2);
+  fusion.addOutput(tv3);
+
+  tv1->setMemoryType(MemoryType::Shared);
+  tv1->axis(0)->parallelize(ParallelType::TIDy);
+  tv1->axis(1)->parallelize(ParallelType::TIDx);
+  tv2->axis(0)->parallelize(ParallelType::TIDy);
+  tv2->axis(1)->parallelize(ParallelType::TIDx);
+  tv3->axis(0)->parallelize(ParallelType::TIDy);
+  tv3->axis(1)->parallelize(ParallelType::TIDx);
+
+  // 32-way bank confliction
+  auto bank_conflict_info = fusion.bankConflictInfo();
+  TORCH_CHECK(!bank_conflict_info.empty());
+  for (auto info : bank_conflict_info) {
+    std::pair<int, int> expect{32, 0};
+    TORCH_CHECK(
+        info.second == expect,
+        "Expecting 32-way bank conflict, but got ",
+        info.second,
+        ". Something in our lowering or bank conflict checker must have changed, ",
+        "please update them or this test consistently.");
+  }
+
+  // no bank confliction after swizzle
+  tv1->swizzle(Swizzle2DType::ZShape, 0, 1);
+  bank_conflict_info = fusion.bankConflictInfo();
+  TORCH_CHECK(!bank_conflict_info.empty());
+  for (auto info : bank_conflict_info) {
+    std::pair<int, int> expect{16, 0};
+    TORCH_CHECK(
+        info.second == expect,
+        "Expecting 16-way bank conflict, but got ",
+        info.second,
         ". Something in our lowering or bank conflict checker must have changed, ",
         "please update them or this test consistently.");
   }

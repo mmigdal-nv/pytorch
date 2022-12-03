@@ -111,6 +111,21 @@ struct ProducerConsumerIndexingInfoCache {
   }
 
   const std::vector<IterDomain*>& getConsumerOnlyPermissiveLeafIds() {
+    // When a given ID is the factor of 1 of a split, return the other
+    // output. Return nullptr otherwise.
+    auto get_split1_other_out = [](IterDomain* id) -> IterDomain* {
+      if (id->extent()->isOneInt() && id->definition() != nullptr &&
+          id->definition()->isA<Split>()) {
+        auto split = id->definition()->as<Split>();
+        if (split->innerSplit() && split->inner() == id) {
+          return split->outer();
+        } else if (!split->innerSplit() && split->outer() == id) {
+          return split->inner();
+        }
+      }
+      return nullptr;
+    };
+
     if (!consumer_only_permissive_leaf_ids_.has_value()) {
       // consumer_only_permissive_leaf_ids_ = {};
       std::vector<IterDomain*> consumer_only_permissive_leaf_ids;
@@ -119,7 +134,7 @@ struct ProducerConsumerIndexingInfoCache {
           consumer_tv_->domain()->domain().begin(),
           consumer_tv_->domain()->domain().end(),
           std::back_inserter(consumer_only_permissive_leaf_ids),
-          [&](auto consumer_leaf_id) {
+          [&](IterDomain* consumer_leaf_id) {
             const auto& consumer_leaf_ids_shared_with_producer =
                 getConsumerLeafIDsSharedWithProducer();
             if (std::find(
@@ -130,11 +145,37 @@ struct ProducerConsumerIndexingInfoCache {
               return false;
             }
 
-            return !ca_map.areMapped(
-                ca_map.getConcreteMappedID(
-                    consumer_leaf_id, IdMappingMode::LOOP),
-                consumer_leaf_id,
-                IdMappingMode::EXACT);
+            auto loop_concrete_id = ca_map.getConcreteMappedID(
+                consumer_leaf_id, IdMappingMode::LOOP);
+
+            // If the loop concrete ID has the same info as the
+            // consumer leaf ID, indexing shouldn't be affected by the
+            // loop concrete ID
+            if (ca_map.areMapped(
+                    consumer_leaf_id,
+                    loop_concrete_id,
+                    IdMappingMode::ALMOSTEXACT)) {
+              return false;
+            }
+
+            // Note that the factor output domain of split-by-one is
+            // not mapped in the almost exact map. As long as the
+            // other domains are almost-exactly mapped, this shouldn't
+            // affect the indexing neither.
+            auto consumer_split1_other = get_split1_other_out(consumer_leaf_id);
+            auto loop_concrete_split1_other =
+                get_split1_other_out(loop_concrete_id);
+
+            if (consumer_split1_other != nullptr &&
+                loop_concrete_split1_other != nullptr &&
+                ca_map.areMapped(
+                    consumer_split1_other,
+                    loop_concrete_split1_other,
+                    IdMappingMode::ALMOSTEXACT)) {
+              return false;
+            }
+
+            return true;
           });
       consumer_only_permissive_leaf_ids_ =
           std::move(consumer_only_permissive_leaf_ids);
@@ -201,15 +242,15 @@ bool useSameIndex(
     return false;
   }
 
-  // If the producer ID is left of the CA position, the indexing is
-  // done with the corresponding consumer ID
-  auto producer_id_pos = std::distance(
-      producer_tv->domain()->domain().begin(),
-      std::find(
-          producer_tv->domain()->domain().begin(),
-          producer_tv->domain()->domain().end(),
-          producer_id));
-  if (producer_id_pos < producer_tv->getComputeAtPosition()) {
+  // If the producer ID is mapped with any of the consumer IDs, the
+  // indexing is done with the corresponding consumer ID
+  if (std::any_of(
+          consumer_tv->domain()->domain().begin(),
+          consumer_tv->domain()->domain().end(),
+          [&](IterDomain* consumer_leaf_id) {
+            return ca_map.areMapped(
+                consumer_leaf_id, producer_id, IdMappingMode::LOOP);
+          })) {
     return true;
   }
 
@@ -644,12 +685,11 @@ SyncMap::SyncMap(Fusion* fusion) {
           // we'll flag it on RAW which will trigger the WAR.
           // See test FusionValidateParallelizeShift_CUDA for a
           // concrete example where this sync is required.
-          if ((expr->getExprType() == ExprType::GatherOp ||
-               expr->getExprType() == ExprType::ShiftOp) &&
+          if ((expr->isOneOf<GatherOp, ShiftOp>()) &&
               producer->getMemoryType() == MemoryType::Shared &&
               isParallelTypeThreadDim(producer_ptype)) {
             std::unordered_set<Val*> shifted_rfactor_ids;
-            if (expr->getExprType() == ExprType::GatherOp) {
+            if (expr->isA<GatherOp>()) {
               auto gather_op = expr->as<GatherOp>();
               for (auto root_i :
                    c10::irange(producer->getMaybeRFactorDomain().size())) {
@@ -660,7 +700,7 @@ SyncMap::SyncMap(Fusion* fusion) {
                   shifted_rfactor_ids.insert(rfactor_id);
                 }
               }
-            } else if (expr->getExprType() == ExprType::ShiftOp) {
+            } else if (expr->isA<ShiftOp>()) {
               auto shift_op = expr->as<ShiftOp>();
               for (auto root_i :
                    c10::irange(producer->getMaybeRFactorDomain().size())) {

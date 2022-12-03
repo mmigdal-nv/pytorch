@@ -1208,7 +1208,7 @@ std::unique_ptr<Fusion> SegmentedFusion::makeFusion(SegmentedGroup* sg) {
   for (auto inp : getAllInputs(sg)) {
     auto clone_tv = complete_to_segment_map.clone(inp);
     fusion_segment->addInput(clone_tv);
-    if (inp->isDefinitionType(ExprType::ViewOp)) {
+    if (inp->isDefinitionType<ViewOp>()) {
       TORCH_INTERNAL_ASSERT(clone_tv != nullptr && clone_tv->isA<TensorView>());
       view_tvs.push_back(clone_tv->as<TensorView>());
     }
@@ -2076,15 +2076,10 @@ class CombineReductions {
 
     // Collect segmented groups with reductions in them,
     //  Assuming running before any merge happened, so
-    //  should see exactly one non-trivial reduction in each group
+    //  should see exactly one reduction in each group
     for (auto group : segment_candidate_finder_->groups()) {
       if (auto rop_signature =
               ReductionSignature::makeReductionSignature(group)) {
-        // Ignore pure squeeze operations in this analysis
-        if (!rop_signature->hasNonTrivialReduction()) {
-          continue;
-        }
-
         groups_with_reductions_.push_back(group);
         // Check if this reduction signature is one that we have seen before
         auto signature_match_it = std::find_if(
@@ -2476,8 +2471,7 @@ class CombineReductions {
       }
 
       if (root_domain_size_ != reduction_signature->root_domain_size_ ||
-          has_nontrivial_reduction_ !=
-              reduction_signature->has_nontrivial_reduction_ ||
+          has_reduction_ != reduction_signature->has_reduction_ ||
           reduction_axes_.size() !=
               reduction_signature->reduction_axes_.size()) {
         return false;
@@ -2496,8 +2490,8 @@ class CombineReductions {
       return sameAs(&reduction_signature);
     }
 
-    bool hasNonTrivialReduction() const {
-      return has_nontrivial_reduction_;
+    bool hasReduction() const {
+      return has_reduction_;
     }
 
     static std::unique_ptr<ReductionSignature> makeReductionSignature(
@@ -2516,8 +2510,8 @@ class CombineReductions {
 
         if (new_signature != nullptr) {
           TORCH_INTERNAL_ASSERT(
-              signature == nullptr || !signature->has_nontrivial_reduction_ ||
-                  !new_signature->has_nontrivial_reduction_ ||
+              signature == nullptr || !signature->has_reduction_ ||
+                  !new_signature->has_reduction_ ||
                   signature->sameAs(new_signature.get()),
               "Conflicting signature found in this group");
           signature = std::move(new_signature);
@@ -2529,29 +2523,14 @@ class CombineReductions {
     template <typename REDUCTION = ReductionOp>
     ReductionSignature(REDUCTION* rop) {
       auto out_tv = rop->out()->template as<TensorView>();
-      has_nontrivial_reduction_ = out_tv->hasReduction();
       TORCH_INTERNAL_ASSERT(out_tv != nullptr);
+      has_reduction_ = out_tv->hasReduction();
       auto& root_domain = out_tv->getRootDomain();
       root_domain_size_ = root_domain.size();
 
-      // Trivial reduction i.e. squeeze is tricky here:
-      //  this pass doesn't want to touch any pure squeeze, i.e.:
-      //    T0 [R(1), I(i0), I(i1)]
-      //  meanwhile, for two reductions having
-      //  squeezes, we do require they have squeeze at the
-      //  same position so that they can be easily root domain mapped
-      //  So T0 and T1 are the same signature,
-      //    T0 [R(1), R(i0), I(i1)]
-      //    T1 [R(1), R(i0), I(i1)]
-      //  but T2 and T3 below are not
-      //    T0 [R(1), R(1), R(i0), I(i1)]
-      //    T1 [R(1), R(i0), I(i1)]
       for (const auto i : c10::irange(root_domain_size_)) {
         if (root_domain[i]->isReduction()) {
           reduction_axes_.push_back(i);
-        }
-        if (!root_domain[i]->isTrivialReduction()) {
-          has_nontrivial_reduction_ = true;
         }
       }
     }
@@ -2559,7 +2538,7 @@ class CombineReductions {
    private:
     size_t root_domain_size_ = 0;
     std::vector<int> reduction_axes_;
-    bool has_nontrivial_reduction_ = false;
+    bool has_reduction_ = false;
   };
 
   //! Keeps track of groups with reduction expressions,
@@ -2583,7 +2562,7 @@ bool CombineReductions::shouldRun(
   for (auto group : segment_candidate_finder->groups()) {
     if (auto reduction_signature =
             ReductionSignature::makeReductionSignature(group)) {
-      if (reduction_signature->hasNonTrivialReduction() &&
+      if (reduction_signature->hasReduction() &&
           std::any_of(
               known_reductions.begin(),
               known_reductions.end(),
@@ -2641,7 +2620,8 @@ ScheduleHeuristic SegmentCandidateFinder::deriveHeuristic(
     SegmentedGroup* group) {
   Fusion* fusion = segmented_fusion_->completeFusion();
   auto h = tryMerge(fusion, runtime_info_, group);
-  TORCH_INTERNAL_ASSERT(h.has_value());
+  TORCH_INTERNAL_ASSERT(
+      h.has_value(), "Can not find a scheduler to schedule fusion segment");
   return h.value();
 }
 
@@ -2691,7 +2671,7 @@ void SegmentCandidateFinder::findSegments() {
     std::deque<Expr*> to_visit;
     for (auto inp : completeFusion()->inputs()) {
       if (std::all_of(inp->uses().begin(), inp->uses().end(), [](Expr* expr) {
-            return expr->getExprType().value() == ExprType::UnaryOp;
+            return expr->isA<UnaryOp>();
           })) {
         to_visit.insert(to_visit.end(), inp->uses().begin(), inp->uses().end());
       }
@@ -2700,8 +2680,7 @@ void SegmentCandidateFinder::findSegments() {
     while (!to_visit.empty()) {
       auto expr = to_visit.front();
       to_visit.pop_front();
-      if (expr->getExprType().value() != ExprType::UnaryOp ||
-          expr->output(0)->isFusionOutput()) {
+      if (expr->isA<UnaryOp>() || expr->output(0)->isFusionOutput()) {
         continue;
       }
 
@@ -2804,8 +2783,8 @@ void SegmentCandidateFinder::findSegments() {
     }
   }
 
-  auto reduction_ops = ir_utils::getReductionOps(
-      segmented_fusion_->completeFusion(), true /* ignore_trivial */);
+  auto reduction_ops =
+      ir_utils::getReductionOps(segmented_fusion_->completeFusion());
   auto welford_ops = ir_utils::filterByType<WelfordOp>(reduction_ops);
 
   if (options_.run_translate_welford &&

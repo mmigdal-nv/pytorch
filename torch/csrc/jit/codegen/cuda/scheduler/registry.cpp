@@ -123,8 +123,7 @@ class SchedulerTopologyChecker {
           for (auto entry : forward_p2c_root_map) {
             auto p_id = entry.first;
             auto c_id = entry.second;
-            if (p_id->isBroadcast() &&
-                (!c_id->isBroadcast() && !c_id->isTrivialReduction())) {
+            if (p_id->isBroadcast() && !c_id->isBroadcast()) {
               ids_to_resolve.emplace_back(std::make_pair(c_id, c_id));
             }
           }
@@ -263,8 +262,7 @@ class SchedulerTopologyChecker {
             for (auto entry : p2c_root_map) {
               auto p_id = entry.first;
               auto c_id = entry.second;
-              if (p_id->isBroadcast() &&
-                  (!c_id->isBroadcast() && !c_id->isTrivialReduction())) {
+              if (p_id->isBroadcast() && !c_id->isBroadcast()) {
                 return true;
               }
             }
@@ -288,8 +286,7 @@ class SchedulerTopologyChecker {
     bool fastest_dim_reduction = true;
     auto red_root_dom = reduction_tvs[0]->getRootDomain();
     for (size_t i = red_root_dom.size(); i > 0; i--) {
-      if (red_root_dom[i - 1]->isBroadcast() ||
-          red_root_dom[i - 1]->isTrivialReduction()) {
+      if (red_root_dom[i - 1]->isBroadcast()) {
         continue;
       } else if (red_root_dom[i - 1]->isReduction()) {
         fastest_dim_reduction = true;
@@ -604,13 +601,7 @@ bool reductionInterferingView(
     return dims_removed;
   };
 
-  // Remove trivial reduction dimensions
-  auto mapped_to_trivial_reduction =
-      scheduler_utils::getTrivialReductionMap(fusion);
-
-  std::vector<IterDomain*> dims = remove_dims(
-      reduction_reference->getMaybeRFactorDomain(),
-      mapped_to_trivial_reduction);
+  std::vector<IterDomain*> dims = reduction_reference->getMaybeRFactorDomain();
 
   // The disjoint groups we need for this scheduler
   std::vector<std::vector<IterDomain*>> groups;
@@ -741,8 +732,7 @@ void SchedulerRuntimeInfo::initialize(
     }
   }
 
-  expression_evaluator_ =
-      std::make_unique<ExpressionEvaluator>(complete_fusion_);
+  expression_evaluator_ = std::make_unique<ExpressionEvaluator>();
   if (create_expr_evaluator) {
     initializeExpressionEvaluator(args);
   }
@@ -779,10 +769,7 @@ size_t SchedulerRuntimeInfo::ptrOf(TensorView* tv) {
 
 void SchedulerRuntimeInfo::initializeExpressionEvaluator(
     const KernelArgumentHolder& args) {
-  // TODO: refactor bindFusionInputs to better support this
-  //  use case, i.e. support construct and bind input.
-  *expression_evaluator_ =
-      executor_utils::bindFusionInputs(args, complete_fusion_);
+  *expression_evaluator_ = executor_utils::bindInputs(args, complete_fusion_);
 }
 
 size_t SchedulerRuntimeInfo::computeAlignmentSize(size_t ptr_address) {
@@ -874,7 +861,7 @@ size_t SchedulerRuntimeInfo::getMaxVectorizableWidth(TensorView* tv) {
     return 1;
   }
 
-  auto numel = 1;
+  size_t numel = 1;
   for (auto i : c10::irange(tv_root_size)) {
     auto root_i = tv_root_size - i - 1;
     auto root_id = tv_root[root_i];
@@ -1150,8 +1137,7 @@ class NoOpScheduler : public SchedulerEntry {
       return true;
     }
     // Check there're no non-trivial reduction ops.
-    for (auto reduction :
-         ir_utils::getReductionOps(fusion, true /* ignore_trivial */)) {
+    for (auto reduction : ir_utils::getReductionOps(fusion)) {
       for (auto output :
            ir_utils::filterByType<TensorView>(reduction->outputs())) {
         auto concrete_dimension =
@@ -1223,15 +1209,46 @@ class ReductionScheduler : public SchedulerEntry {
 
   //! Check if the reduction heuristics apply in given fusion
   static bool canScheduleCompileTime(Fusion* fusion) {
-    // Needs at least one non-trivial reduction to consider.
-    if (ir_utils::getReductionOps(fusion, true /* ignore_trivial */).empty()) {
+    // Needs at least one reduction to consider.
+    if (ir_utils::getReductionOps(fusion).empty()) {
       scheduler_debug_utils::canScheduleRejectReason(
           ScheduleHeuristic::Reduction, "No reduction op to schedule");
       return false;
     }
 
-    auto reduction_tvs =
-        scheduler_utils::getReductionTvs(fusion, false /* ignore_trivial */);
+    // Check that inputs of all select ops are fusion inputs
+    // TODO(feiwen): To add some routines to handle both SelectOp and
+    // IndexSelectOp
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
+    }
+    for (auto idx_sel : ir_utils::getIndexSelectOps(fusion)) {
+      if (!idx_sel->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "First input of IndexSelectOp must be fusion input.");
+        return false;
+      }
+      if (idx_sel->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Reduction,
+            "First input of IndexSelectOp can only be used by IndexSelectOp");
+        return false;
+      }
+    }
+
+    auto reduction_tvs = scheduler_utils::getReductionTvs(fusion);
 
     if (reduction_tvs.size() == 0) {
       // Use pointwise logic
@@ -1265,8 +1282,7 @@ class ReductionScheduler : public SchedulerEntry {
     }
 
     // Make sure reduction axes are consistent through the fusion
-    auto reduction_ops =
-        ir_utils::getReductionOps(fusion, false /* ignore_trivial */);
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
     if (reduction_ops.size() > 1) {
       // Before examining the reduction axes want to quickly
       //   check the reductions have the same axis width
@@ -1383,6 +1399,55 @@ class TransposeScheduler : public SchedulerEntry {
       return false;
     }
 
+    // Check that inputs of all select ops are fusion inputs
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
+      auto root = TensorDomain::noReductions(
+          select->input(0)->as<TensorView>()->getMaybeRFactorDomain());
+      if (select->getSelectAxis() == root[root.size() - 1]) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "SelectOp on inner dim is not supported by transpose scheduler yet."
+            "In transpose scheduler, we want to leave the select dim alone, instead of creating a tile for it.");
+        return false;
+      }
+    }
+
+    for (auto idx_sel : ir_utils::getIndexSelectOps(fusion)) {
+      if (!idx_sel->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "First inputs of IndexSelectOp must be fusion input.");
+        return false;
+      }
+      if (idx_sel->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "First inputs of IndexSelectOp can only be used by SelectOp");
+        return false;
+      }
+      auto root = TensorDomain::noReductions(
+          idx_sel->input(0)->as<TensorView>()->getMaybeRFactorDomain());
+      if (idx_sel->getSelectAxis() == root[root.size() - 1]) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Transpose,
+            "IndexSelectOp on inner dim is not supported by transpose scheduler yet."
+            "In transpose scheduler, we want to leave the select dim alone, instead of creating a tile for it.");
+        return false;
+      }
+    }
+
     if (!hasAtLeastTwoValidGroups(fusion)) {
       scheduler_debug_utils::canScheduleRejectReason(
           ScheduleHeuristic::Transpose,
@@ -1390,9 +1455,7 @@ class TransposeScheduler : public SchedulerEntry {
       return false;
     }
 
-    // TODO: add support for trivial reduction
-    auto reduction_ops =
-        ir_utils::getReductionOps(fusion, false /* ignore_trivial */);
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
 
     if (!reduction_ops.empty()) {
       scheduler_debug_utils::canScheduleRejectReason(
@@ -1461,6 +1524,37 @@ class PointWiseScheduler : public SchedulerEntry {
       return false;
     }
 
+    // Check that inputs of all select ops are fusion inputs
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::PointWise,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::PointWise,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
+    }
+
+    for (auto idx_sel : ir_utils::getIndexSelectOps(fusion)) {
+      if (!idx_sel->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::PointWise,
+            "First input of IndexSelectOp must be fusion input.");
+        return false;
+      }
+      if (idx_sel->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::PointWise,
+            "First input of IndexSelectOp can only be used by IndexSelectOp");
+        return false;
+      }
+    }
+
     if (ir_utils::getViewOps(fusion).size() > 0) {
       ComputeAtMap ca_map(fusion);
       if (requiresForwardViewReplay(fusion, ca_map)) {
@@ -1471,8 +1565,7 @@ class PointWiseScheduler : public SchedulerEntry {
       }
     }
 
-    auto reduction_ops =
-        ir_utils::getReductionOps(fusion, true /* ignore_trivial */);
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
 
     if (!reduction_ops.empty()) {
       scheduler_debug_utils::canScheduleRejectReason(
@@ -1539,15 +1632,44 @@ class PersistentKernelScheduler : public SchedulerEntry {
   }
 
   static bool canScheduleCompileTime(Fusion* fusion) {
-    // Needs at least one non-trivial reduction to consider.
-    if (ir_utils::getReductionOps(fusion, true /* ignore_trivial */).empty()) {
+    // Needs at least one reduction to consider.
+    auto reduction_ops = ir_utils::getReductionOps(fusion);
+    if (reduction_ops.empty()) {
       scheduler_debug_utils::canScheduleRejectReason(
           ScheduleHeuristic::Persistent, "needs a reduction op");
       return false;
     }
 
-    auto reduction_ops =
-        ir_utils::getReductionOps(fusion, false /* ignore_trivial */);
+    // Check that inputs of all select ops are fusion inputs
+    for (auto select : ir_utils::getSelectOps(fusion)) {
+      if (!select->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "Inputs of SelectOp must be fusion input.");
+        return false;
+      }
+      if (select->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "Inputs of SelectOp can only be used by SelectOp");
+        return false;
+      }
+    }
+
+    for (auto idx_sel : ir_utils::getIndexSelectOps(fusion)) {
+      if (!idx_sel->input(0)->isFusionInput()) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "First input of IndexSelectOp must be fusion input.");
+        return false;
+      }
+      if (idx_sel->input(0)->uses().size() > 1) {
+        scheduler_debug_utils::canScheduleRejectReason(
+            ScheduleHeuristic::Persistent,
+            "First input of IndexSelectOp can only be used by IndexSelectOp");
+        return false;
+      }
+    }
 
     if (hasNonUniqueBcast(fusion)) {
       scheduler_debug_utils::canScheduleRejectReason(
@@ -1556,8 +1678,7 @@ class PersistentKernelScheduler : public SchedulerEntry {
       return false;
     }
 
-    auto reduction_tvs =
-        scheduler_utils::getReductionTvs(fusion, false /* ignore_trivial */);
+    auto reduction_tvs = scheduler_utils::getReductionTvs(fusion);
 
     if (reduction_tvs.size() == 0) {
       // Use pointwise logic
@@ -1661,8 +1782,7 @@ class PersistentKernelScheduler : public SchedulerEntry {
         HeuristicSummaryEntry<HeuristicCompileTime::ReductionTVs>(
             data_cache, [&fusion]() {
               return std::make_unique<std::vector<TensorView*>>(
-                  scheduler_utils::getReductionTvs(
-                      fusion /*, ignore_trivial = true*/));
+                  scheduler_utils::getReductionTvs(fusion));
             });
 
     auto& reduction_tvs = reduction_tv_entry.get();
@@ -1954,26 +2074,28 @@ void HeuristicSummary::validate() const {
       // TODO: need to cache the dynamically zero inputs?
       break;
     }
+    case ScheduleHeuristic::Transpose:
     case ScheduleHeuristic::PointWise: {
-      TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::DOMAIN_MAP));
-      TORCH_INTERNAL_ASSERT(
-          entry_type_map_.count(EntryType::REFERENCE_TENSORS));
-      TORCH_INTERNAL_ASSERT(
-          entry_type_map_.count(EntryType::VECTORIZABLE_INPUTS_AND_OUTPUTS));
-      TORCH_INTERNAL_ASSERT(
-          entry_type_map_.count(EntryType::BROADCAST_BYTE_MULTIPLES));
-      TORCH_INTERNAL_ASSERT(
-          entry_type_map_.count(EntryType::CAN_SCHEDULE_TRANSPOSE));
-      auto can_schedule_transpose =
-          entry_type_map_.at(EntryType::CAN_SCHEDULE_TRANSPOSE)
-              ->as<
-                  CompileTimeInfo<HeuristicCompileTime::CanScheduleTranspose>>()
-              ->get();
-      if (!*can_schedule_transpose) {
-        break;
+      if (heuristic_ == ScheduleHeuristic::PointWise) {
+        TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::DOMAIN_MAP));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::REFERENCE_TENSORS));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::VECTORIZABLE_INPUTS_AND_OUTPUTS));
+        TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::VECTORIZE_MAPS));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::BROADCAST_BYTE_MULTIPLES));
+        TORCH_INTERNAL_ASSERT(
+            entry_type_map_.count(EntryType::CAN_SCHEDULE_TRANSPOSE));
+        auto can_schedule_transpose =
+            entry_type_map_.at(EntryType::CAN_SCHEDULE_TRANSPOSE)
+                ->as<CompileTimeInfo<
+                    HeuristicCompileTime::CanScheduleTranspose>>()
+                ->get();
+        if (!*can_schedule_transpose) {
+          break;
+        }
       }
-    }
-    case ScheduleHeuristic::Transpose: {
       TORCH_INTERNAL_ASSERT(
           entry_type_map_.count(EntryType::TRANSPOSE_DOMAIN_MAP));
       TORCH_INTERNAL_ASSERT(entry_type_map_.count(
@@ -1988,6 +2110,7 @@ void HeuristicSummary::validate() const {
       TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::REDUCTION_TVS));
       TORCH_INTERNAL_ASSERT(
           entry_type_map_.count(EntryType::VECTORIZABLE_INPUTS_AND_OUTPUTS));
+      TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::VECTORIZE_MAPS));
       TORCH_INTERNAL_ASSERT(
           entry_type_map_.count(EntryType::UNROLLABLE_INPUTS_AND_OUTPUTS));
       break;
@@ -1996,6 +2119,7 @@ void HeuristicSummary::validate() const {
       TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::REDUCTION_TVS));
       TORCH_INTERNAL_ASSERT(
           entry_type_map_.count(EntryType::VECTORIZABLE_INPUTS_AND_OUTPUTS));
+      TORCH_INTERNAL_ASSERT(entry_type_map_.count(EntryType::VECTORIZE_MAPS));
       TORCH_INTERNAL_ASSERT(
           entry_type_map_.count(EntryType::UNROLLABLE_INPUTS_AND_OUTPUTS));
       TORCH_INTERNAL_ASSERT(
@@ -2053,6 +2177,7 @@ template class HeuristicSummaryEntry<
     HeuristicCompileTime::ReferenceTensorsForGroups>;
 template class HeuristicSummaryEntry<
     HeuristicCompileTime::VectorizableInputsAndOutputs>;
+template class HeuristicSummaryEntry<HeuristicCompileTime::VectorizeMaps>;
 template class HeuristicSummaryEntry<
     HeuristicCompileTime::InputsOutputsInnerDimGroups>;
 template class HeuristicSummaryEntry<

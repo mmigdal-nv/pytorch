@@ -528,6 +528,7 @@ std::shared_ptr<ReductionParams> outerReductionHeuristic(
           std::max((int64_t)n_tensor_inputs >> 2, (int64_t)1)));
 
   const int64_t n_elems = total_reduction_numel * total_iteration_numel;
+  const int64_t n_waves = 8;
 
   // if data fits in l2 and we need more parallelization in the iter dim,
   // we can use a smaller warp size. While thread local data fits in l1, and
@@ -566,7 +567,7 @@ std::shared_ptr<ReductionParams> outerReductionHeuristic(
           target_threads_in_block <
               ceilDiv(device_max_threads_per_multiprocessor, (int64_t)4)
           // There's a place to put it in the device
-          || target_blocks < device_multiprocessor_count * 4
+          || target_blocks < device_multiprocessor_count * n_waves
           // There's a place to put it in unrolling
           || target_unroll < vectorize_factor)) {
     if (target_threads_in_block <
@@ -574,7 +575,7 @@ std::shared_ptr<ReductionParams> outerReductionHeuristic(
       target_threads_in_block *= 2;
     }
 
-    if (target_blocks < device_multiprocessor_count * 4 &&
+    if (target_blocks < device_multiprocessor_count * n_waves &&
         available_parallelism() > 1) {
       target_blocks *= 2;
     }
@@ -676,7 +677,12 @@ std::shared_ptr<ReductionParams> outerReductionHeuristic(
   }
 
   // Round bdimx to a nice value
-  bdimx = roundUpPow2OrMultipleOf(bdimx, 8);
+  int64_t niceValue = 8;
+  if (n_elems >= device_multiprocessor_count *
+          device_max_threads_per_multiprocessor * 32) {
+    niceValue = 32;
+  }
+  bdimx = roundUpPow2OrMultipleOf(bdimx, niceValue);
 
   // Fill bdimy with left over threads
   bdimy = std::min(
@@ -740,7 +746,7 @@ std::shared_ptr<ReductionParams> outerReductionHeuristic(
   // Try to do some cleanup of ragged waves on device
   if (
       // If we have less than 8 waves of blocks
-      grdim * gidim < device_multiprocessor_count * 8 &&
+      grdim * gidim < device_multiprocessor_count * 16 &&
       // And we don't have an even divisible number of blocks
       (grdim * gidim) % device_multiprocessor_count != 0 &&
       // And we have more than one wave
@@ -750,11 +756,9 @@ std::shared_ptr<ReductionParams> outerReductionHeuristic(
         std::max((gidim * grdim) / device_multiprocessor_count, (int64_t)1);
     auto new_grdim =
         std::max((waves * device_multiprocessor_count) / gidim, (int64_t)1);
-    if (
-        // If difference is less than 25% of the original grdim
-        (new_grdim - grdim) * 4 < grdim &&
-        // and difference is less than 25% of the original number of blocks
-        ((new_grdim * gidim) - (grdim * gidim)) * 4 < grdim * gidim) {
+    if ((grdim - new_grdim) * 4 <= grdim &&
+        new_grdim * gidim % device_multiprocessor_count >
+            grdim * gidim % device_multiprocessor_count) {
       grdim = new_grdim;
     }
   }
@@ -890,8 +894,7 @@ TORCH_CUDA_CU_API std::shared_ptr<ReductionParams> getReductionHeuristics(
       HeuristicSummaryEntry<HeuristicCompileTime::ReductionTVs>(
           data_cache, [&fusion]() {
             return std::make_unique<std::vector<TensorView*>>(
-                scheduler_utils::getReductionTvs(
-                    fusion /*, ignore_trivial = true */));
+                scheduler_utils::getReductionTvs(fusion));
           });
 
   auto& reduction_tvs = reduction_tv_entry.get();
@@ -907,8 +910,7 @@ TORCH_CUDA_CU_API std::shared_ptr<ReductionParams> getReductionHeuristics(
   const auto red_expr = reduction_tv->definition();
 
   TORCH_INTERNAL_ASSERT(
-      red_expr->getExprType() != c10::nullopt &&
-          ir_utils::isReductionOp(red_expr),
+      ir_utils::isReductionOp(red_expr),
       "TensorView doesn't have a reduction.");
 
   auto properties =
@@ -939,6 +941,17 @@ TORCH_CUDA_CU_API std::shared_ptr<ReductionParams> getReductionHeuristics(
 
   auto& unrollable_inputs_outputs = unrollable_inputs_outputs_entry.get();
 
+  // Create maps to all inputs and outputs based on largest_out (starting at all
+  // positions of largest_out) to see how much of those dimensions map to inputs
+  // and outputs in a way that could be vectorized.
+  auto vectorize_maps_entry =
+      HeuristicSummaryEntry<HeuristicCompileTime::VectorizeMaps>(
+          data_cache, [&reduction_tv]() {
+            return std::make_unique<
+                std::vector<vectorize_helper::ContiguousInnerDimensionsMapper>>(
+                vectorize_helper::getAllVectorizedMapsOf(reduction_tv));
+          });
+
   // Vectorize as much as we can
   size_t vectorize_factor = std::numeric_limits<size_t>::max();
 
@@ -953,8 +966,8 @@ TORCH_CUDA_CU_API std::shared_ptr<ReductionParams> getReductionHeuristics(
   }
 
   // Try expanding vectorization to contig merged domains
-  vectorize_factor = vectorize_helper::expandVectorizationToContigMergedDomains(
-      fusion,
+  vectorize_factor = vectorize_helper::getExpandedVectorization(
+      vectorize_maps_entry.get(),
       runtime_info,
       vectorizable_inputs_outputs,
       reduction_tv,
@@ -1011,8 +1024,7 @@ void scheduleReduction(Fusion* fusion, const ReductionParams& rparams) {
   // fusion segmentation
   scheduler_utils::clearMemorySpace(fusion);
 
-  auto reduction_tvs =
-      scheduler_utils::getReductionTvs(fusion /*, ignore_trivial = true */);
+  auto reduction_tvs = scheduler_utils::getReductionTvs(fusion);
 
   TORCH_INTERNAL_ASSERT(reduction_tvs.size());
 

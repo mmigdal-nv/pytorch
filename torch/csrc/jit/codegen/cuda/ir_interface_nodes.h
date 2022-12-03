@@ -4,6 +4,7 @@
 
 #include <torch/csrc/jit/codegen/cuda/fusion.h>
 #include <torch/csrc/jit/codegen/cuda/ir_base_nodes.h>
+#include <torch/csrc/jit/codegen/cuda/ir_builder_passkey.h>
 #include <torch/csrc/jit/codegen/cuda/ir_internal_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/mma_type.h>
 
@@ -21,53 +22,48 @@ class WelfordResult;
 class ViewTransform;
 
 class IrCloner;
-class IrBuilderPasskey;
 
-//! A Bool value
-//!
-//! This value can be a symbolic value (defined after the kernel
-//! is compiled) or a constant value (inlined into the kernel definition).
-//!
-class TORCH_CUDA_CU_API Bool : public Val {
- public:
-  Bool(IrBuilderPasskey passkey);
-
-  explicit Bool(IrBuilderPasskey passkey, bool value);
-
-  explicit Bool(IrBuilderPasskey passkey, c10::optional<bool> value);
-
-  Bool(const Bool* src, IrCloner* ir_cloner);
-
-  bool isSymbolic() const {
-    return !(maybe_value_.has_value());
-  }
-  bool isConst() const final {
-    return maybe_value_.has_value();
-  }
-  c10::optional<bool> value() const {
-    return maybe_value_;
-  }
-
-  bool sameAs(const Statement* other) const override;
-
- private:
-  const c10::optional<bool> maybe_value_;
-};
-
-//! A Float64 value. This value can be a symbolic value (defined after the
-//! kernel is compiled) or a constant value (inlined into the kernel
+//! A scalr value. This value can be a symbolic value (defined after
+//! the kernel is compiled) or a constant value (inlined into the kernel
 //! definition).
-class TORCH_CUDA_CU_API Double : public Val {
+template <typename UnderlyingType>
+class TORCH_CUDA_CU_API Scalar : public Val {
  public:
-  using ScalarType = double;
+  using ScalarType = UnderlyingType;
+  static constexpr DataType kDefaultDataType =
+      NativeTypeToDataType<UnderlyingType>::type;
 
-  Double(IrBuilderPasskey passkey);
+  explicit Scalar(IrBuilderPasskey passkey, DataType dtype = kDefaultDataType)
+      : Val(passkey, ValType::Scalar, dtype), maybe_value_{c10::nullopt} {
+    TORCH_INTERNAL_ASSERT(
+        (std::is_integral<UnderlyingType>::value && isIntegralType(dtype)) ||
+            (std::is_same<UnderlyingType, bool>::value &&
+             isBooleanType(dtype)) ||
+            (std::is_floating_point<UnderlyingType>::value &&
+             isFloatingPointType(dtype)),
+        "Invalid data type: ",
+        dtype);
+  }
 
-  explicit Double(IrBuilderPasskey passkey, ScalarType value);
+  explicit Scalar(
+      IrBuilderPasskey passkey,
+      c10::optional<UnderlyingType> value,
+      DataType dtype = kDefaultDataType)
+      : Val(passkey, ValType::Scalar, dtype), maybe_value_{value} {
+    TORCH_INTERNAL_ASSERT(
+        (std::is_integral<UnderlyingType>::value && isIntegralType(dtype)) ||
+            (std::is_same<UnderlyingType, bool>::value &&
+             isBooleanType(dtype)) ||
+            (std::is_floating_point<UnderlyingType>::value &&
+             isFloatingPointType(dtype)),
+        "Invalid data type: ",
+        dtype);
+  }
 
-  explicit Double(IrBuilderPasskey passkey, c10::optional<ScalarType> value);
+  Scalar(const Scalar* src, IrCloner* ir_cloner)
+      : Val(src, ir_cloner), maybe_value_(src->maybe_value_) {}
 
-  Double(const Double* src, IrCloner* ir_cloner);
+  NVFUSER_DECLARE_CLONE
 
   bool isSymbolic() const {
     return !(maybe_value_.has_value());
@@ -75,45 +71,31 @@ class TORCH_CUDA_CU_API Double : public Val {
   bool isConst() const final {
     return maybe_value_.has_value();
   }
-  c10::optional<ScalarType> value() const {
+  c10::optional<UnderlyingType> value() const {
     return maybe_value_;
   }
 
-  bool sameAs(const Statement* other) const override;
+  bool sameAs(const Statement* other) const override {
+    if (this == other) {
+      return true;
+    }
+    if (!other->isA<Scalar>()) {
+      return false;
+    }
+    const auto other_val = other->as<Scalar>();
+    if (isConst() && other_val->isConst()) {
+      return *value() == *(other_val->value());
+    }
+    return false;
+  }
 
  private:
-  const c10::optional<ScalarType> maybe_value_;
+  const c10::optional<UnderlyingType> maybe_value_;
 };
 
-//! An Int64 value. If used for indexing it's set as size_t. Otherwise it's an
-//! inlined literal in the kernel.
-class TORCH_CUDA_CU_API Int : public Val {
- public:
-  using ScalarType = int64_t;
-
-  Int(IrBuilderPasskey passkey);
-
-  explicit Int(IrBuilderPasskey passkey, ScalarType value);
-
-  explicit Int(IrBuilderPasskey passkey, c10::optional<ScalarType> value);
-
-  Int(const Int* src, IrCloner* ir_cloner);
-
-  bool isSymbolic() const {
-    return !(maybe_value_.has_value());
-  }
-  bool isConst() const final {
-    return maybe_value_.has_value();
-  }
-  c10::optional<ScalarType> value() const {
-    return maybe_value_;
-  }
-
-  bool sameAs(const Statement* other) const override;
-
- private:
-  const c10::optional<ScalarType> maybe_value_;
-};
+using Bool = Scalar<bool>;
+using Int = Scalar<int64_t>;
+using Double = Scalar<double>;
 
 //! An c10::complex<double> value. This value can be a symbolic value (defined
 //! after the kernel is compiled) or a constant value (inlined into the kernel
@@ -131,6 +113,8 @@ class TORCH_CUDA_CU_API ComplexDouble : public Val {
       c10::optional<ScalarType> value);
 
   ComplexDouble(const ComplexDouble* src, IrCloner* ir_cloner);
+
+  NVFUSER_DECLARE_CLONE
 
   bool isSymbolic() const {
     return !(maybe_value_.has_value());
@@ -209,6 +193,8 @@ class TORCH_CUDA_CU_API TensorView : public Val {
 
   TensorView(const TensorView* src, IrCloner* ir_cloner);
 
+  NVFUSER_DECLARE_CLONE
+
   TensorDomain* domain() const {
     return domain_;
   }
@@ -233,12 +219,6 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   bool hasGridReduction() const;
   bool hasBroadcast() const;
   bool hasRFactor() const;
-
-  //! This is the previous hasReduction logic,
-  //! kept here exclusively for lower loop pass will
-  //! deprecate when Fusion IR pass can convert
-  //! trivial reductions
-  bool hasAnyReduction() const;
 
   //! Returns true if this tensor is zero dimensional,
   //!  i.e. a wrapped scalar or an empty placeholder.
@@ -300,6 +280,10 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   // this tensor. This position dictates the clear expectations of producers.
   unsigned int getMaxProducerPosition() const {
     return max_producer_pos_;
+  }
+
+  unsigned int getMaybeMaxProducerPosition() const {
+    return maybe_max_producer_pos_;
   }
 
   //! This is used when we disconnect a tensorview from a reduction
@@ -561,6 +545,58 @@ class TORCH_CUDA_CU_API TensorView : public Val {
       bool best_effort = false,
       MaxPosCalculator* calc = nullptr);
 
+  //! Inline the computation of this tensor into a consumer at the given
+  //! position. The consumer to compute with is determined when the
+  //! fusion is lowered. Specifically, it is the first consumer tensor
+  //! in the topologically ordered dependency graph. Before the
+  //! lowering, its compute-with consumer is considered unresolved,
+  //! which is then resolved by resolveComputeWith below.
+  //!
+  //! The position is relative to its own domain. It is an
+  //! error if the position is smaller than the compute-at position. If this
+  //! tensor is already inlined in a higher position with the same
+  //! consumer, then this call is a no-op. The actual position is
+  //! computed in the same way as inlineAt, except that computeWith
+  //! does not have the constraint of the persistent data-dependency pattern.
+  void computeWith(int pos, bool best_effort = false);
+
+  //! Set the actual consumer tensors that this tensor is
+  //! computed with. Requires a topologically sorted list expressions,
+  //! which can be obtained reorderExprsForComputeAt. Return true if
+  //! resolution is actually done. This should only be done in the
+  //! Kernel container.
+  bool resolveComputeWith(const std::vector<Expr*>& sorted_exprs);
+
+  bool hasComputeWith() const {
+    return getComputeWithPosition() > getComputeAtPosition();
+  }
+
+  bool hasResolvedComputeWith() const {
+    return !compute_with_consumers_.empty();
+  }
+
+  //! Query if this tensor is computed with a given consumer.
+  bool isComputedWith(const TensorView* consumer) const;
+
+  //! Return the tensors with which this tensor is computed. It is an
+  //! error to use this function without first resolving computeWith.
+  const std::vector<TensorView*>& getComputeWithConsumers() const;
+
+  unsigned int getComputeWithPosition() const {
+    return compute_with_pos_;
+  }
+
+  unsigned int getMaxComputePosition() const {
+    return std::max(getComputeWithPosition(), getComputeAtPosition());
+  }
+
+  //! Returns the position that this tensor is produced at for a given
+  //! consumer. If this tensor is computed with the given consumer,
+  //! which also means its computeWith needs to have been resolved, the
+  //! computeWith position is returned. Otherwise, the default computeAt
+  //! position is retured.
+  unsigned int getComputePosition(const TensorView* consumer) const;
+
   // Update the max producer position of the current tensor. This is required
   // when we modify producer-consumer relationship of a scheduled tensor, for
   // example, grouping multiple reductions.
@@ -595,6 +631,8 @@ class TORCH_CUDA_CU_API TensorView : public Val {
   TensorView* multiOutputRfactorHelper(
       TensorView* tv,
       const std::vector<int>& axes);
+
+  void clearComputeWith();
 
  private:
   TensorDomain* domain_ = nullptr;
@@ -638,6 +676,22 @@ class TORCH_CUDA_CU_API TensorView : public Val {
 
   // Loop where the next level of unrolled loops are interleaved.
   c10::optional<std::pair<int, int>> maybe_interleave_axis_and_factor_;
+
+  //! Direct consumer tensors that this tensor is computed with
+  std::vector<TensorView*> compute_with_consumers_;
+
+  //! Position where this tensor is computed with the compute-with
+  //! consumer tensors. It should be always be equal or greater than
+  //! the computeAt position
+  unsigned int compute_with_pos_ = 0;
+
+  //! Maximum position where producers may be computed at, including
+  //! unresolved computeWith. This is equal to max_producer_pos_ when
+  //! no producer has unresolved computeWith. It is only used before
+  //! resolving computeWith so that no IterDomain should never be
+  //! transformed when there may actually be a producer tensor that
+  //! may be computed at.
+  unsigned int maybe_max_producer_pos_ = 0;
 };
 
 //! A simple TensorView builder

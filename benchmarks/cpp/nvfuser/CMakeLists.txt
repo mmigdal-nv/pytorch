@@ -7,6 +7,7 @@ if(USE_CUDA)
     bert.cpp
     broadcast.cpp
     gelu_backward.cpp
+    gelu_backward_reduction.cpp
     heuristic_lookup.cpp
     shape_inference.cpp
     instance_norm.cpp
@@ -22,6 +23,7 @@ if(USE_CUDA)
     transpose.cpp
     matmul.cpp
     timm.cpp
+    indexselect.cpp
     utils.cpp
     main.cpp)
 

@@ -18,6 +18,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <typeinfo>
 #include <unordered_map>
 
 namespace torch {
@@ -32,6 +33,8 @@ Statement::Statement(IrBuilderPasskey passkey) {
 Statement::Statement(const Statement* src, IrCloner* ir_cloner) {
   ir_container_ = ir_cloner->container();
 }
+
+NVFUSER_DEFINE_CLONE(Statement)
 
 void Statement::setName(IrContainerPasskey, StmtNameType name) {
   name_ = name;
@@ -96,6 +99,8 @@ Val::Val(IrBuilderPasskey passkey, ValType _vtype, DataType _dtype)
 //
 Val::Val(const Val* src, IrCloner* ir_cloner)
     : Statement(src, ir_cloner), vtype_(src->vtype_), dtype_(src->dtype_) {}
+
+NVFUSER_DEFINE_CLONE(Val)
 
 const std::vector<Expr*>& Val::uses() const {
   if (vtype_ == ValType::TensorView) {
@@ -211,7 +216,7 @@ int64_t Val::evaluateInt() {
     return this->as<Int>()->value().value();
   }
 
-  ExpressionEvaluator ee(fusion());
+  ExpressionEvaluator ee;
   auto evaluated_val = ee.evaluate(this);
   TORCH_INTERNAL_ASSERT(
       evaluated_val.has_value(),
@@ -228,7 +233,7 @@ double Val::evaluateDouble() {
     return this->as<Double>()->value().value();
   }
 
-  ExpressionEvaluator ee(fusion());
+  ExpressionEvaluator ee;
   auto evaluated_val = ee.evaluate(this);
   TORCH_INTERNAL_ASSERT(
       evaluated_val.has_value(),
@@ -236,24 +241,40 @@ double Val::evaluateDouble() {
   return evaluated_val->as<double>();
 }
 
+bool Val::evaluateBool() {
+  TORCH_INTERNAL_ASSERT(
+      ConstCheck::isConst(this),
+      "Cannot get Bool of not const bools through IR nodes, must use runtime ExpressionEvaluator.");
+
+  if (this->as<Bool>()->value().has_value()) {
+    return this->as<Bool>()->value().value();
+  }
+
+  ExpressionEvaluator ee;
+  auto evaluated_val = ee.evaluate(this);
+  TORCH_INTERNAL_ASSERT(
+      evaluated_val.has_value(),
+      "Detected a const integer but failed to infer its value.");
+  return evaluated_val->as<bool>();
+}
+
 c10::optional<int64_t> Val::getInt() const {
-  if (isConstScalar() && isAnInt()) {
-    if (this->getValType() == ValType::Scalar) {
-      if (this->isA<Int>()) {
-        return this->as<Int>()->value();
-      }
-    }
+  if (isConstScalar() && isAnInt() && isA<Int>()) {
+    return this->as<Int>()->value();
   }
   return c10::nullopt;
 }
 
 c10::optional<double> Val::getDouble() const {
-  if (isConstScalar() && isAnInt()) {
-    if (this->getValType() == ValType::Scalar) {
-      if (this->isA<Double>()) {
-        return this->as<Double>()->value();
-      }
-    }
+  if (isConstScalar() && isADouble() && isA<Double>()) {
+    return this->as<Double>()->value();
+  }
+  return c10::nullopt;
+}
+
+c10::optional<bool> Val::getBool() const {
+  if (isConstScalar() && isABool() && isA<Bool>()) {
+    return this->as<Bool>()->value();
   }
   return c10::nullopt;
 }
@@ -273,16 +294,6 @@ bool Val::isZero() const {
 bool Val::isOneInt() const {
   auto int_val = getInt();
   return int_val.has_value() && int_val.value() == 1;
-}
-
-bool Val::isDefinitionType(ExprType expression_type) const {
-  if (definition() != nullptr) {
-    auto def_expr_type = definition()->getExprType();
-    if (def_expr_type.has_value() && def_expr_type.value() == expression_type) {
-      return true;
-    }
-  }
-  return false;
 }
 
 c10::optional<DataType> Val::getDataType() const {
@@ -310,14 +321,48 @@ bool Val::isConsumerOf(const Val* other) const {
 
 // We don't register with the active fusion in Expr as this needs to be done
 // after inputs and outputs are registered with the Expr
-Expr::Expr(IrBuilderPasskey passkey, ExprType etype)
-    : Statement(passkey), etype_{etype} {}
+Expr::Expr(IrBuilderPasskey passkey) : Statement(passkey) {}
 
 Expr::Expr(const Expr* src, IrCloner* ir_cloner)
     : Statement(src, ir_cloner),
-      etype_(src->etype_),
       inputs_(ir_cloner->clone(src->inputs_)),
-      outputs_(ir_cloner->clone(src->outputs_)) {}
+      outputs_(ir_cloner->clone(src->outputs_)),
+      attributes_(ir_cloner->clone(src->attributes_)) {}
+
+Expr::Expr(
+    IrBuilderPasskey passkey,
+    std::vector<Val*> inputs,
+    std::vector<Val*> outputs,
+    std::vector<Statement*> attributes)
+    : Statement(passkey),
+      inputs_(std::move(inputs)),
+      outputs_(std::move(outputs)),
+      attributes_(std::move(attributes)) {}
+
+Expr* Expr::shallowCopy() const {
+  auto result =
+      newObjectFunc()(ir_container_, inputs(), outputs(), attributes());
+  if (container()->isA<kir::Kernel>()) {
+    result->predicate_ = predicate_;
+    result->write_predicate_ = write_predicate_;
+  }
+  return result;
+}
+
+std::string Expr::getGraphvizLabel() const {
+  if (attributes().empty()) {
+    return getOpString();
+  }
+  std::stringstream ss;
+  const char* separator = "";
+  ss << "{" << getOpString() << "|{";
+  for (auto attr : attributes()) {
+    ss << separator << attr->toString();
+    separator = "|";
+  }
+  ss << "}}";
+  return ss.str();
+}
 
 bool Expr::sameAs(const Statement* other) const {
   if (this == other) {
@@ -327,15 +372,21 @@ bool Expr::sameAs(const Statement* other) const {
     return false;
   }
   const Expr* other_expr = other->as<Expr>();
-  if (getExprType() != other_expr->getExprType()) {
+  if (typeid(*this) != typeid(*other_expr)) {
     return false;
   }
   if (inputs().size() != other_expr->inputs().size() ||
-      outputs().size() != other_expr->outputs().size()) {
+      outputs().size() != other_expr->outputs().size() ||
+      attributes().size() != other_expr->attributes().size()) {
     return false;
   }
   for (const auto i : c10::irange(inputs().size())) {
     if (!input(i)->sameAs(other_expr->input(i))) {
+      return false;
+    }
+  }
+  for (const auto i : c10::irange(attributes().size())) {
+    if (!attribute(i)->sameAs(other_expr->attribute(i))) {
       return false;
     }
   }
@@ -376,13 +427,6 @@ Expr* Expr::withWritePredicate(kir::Predicate* predicate) {
   auto result = shallowCopy();
   result->setWritePredicate(predicate);
   return result;
-}
-
-void Expr::copyPredicatesFrom(const Expr* expr) {
-  if (container()->isA<kir::Kernel>()) {
-    predicate_ = expr->predicate_;
-    write_predicate_ = expr->write_predicate_;
-  }
 }
 
 } // namespace cuda

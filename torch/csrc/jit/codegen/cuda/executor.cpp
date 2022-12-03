@@ -103,13 +103,26 @@ static const char* defineNvFuserZero(bool enabled) {
 
 static const std::string& defineComplexTypes() {
   static std::string result = std::string(R"ESCAPE(
+#ifndef __NVCC__
 #define POS_INFINITY __int_as_float(0x7f800000)
 #define INFINITY POS_INFINITY
 #define NEG_INFINITY __int_as_float(0xff800000)
 #define NAN __int_as_float(0x7fffffff)
 )ESCAPE") +
       at::cuda::get_traits_string() + at::cuda::get_complex_body_string() +
-      at::cuda::get_cmath_string() + at::cuda::get_complex_math_string();
+      at::cuda::get_cmath_string() + at::cuda::get_complex_math_string() +
+      std::string(R"ESCAPE(
+#endif // __NVCC__
+)ESCAPE");
+  return result;
+}
+
+static const std::string& includeStdComplex() {
+  static std::string result = std::string(R"ESCAPE(
+#ifdef __NVCC__
+#include <complex>
+#endif // __NVCC__
+)ESCAPE");
   return result;
 }
 
@@ -126,6 +139,7 @@ std::string FusionExecutor::getStructuredCode(const std::string& kernel) {
 #endif
   code += std::string("#pragma clang force_cuda_host_device begin\n");
 #endif
+  code += includeStdComplex();
   code += std::string("namespace ") + FusionExecutor::kernelNamespace() +
       " {\n" +
       defineNvFuserZero(fusion_ == nullptr || fusion_->isNvFuserZeroEnabled()) +
@@ -194,7 +208,7 @@ void FusionExecutor::debugCompileFusionFromStr(
   const auto& kernel_summary = kernel->summary();
 
   if (!kernel_summary.static_smem_allocations.empty()) {
-    kir::ExpressionEvaluator static_evaluator;
+    ExpressionEvaluator static_evaluator;
     // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
     const auto static_smem_size = computeSharedMemory(
         static_evaluator, kernel_summary.static_smem_allocations);
@@ -320,7 +334,7 @@ void FusionExecutor::compileFusion(
   //  tensors statically but could keep this path if
   //  needed in later development.
   if (!kernel_summary.static_smem_allocations.empty()) {
-    kir::ExpressionEvaluator static_evaluator;
+    ExpressionEvaluator static_evaluator;
     // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
     const auto static_smem_size = computeSharedMemory(
         static_evaluator, kernel_summary.static_smem_allocations);
@@ -342,7 +356,7 @@ void FusionExecutor::compileFusion(
   // TODO: pass block_size here;
   c10::optional<int> block_size = c10::nullopt;
   if (!args.empty()) {
-    auto expr_eval = executor_utils::bindKernelInputs(args, kernel);
+    auto expr_eval = executor_utils::bindInputs(args, kernel);
     auto launch_params =
         computeLaunchParams(launch_constraints, expr_eval, warp_size_);
     block_size = launch_params.nThreads();
@@ -419,7 +433,7 @@ void fillTensorWithNan(at::Tensor& t) {
 at::Tensor inferAndAlloc(
     const TensorView* tv,
     const std::vector<Val*>& sizes,
-    kir::ExpressionEvaluator& expr_eval,
+    ExpressionEvaluator& expr_eval,
     // Map from dim -> expanded size of TV if any expanded broadcast dimensions
     // exist
     std::unordered_map<int, Val*> expanded_map,
@@ -497,7 +511,7 @@ at::Tensor inferAndAlloc(
 
 at::Tensor inferAndAllocOutput(
     const TensorView* tv,
-    kir::ExpressionEvaluator& expr_eval,
+    ExpressionEvaluator& expr_eval,
     const CompileOptions& options,
     bool zero_init = false) {
   const auto domain = tv->domain();
@@ -523,7 +537,7 @@ at::Tensor inferAndAllocOutput(
 } // namespace
 
 uint64_t FusionExecutor::computeSharedMemory(
-    kir::ExpressionEvaluator& expr_eval,
+    ExpressionEvaluator& expr_eval,
     const std::vector<const kir::Allocate*>& buffers,
     bool align_padding,
     uint64_t total) {
@@ -560,7 +574,7 @@ uint64_t FusionExecutor::computeSharedMemory(
 
 LaunchParams FusionExecutor::computeLaunchParams(
     const LaunchParams& launch_constraints,
-    kir::ExpressionEvaluator& expr_eval,
+    ExpressionEvaluator& expr_eval,
     const int warp_size) {
   FUSER_PERF_SCOPE("FusionExecutor::ComputeLaunchParams");
   TORCH_INTERNAL_ASSERT(warp_size > 0, "WARP_SIZE should be larger than 0");
@@ -630,8 +644,8 @@ LaunchParams FusionExecutor::computeLaunchParams(
         auto inferred_val = expr_eval.evaluate(extent);
         if (inferred_val.has_value()) {
           // This value could have been inferred, make sure it was set right.
-          bool valid =
-              inferred_val.value() == launch_constraints.getDim(p_type) ||
+          bool valid = inferred_val->as<int64_t>() ==
+                  launch_constraints.getDim(p_type) ||
               launch_constraints.getRawVal(p_type) == -1;
           if (!useFallback() && !valid) {
             TORCH_WARN_ONCE(
@@ -680,7 +694,7 @@ LaunchParams FusionExecutor::computeLaunchParams(
           // If already specified padded to constant, need to check
           //  runtime value not over the constant bound
           TORCH_INTERNAL_ASSERT(*val <= padded_constant_it->second);
-          *val = padded_constant_it->second;
+          *val = EvaluatorValue(padded_constant_it->second);
         } else {
           // If no specified constant, pad to the smallest multiple of warp
           //  above the value.
@@ -772,7 +786,7 @@ LaunchParams FusionExecutor::computeLaunchParams(
 }
 
 FusionExecutor::GlobalBuffers FusionExecutor::allocGlobalVals(
-    kir::ExpressionEvaluator& expr_eval) {
+    ExpressionEvaluator& expr_eval) {
   FUSER_PERF_SCOPE("FusionExecutor::AllocGlobalVals");
   GlobalBuffers global_buffers;
   const auto kernel = lowered_->kernel();
@@ -806,7 +820,7 @@ FusionExecutor::GlobalBuffers FusionExecutor::allocGlobalVals(
 
 std::vector<at::Tensor> FusionExecutor::allocOutputs(
     const KernelArgumentHolder& args,
-    kir::ExpressionEvaluator& expr_eval,
+    ExpressionEvaluator& expr_eval,
     const std::unordered_set<int>& alias_indices) {
   FUSER_PERF_SCOPE("FusionExecutor::AllocOutputs");
   const auto kernel = lowered_->kernel();
@@ -850,7 +864,7 @@ void FusionExecutor::setUsedTVs() {
 
 KernelArgumentHolder FusionExecutor::evaluateOutputSizes(
     const KernelArgumentHolder& args,
-    kir::ExpressionEvaluator& expr_eval,
+    ExpressionEvaluator& expr_eval,
     const std::unordered_set<int>& alias_indices) {
   FUSER_PERF_SCOPE("FusionExecutor::AllocOutputs");
   const auto kernel = lowered_->kernel();
@@ -924,11 +938,11 @@ KernelArgumentHolder FusionExecutor::inferOutputSizes(
 
   if (!evaluator_precomputed_values_) {
     evaluator_precomputed_values_ =
-        std::make_unique<KernelPrecomputedValues>(lowered_->kernel());
+        std::make_unique<PrecomputedValues>(lowered_->kernel());
   }
 
-  kir::ExpressionEvaluator expr_eval;
-  evaluator_precomputed_values_->bindKernelInputs(lowered_->kernel(), args);
+  ExpressionEvaluator expr_eval;
+  evaluator_precomputed_values_->bindInputs(args);
   expr_eval.precomputedValues() = evaluator_precomputed_values_.get();
 
   // I think this binds something to expr_eval, so even though we are not using
@@ -991,7 +1005,7 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
     std::cout << "Arguments for fusion" << fusion_id_ << ":" << std::endl
               << "Inputs:" << std::endl;
     for (auto i : c10::irange(args.size())) {
-      args[i]->print();
+      std::cout << "  " << args[i]->toString() << std::endl;
     }
     std::cout << "Outputs:" << std::endl;
     for (const auto& output : outputs) {
@@ -1094,11 +1108,11 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
 
     if (!evaluator_precomputed_values_) {
       evaluator_precomputed_values_ =
-          std::make_unique<KernelPrecomputedValues>(lowered_->kernel());
+          std::make_unique<PrecomputedValues>(lowered_->kernel());
     }
 
-    kir::ExpressionEvaluator expr_eval;
-    evaluator_precomputed_values_->bindKernelInputs(lowered_->kernel(), args);
+    ExpressionEvaluator expr_eval;
+    evaluator_precomputed_values_->bindInputs(args);
     expr_eval.precomputedValues() = evaluator_precomputed_values_.get();
 
     launch_params_ =
@@ -1256,8 +1270,8 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
   if (isDebugDumpEnabled(DebugDumpOption::KernelArgs)) {
     std::cout << "Arguments for kernel" << fusion_id_ << ":" << std::endl
               << "Inputs:" << std::endl;
-    for (auto i : c10::irange(args.size())) {
-      args[i]->print();
+    for (auto i : c10::irange(num_inputs)) {
+      std::cout << "  " << args[i]->toString() << std::endl;
     }
     std::cout << "Outputs:" << std::endl;
     // note: add aliased outputs here.
@@ -1284,9 +1298,9 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
   if (measure_kernel_time_ ||
       isDebugDumpEnabled(DebugDumpOption::EffectiveBandwidth) ||
       isDebugDumpEnabled(DebugDumpOption::PerfDebugVerbose)) {
-    cudaEventCreate(&start_event);
-    cudaEventCreate(&finish_event);
-    cudaEventRecord(start_event);
+    C10_CUDA_CHECK(cudaEventCreate(&start_event));
+    C10_CUDA_CHECK(cudaEventCreate(&finish_event));
+    C10_CUDA_CHECK(cudaEventRecord(start_event));
   }
 
   if (execute_kernel_) {
@@ -1342,12 +1356,13 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
   if (measure_kernel_time_ ||
       isDebugDumpEnabled(DebugDumpOption::EffectiveBandwidth) ||
       isDebugDumpEnabled(DebugDumpOption::PerfDebugVerbose)) {
-    cudaEventRecord(finish_event);
-    cudaEventSynchronize(start_event);
-    cudaEventSynchronize(finish_event);
-    cudaEventElapsedTime(&kernel_time_ms_, start_event, finish_event);
-    cudaEventDestroy(start_event);
-    cudaEventDestroy(finish_event);
+    C10_CUDA_CHECK(cudaEventRecord(finish_event));
+    C10_CUDA_CHECK(cudaEventSynchronize(start_event));
+    C10_CUDA_CHECK(cudaEventSynchronize(finish_event));
+    C10_CUDA_CHECK(
+        cudaEventElapsedTime(&kernel_time_ms_, start_event, finish_event));
+    C10_CUDA_CHECK(cudaEventDestroy(start_event));
+    C10_CUDA_CHECK(cudaEventDestroy(finish_event));
 
     bytes_processed_ = 0;
     // Figure how many bytes are inputs, outputs, and temporary buffers
@@ -1398,16 +1413,26 @@ void FusionExecutor::compileRtc(
       executor_utils::nvrtcCompile(scode, name, fusion_id_);
 }
 
-void FusionExecutor::runRtc(
+float FusionExecutor::runRtc(
     const LaunchParams& launch_params,
-    const std::vector<at::Tensor>& args) {
+    const std::vector<at::Tensor>& args,
+    KernelIndexMode index_mode) {
   FUSER_PERF_SCOPE("runFusion");
 
   c10::DeviceGuard dg(options_.device);
   auto stream = at::cuda::getCurrentCUDAStream();
 
-  KernelArgumentHolder kernel_arguments(options_.index_mode);
+  cudaEvent_t start_event = {};
+  cudaEvent_t finish_event = {};
+
+  cudaEventCreate(&start_event);
+  cudaEventCreate(&finish_event);
+
+  KernelArgumentHolder kernel_arguments(index_mode);
   kernel_arguments.push(args);
+
+  cudaEventRecord(start_event);
+
   AT_CUDA_DRIVER_CHECK(at::globalContext().getNVRTC().cuLaunchKernel(
       compiled_kernel_.function,
       launch_params.gdimx(),
@@ -1420,6 +1445,17 @@ void FusionExecutor::runRtc(
       stream,
       kernel_arguments.getBuffer(),
       nullptr));
+
+  cudaEventRecord(finish_event);
+  cudaEventSynchronize(start_event);
+  cudaEventSynchronize(finish_event);
+
+  float kernel_time_ms = 0;
+  cudaEventElapsedTime(&kernel_time_ms, start_event, finish_event);
+  cudaEventDestroy(start_event);
+  cudaEventDestroy(finish_event);
+
+  return kernel_time_ms;
 }
 
 } // namespace cuda

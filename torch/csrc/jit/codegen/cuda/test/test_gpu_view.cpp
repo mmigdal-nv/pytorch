@@ -19,7 +19,6 @@
 #include <torch/csrc/jit/codegen/cuda/ir_utils.h>
 #include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_cache.h>
-#include <torch/csrc/jit/codegen/cuda/kernel_expr_evaluator.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir.h>
 #include <torch/csrc/jit/codegen/cuda/kernel_ir_dispatch.h>
 #include <torch/csrc/jit/codegen/cuda/lower2device.h>
@@ -1050,13 +1049,13 @@ TEST_F(NVFuserTest, FusionViewTransformCache_CUDA) {
   // Splits are done as splitting out left hand side, so left hand side
   // split changes can't reuse view, but right hand side split changes can.
   // Merges, since they don't bury hard values in can always be reshared.
-  // Need to make sure trivial reduction, and broadcast changes don't try to
-  // reuse view. What matches and what doesn't is very specific to the
-  // implementation of how the splits/merges are generated. This could be
-  // changed over time as there isn't a single set of transformations to
-  // potentially make a view. For example we could always merge all dimensions,
-  // then split out all dimensions. This would always be valid but would not be
-  // efficient for indexing.
+  // Need to make sure squeeze and broadcast changes don't try to reuse view.
+  // What matches and what doesn't is very specific to the implementation of how
+  // the splits/merges are generated. This could be changed over time as there
+  // isn't a single set of transformations to potentially make a view. For
+  // example we could always merge all dimensions, then split out all
+  // dimensions. This would always be valid but would not be efficient for
+  // indexing.
 
   // "Same"
   assert_matches(
@@ -1722,7 +1721,51 @@ TEST_F(NVFuserTest, FusionViewMagicSchedule5_CUDA) {
   testValidate(&fusion, cg_outputs, {t0, t3}, {t6}, __LINE__, __FILE__);
 }
 
-// placeholder for FusionViewMagicSchedule6_CUDA
+// Test view/transpose and its impact on vectorization
+TEST_F(NVFuserTest, FusionViewMagicSchedule6_CUDA) {
+  auto fusion_ptr = std::make_unique<Fusion>();
+  Fusion& fusion = *fusion_ptr.get();
+  FusionGuard fg(&fusion);
+
+  int x = 128, y = 128;
+
+  auto tv0 = makeContigTensor(2);
+  fusion.addInput(tv0);
+  auto tv1 = view(tv0, {x, y}, {x, y / 2, 2});
+  auto tv2 = transpose(tv1, 0, 1);
+
+  auto tv3 = makeContigTensor(3);
+  fusion.addInput(tv3);
+  auto tv4 = add(tv2, tv3);
+  fusion.addOutput(tv4);
+
+  auto options = at::TensorOptions().dtype(at::kFloat).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({x, y}, options);
+  auto t1 = at::native::view(t0, {x, y / 2, 2});
+
+  auto t2 = t1.transpose(0, 1);
+  at::Tensor t3 = at::randn({y / 2, x, 2}, options);
+  auto t4 = add(t2, t3);
+
+  FusionExecutorCache executor_cache(std::move(fusion_ptr));
+  // Collect the heuristic params
+  executor_cache.profile(true);
+  auto cg_outputs = executor_cache.runFusionWithInputs({t0, t3});
+
+  TORCH_CHECK(!executor_cache.getMostRecentKernelRuntime()->isSegmented());
+  TORCH_CHECK(executor_cache.getMostRecentExecutorInfo()
+                  .params->isA<PointwiseParams>());
+  TORCH_CHECK(
+      executor_cache.getMostRecentExecutorInfo()
+          .params->as<PointwiseParams>()
+          ->vectorize &&
+      executor_cache.getMostRecentExecutorInfo()
+          .params->as<PointwiseParams>()
+          ->unroll_factor);
+
+  testValidate(&fusion, cg_outputs, {t0, t3}, {t4}, __LINE__, __FILE__);
+}
 
 // View with 3D reduction scheduling
 TEST_F(NVFuserTest, FusionViewMagicSchedule7_CUDA) {
@@ -2169,7 +2212,7 @@ TEST_F(NVFuserTest, FusionIssue2076_CUDA) {
   auto t12 = t4 + t11;
   auto t13 = t12.view({48, 128, 128});
   // 48, 128, 128
-  auto t14 = std::get<0>(t13.max({2}));
+  auto t14 = std::get<0>(t13.max(2));
   auto t15 = t14.unsqueeze(-1);
   // 48, 128, 1
   auto t16 = t15;

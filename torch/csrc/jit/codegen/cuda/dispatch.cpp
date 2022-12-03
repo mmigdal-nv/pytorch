@@ -48,6 +48,7 @@ void Val::dispatch(T handler, Val* val) {
         case DataType::Bool:
           ptr(handler)->handle(val->as<Bool>());
           return;
+        case DataType::Float:
         case DataType::Double:
           ptr(handler)->handle(val->as<Double>());
           return;
@@ -91,132 +92,175 @@ void Val::dispatch(T handler, Val* val) {
 
 template <typename T>
 void Expr::dispatch(T handler, Expr* expr) {
-  switch (*(expr->getExprType())) {
-    case ExprType::FullOp:
-      ptr(handler)->handle(expr->as<FullOp>());
-      return;
-    case ExprType::ARangeOp:
-      ptr(handler)->handle(expr->as<ARangeOp>());
-      return;
-    case ExprType::EyeOp:
-      ptr(handler)->handle(expr->as<EyeOp>());
-      return;
-    case ExprType::UnaryOp:
-      ptr(handler)->handle(expr->as<UnaryOp>());
-      return;
-    case ExprType::BinaryOp:
-      ptr(handler)->handle(expr->as<BinaryOp>());
-      return;
-    case ExprType::TernaryOp:
-      ptr(handler)->handle(expr->as<TernaryOp>());
-      return;
-    case ExprType::RNGOp:
-      ptr(handler)->handle(expr->as<RNGOp>());
-      return;
-    case ExprType::ReductionOp:
-      ptr(handler)->handle(expr->as<ReductionOp>());
-      return;
-    case ExprType::GroupedReductionOp:
-      ptr(handler)->handle(expr->as<GroupedReductionOp>());
-      return;
-    case ExprType::WelfordOp:
-      ptr(handler)->handle(expr->as<WelfordOp>());
-      return;
-    case ExprType::GroupedWelfordOp:
-      ptr(handler)->handle(expr->as<GroupedWelfordOp>());
-      return;
-    case ExprType::LoadStoreOp:
-      ptr(handler)->handle(expr->as<LoadStoreOp>());
-      return;
-    case ExprType::MmaOp:
-      ptr(handler)->handle(expr->as<MmaOp>());
-      return;
-    case ExprType::BroadcastOp:
-      ptr(handler)->handle(expr->as<BroadcastOp>());
-      return;
-    case ExprType::SqueezeOp:
-      ptr(handler)->handle(expr->as<SqueezeOp>());
-      return;
-
-    case ExprType::Split:
-      ptr(handler)->handle(expr->as<Split>());
-      return;
-    case ExprType::Merge:
-      ptr(handler)->handle(expr->as<Merge>());
-      return;
-    case ExprType::Swizzle2D:
-      ptr(handler)->handle(expr->as<Swizzle2D>());
-      return;
-    case ExprType::TransposeOp:
-      ptr(handler)->handle(expr->as<TransposeOp>());
-      return;
-    case ExprType::ExpandOp:
-      ptr(handler)->handle(expr->as<ExpandOp>());
-      return;
-    case ExprType::ShiftOp:
-      ptr(handler)->handle(expr->as<ShiftOp>());
-      return;
-    case ExprType::GatherOp:
-      ptr(handler)->handle(expr->as<GatherOp>());
-      return;
-    case ExprType::ViewAsScalar:
-      ptr(handler)->handle(expr->as<ViewAsScalar>());
-      return;
-    case ExprType::ViewOp:
-      ptr(handler)->handle(expr->as<ViewOp>());
-      return;
-
-    case ExprType::Allocate:
-      ptr(handler)->handle(expr->as<kir::Allocate>());
-      return;
-    case ExprType::BlockSync:
-      ptr(handler)->handle(expr->as<kir::BlockSync>());
-      return;
-    case ExprType::GridSync:
-      ptr(handler)->handle(expr->as<kir::GridSync>());
-      return;
-    case ExprType::CpAsyncWait:
-      ptr(handler)->handle(expr->as<kir::CpAsyncWait>());
-      return;
-    case ExprType::CpAsyncCommit:
-      ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
-      return;
-    case ExprType::AddressCompute:
-      ptr(handler)->handle(expr->as<kir::AddressCompute>());
-      return;
-    case ExprType::InitMagicZero:
-      ptr(handler)->handle(expr->as<kir::InitMagicZero>());
-      return;
-    case ExprType::UpdateMagicZero:
-      ptr(handler)->handle(expr->as<kir::UpdateMagicZero>());
-      return;
-    case ExprType::ForLoop:
-      ptr(handler)->handle(expr->as<kir::ForLoop>());
-      return;
-    case ExprType::IfThenElse:
-      ptr(handler)->handle(expr->as<kir::IfThenElse>());
-      return;
-    case ExprType::GridReduction:
-      ptr(handler)->handle(expr->as<kir::GridReduction>());
-      return;
-    case ExprType::GroupedGridReduction:
-      ptr(handler)->handle(expr->as<kir::GroupedGridReduction>());
-      return;
-    case ExprType::GridBroadcast:
-      ptr(handler)->handle(expr->as<kir::GridBroadcast>());
-      return;
-    case ExprType::GridWelford:
-      ptr(handler)->handle(expr->as<kir::GridWelford>());
-      return;
-    case ExprType::GroupedGridWelford:
-      ptr(handler)->handle(expr->as<kir::GroupedGridWelford>());
-      return;
-    case ExprType::AllocateFusedReduction:
-      ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
-      return;
-    default:
-      TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
+  if (expr->isStrictlyA<FullOp>()) {
+    ptr(handler)->handle(expr->as<FullOp>());
+    return;
   }
+  if (expr->isStrictlyA<ARangeOp>()) {
+    ptr(handler)->handle(expr->as<ARangeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<EyeOp>()) {
+    ptr(handler)->handle(expr->as<EyeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<UnaryOp>()) {
+    ptr(handler)->handle(expr->as<UnaryOp>());
+    return;
+  }
+  if (expr->isStrictlyA<BinaryOp>()) {
+    ptr(handler)->handle(expr->as<BinaryOp>());
+    return;
+  }
+  if (expr->isStrictlyA<TernaryOp>()) {
+    ptr(handler)->handle(expr->as<TernaryOp>());
+    return;
+  }
+  if (expr->isStrictlyA<SelectOp>()) {
+    ptr(handler)->handle(expr->as<SelectOp>());
+    return;
+  }
+  if (expr->isStrictlyA<IndexSelectOp>()) {
+    ptr(handler)->handle(expr->as<IndexSelectOp>());
+    return;
+  }
+  if (expr->isStrictlyA<RNGOp>()) {
+    ptr(handler)->handle(expr->as<RNGOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ReductionOp>()) {
+    ptr(handler)->handle(expr->as<ReductionOp>());
+    return;
+  }
+  if (expr->isStrictlyA<GroupedReductionOp>()) {
+    ptr(handler)->handle(expr->as<GroupedReductionOp>());
+    return;
+  }
+  if (expr->isStrictlyA<WelfordOp>()) {
+    ptr(handler)->handle(expr->as<WelfordOp>());
+    return;
+  }
+  if (expr->isStrictlyA<GroupedWelfordOp>()) {
+    ptr(handler)->handle(expr->as<GroupedWelfordOp>());
+    return;
+  }
+  if (expr->isStrictlyA<LoadStoreOp>()) {
+    ptr(handler)->handle(expr->as<LoadStoreOp>());
+    return;
+  }
+  if (expr->isStrictlyA<MmaOp>()) {
+    ptr(handler)->handle(expr->as<MmaOp>());
+    return;
+  }
+  if (expr->isStrictlyA<BroadcastOp>()) {
+    ptr(handler)->handle(expr->as<BroadcastOp>());
+    return;
+  }
+  if (expr->isStrictlyA<SqueezeOp>()) {
+    ptr(handler)->handle(expr->as<SqueezeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<Split>()) {
+    ptr(handler)->handle(expr->as<Split>());
+    return;
+  }
+  if (expr->isStrictlyA<Merge>()) {
+    ptr(handler)->handle(expr->as<Merge>());
+    return;
+  }
+  if (expr->isStrictlyA<Swizzle2D>()) {
+    ptr(handler)->handle(expr->as<Swizzle2D>());
+    return;
+  }
+  if (expr->isStrictlyA<TransposeOp>()) {
+    ptr(handler)->handle(expr->as<TransposeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ExpandOp>()) {
+    ptr(handler)->handle(expr->as<ExpandOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ShiftOp>()) {
+    ptr(handler)->handle(expr->as<ShiftOp>());
+    return;
+  }
+  if (expr->isStrictlyA<GatherOp>()) {
+    ptr(handler)->handle(expr->as<GatherOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ViewAsScalar>()) {
+    ptr(handler)->handle(expr->as<ViewAsScalar>());
+    return;
+  }
+  if (expr->isStrictlyA<ViewOp>()) {
+    ptr(handler)->handle(expr->as<ViewOp>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::Allocate>()) {
+    ptr(handler)->handle(expr->as<kir::Allocate>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::BlockSync>()) {
+    ptr(handler)->handle(expr->as<kir::BlockSync>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridSync>()) {
+    ptr(handler)->handle(expr->as<kir::GridSync>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::CpAsyncWait>()) {
+    ptr(handler)->handle(expr->as<kir::CpAsyncWait>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::CpAsyncCommit>()) {
+    ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::InitMagicZero>()) {
+    ptr(handler)->handle(expr->as<kir::InitMagicZero>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::UpdateMagicZero>()) {
+    ptr(handler)->handle(expr->as<kir::UpdateMagicZero>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::ForLoop>()) {
+    ptr(handler)->handle(expr->as<kir::ForLoop>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::IfThenElse>()) {
+    ptr(handler)->handle(expr->as<kir::IfThenElse>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridReduction>()) {
+    ptr(handler)->handle(expr->as<kir::GridReduction>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GroupedGridReduction>()) {
+    ptr(handler)->handle(expr->as<kir::GroupedGridReduction>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridBroadcast>()) {
+    ptr(handler)->handle(expr->as<kir::GridBroadcast>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridWelford>()) {
+    ptr(handler)->handle(expr->as<kir::GridWelford>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GroupedGridWelford>()) {
+    ptr(handler)->handle(expr->as<kir::GroupedGridWelford>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::VectorizedWelfordOp>()) {
+    ptr(handler)->handle(expr->as<kir::VectorizedWelfordOp>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::AllocateFusedReduction>()) {
+    ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
+    return;
+  }
+  TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
 }
 
 template <typename T>
@@ -237,6 +281,7 @@ void Val::constDispatch(T handler, const Val* val) {
         case DataType::Bool:
           ptr(handler)->handle(val->as<Bool>());
           return;
+        case DataType::Float:
         case DataType::Double:
           ptr(handler)->handle(val->as<Double>());
           return;
@@ -272,6 +317,10 @@ void Val::constDispatch(T handler, const Val* val) {
     case ValType::TensorIndex:
       ptr(handler)->handle(val->as<kir::TensorIndex>());
       return;
+    case ValType::Attribute:
+      // Attribute Val is just a wrapper for non-IR data, so there is nothing to
+      // handle
+      return;
     default:
       break;
   }
@@ -280,132 +329,175 @@ void Val::constDispatch(T handler, const Val* val) {
 
 template <typename T>
 void Expr::constDispatch(T handler, const Expr* expr) {
-  switch (*(expr->getExprType())) {
-    case ExprType::FullOp:
-      ptr(handler)->handle(expr->as<FullOp>());
-      return;
-    case ExprType::ARangeOp:
-      ptr(handler)->handle(expr->as<ARangeOp>());
-      return;
-    case ExprType::EyeOp:
-      ptr(handler)->handle(expr->as<EyeOp>());
-      return;
-    case ExprType::UnaryOp:
-      ptr(handler)->handle(expr->as<UnaryOp>());
-      return;
-    case ExprType::BinaryOp:
-      ptr(handler)->handle(expr->as<BinaryOp>());
-      return;
-    case ExprType::TernaryOp:
-      ptr(handler)->handle(expr->as<TernaryOp>());
-      return;
-    case ExprType::RNGOp:
-      ptr(handler)->handle(expr->as<RNGOp>());
-      return;
-    case ExprType::ReductionOp:
-      ptr(handler)->handle(expr->as<ReductionOp>());
-      return;
-    case ExprType::GroupedReductionOp:
-      ptr(handler)->handle(expr->as<GroupedReductionOp>());
-      return;
-    case ExprType::WelfordOp:
-      ptr(handler)->handle(expr->as<WelfordOp>());
-      return;
-    case ExprType::GroupedWelfordOp:
-      ptr(handler)->handle(expr->as<GroupedWelfordOp>());
-      return;
-    case ExprType::LoadStoreOp:
-      ptr(handler)->handle(expr->as<LoadStoreOp>());
-      return;
-    case ExprType::MmaOp:
-      ptr(handler)->handle(expr->as<MmaOp>());
-      return;
-    case ExprType::BroadcastOp:
-      ptr(handler)->handle(expr->as<BroadcastOp>());
-      return;
-    case ExprType::SqueezeOp:
-      ptr(handler)->handle(expr->as<SqueezeOp>());
-      return;
-
-    case ExprType::Split:
-      ptr(handler)->handle(expr->as<Split>());
-      return;
-    case ExprType::Merge:
-      ptr(handler)->handle(expr->as<Merge>());
-      return;
-    case ExprType::Swizzle2D:
-      ptr(handler)->handle(expr->as<Swizzle2D>());
-      return;
-    case ExprType::TransposeOp:
-      ptr(handler)->handle(expr->as<TransposeOp>());
-      return;
-    case ExprType::ExpandOp:
-      ptr(handler)->handle(expr->as<ExpandOp>());
-      return;
-    case ExprType::ShiftOp:
-      ptr(handler)->handle(expr->as<ShiftOp>());
-      return;
-    case ExprType::GatherOp:
-      ptr(handler)->handle(expr->as<GatherOp>());
-      return;
-    case ExprType::ViewAsScalar:
-      ptr(handler)->handle(expr->as<ViewAsScalar>());
-      return;
-    case ExprType::ViewOp:
-      ptr(handler)->handle(expr->as<ViewOp>());
-      return;
-
-    case ExprType::Allocate:
-      ptr(handler)->handle(expr->as<kir::Allocate>());
-      return;
-    case ExprType::BlockSync:
-      ptr(handler)->handle(expr->as<kir::BlockSync>());
-      return;
-    case ExprType::GridSync:
-      ptr(handler)->handle(expr->as<kir::GridSync>());
-      return;
-    case ExprType::CpAsyncWait:
-      ptr(handler)->handle(expr->as<kir::CpAsyncWait>());
-      return;
-    case ExprType::CpAsyncCommit:
-      ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
-      return;
-    case ExprType::AddressCompute:
-      ptr(handler)->handle(expr->as<kir::AddressCompute>());
-      return;
-    case ExprType::InitMagicZero:
-      ptr(handler)->handle(expr->as<kir::InitMagicZero>());
-      return;
-    case ExprType::UpdateMagicZero:
-      ptr(handler)->handle(expr->as<kir::UpdateMagicZero>());
-      return;
-    case ExprType::ForLoop:
-      ptr(handler)->handle(expr->as<kir::ForLoop>());
-      return;
-    case ExprType::IfThenElse:
-      ptr(handler)->handle(expr->as<kir::IfThenElse>());
-      return;
-    case ExprType::GridReduction:
-      ptr(handler)->handle(expr->as<kir::GridReduction>());
-      return;
-    case ExprType::GroupedGridReduction:
-      ptr(handler)->handle(expr->as<kir::GroupedGridReduction>());
-      return;
-    case ExprType::GridBroadcast:
-      ptr(handler)->handle(expr->as<kir::GridBroadcast>());
-      return;
-    case ExprType::GridWelford:
-      ptr(handler)->handle(expr->as<kir::GridWelford>());
-      return;
-    case ExprType::GroupedGridWelford:
-      ptr(handler)->handle(expr->as<kir::GroupedGridWelford>());
-      return;
-    case ExprType::AllocateFusedReduction:
-      ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
-      return;
-    default:
-      TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
+  if (expr->isStrictlyA<FullOp>()) {
+    ptr(handler)->handle(expr->as<FullOp>());
+    return;
   }
+  if (expr->isStrictlyA<ARangeOp>()) {
+    ptr(handler)->handle(expr->as<ARangeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<EyeOp>()) {
+    ptr(handler)->handle(expr->as<EyeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<UnaryOp>()) {
+    ptr(handler)->handle(expr->as<UnaryOp>());
+    return;
+  }
+  if (expr->isStrictlyA<BinaryOp>()) {
+    ptr(handler)->handle(expr->as<BinaryOp>());
+    return;
+  }
+  if (expr->isStrictlyA<TernaryOp>()) {
+    ptr(handler)->handle(expr->as<TernaryOp>());
+    return;
+  }
+  if (expr->isStrictlyA<SelectOp>()) {
+    ptr(handler)->handle(expr->as<SelectOp>());
+    return;
+  }
+  if (expr->isStrictlyA<IndexSelectOp>()) {
+    ptr(handler)->handle(expr->as<IndexSelectOp>());
+    return;
+  }
+  if (expr->isStrictlyA<RNGOp>()) {
+    ptr(handler)->handle(expr->as<RNGOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ReductionOp>()) {
+    ptr(handler)->handle(expr->as<ReductionOp>());
+    return;
+  }
+  if (expr->isStrictlyA<GroupedReductionOp>()) {
+    ptr(handler)->handle(expr->as<GroupedReductionOp>());
+    return;
+  }
+  if (expr->isStrictlyA<WelfordOp>()) {
+    ptr(handler)->handle(expr->as<WelfordOp>());
+    return;
+  }
+  if (expr->isStrictlyA<GroupedWelfordOp>()) {
+    ptr(handler)->handle(expr->as<GroupedWelfordOp>());
+    return;
+  }
+  if (expr->isStrictlyA<LoadStoreOp>()) {
+    ptr(handler)->handle(expr->as<LoadStoreOp>());
+    return;
+  }
+  if (expr->isStrictlyA<MmaOp>()) {
+    ptr(handler)->handle(expr->as<MmaOp>());
+    return;
+  }
+  if (expr->isStrictlyA<BroadcastOp>()) {
+    ptr(handler)->handle(expr->as<BroadcastOp>());
+    return;
+  }
+  if (expr->isStrictlyA<SqueezeOp>()) {
+    ptr(handler)->handle(expr->as<SqueezeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<Split>()) {
+    ptr(handler)->handle(expr->as<Split>());
+    return;
+  }
+  if (expr->isStrictlyA<Merge>()) {
+    ptr(handler)->handle(expr->as<Merge>());
+    return;
+  }
+  if (expr->isStrictlyA<Swizzle2D>()) {
+    ptr(handler)->handle(expr->as<Swizzle2D>());
+    return;
+  }
+  if (expr->isStrictlyA<TransposeOp>()) {
+    ptr(handler)->handle(expr->as<TransposeOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ExpandOp>()) {
+    ptr(handler)->handle(expr->as<ExpandOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ShiftOp>()) {
+    ptr(handler)->handle(expr->as<ShiftOp>());
+    return;
+  }
+  if (expr->isStrictlyA<GatherOp>()) {
+    ptr(handler)->handle(expr->as<GatherOp>());
+    return;
+  }
+  if (expr->isStrictlyA<ViewAsScalar>()) {
+    ptr(handler)->handle(expr->as<ViewAsScalar>());
+    return;
+  }
+  if (expr->isStrictlyA<ViewOp>()) {
+    ptr(handler)->handle(expr->as<ViewOp>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::Allocate>()) {
+    ptr(handler)->handle(expr->as<kir::Allocate>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::BlockSync>()) {
+    ptr(handler)->handle(expr->as<kir::BlockSync>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridSync>()) {
+    ptr(handler)->handle(expr->as<kir::GridSync>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::CpAsyncWait>()) {
+    ptr(handler)->handle(expr->as<kir::CpAsyncWait>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::CpAsyncCommit>()) {
+    ptr(handler)->handle(expr->as<kir::CpAsyncCommit>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::InitMagicZero>()) {
+    ptr(handler)->handle(expr->as<kir::InitMagicZero>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::UpdateMagicZero>()) {
+    ptr(handler)->handle(expr->as<kir::UpdateMagicZero>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::ForLoop>()) {
+    ptr(handler)->handle(expr->as<kir::ForLoop>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::IfThenElse>()) {
+    ptr(handler)->handle(expr->as<kir::IfThenElse>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridReduction>()) {
+    ptr(handler)->handle(expr->as<kir::GridReduction>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GroupedGridReduction>()) {
+    ptr(handler)->handle(expr->as<kir::GroupedGridReduction>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridBroadcast>()) {
+    ptr(handler)->handle(expr->as<kir::GridBroadcast>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GridWelford>()) {
+    ptr(handler)->handle(expr->as<kir::GridWelford>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::GroupedGridWelford>()) {
+    ptr(handler)->handle(expr->as<kir::GroupedGridWelford>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::VectorizedWelfordOp>()) {
+    ptr(handler)->handle(expr->as<kir::VectorizedWelfordOp>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::AllocateFusedReduction>()) {
+    ptr(handler)->handle(expr->as<kir::AllocateFusedReduction>());
+    return;
+  }
+  TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
 }
 
 template <typename T>
@@ -437,10 +529,12 @@ void Val::mutatorDispatch(T mutator, Val* val) {
         case DataType::Bool:
           ptr(mutator)->mutate(val->as<Bool>());
           return;
+        case DataType::Float:
         case DataType::Double:
           ptr(mutator)->mutate(val->as<Double>());
           return;
         case DataType::Int:
+        case DataType::Int32:
           ptr(mutator)->mutate(val->as<Int>());
           return;
         case DataType::ComplexDouble:
@@ -473,136 +567,6 @@ void Val::mutatorDispatch(T mutator, Val* val) {
       break;
   }
   TORCH_INTERNAL_ASSERT(false, "Unknown valtype in dispatch!");
-}
-
-template <typename T>
-void Expr::mutatorDispatch(T mutator, Expr* expr) {
-  switch (*(expr->getExprType())) {
-    case ExprType::FullOp:
-      ptr(mutator)->mutate(expr->as<FullOp>());
-      return;
-    case ExprType::ARangeOp:
-      ptr(mutator)->mutate(expr->as<ARangeOp>());
-      return;
-    case ExprType::EyeOp:
-      ptr(mutator)->mutate(expr->as<EyeOp>());
-      return;
-    case ExprType::UnaryOp:
-      ptr(mutator)->mutate(expr->as<UnaryOp>());
-      return;
-    case ExprType::BinaryOp:
-      ptr(mutator)->mutate(expr->as<BinaryOp>());
-      return;
-    case ExprType::TernaryOp:
-      ptr(mutator)->mutate(expr->as<TernaryOp>());
-      return;
-    case ExprType::RNGOp:
-      ptr(mutator)->mutate(expr->as<RNGOp>());
-      return;
-    case ExprType::ReductionOp:
-      ptr(mutator)->mutate(expr->as<ReductionOp>());
-      return;
-    case ExprType::GroupedReductionOp:
-      ptr(mutator)->mutate(expr->as<GroupedReductionOp>());
-      return;
-    case ExprType::WelfordOp:
-      ptr(mutator)->mutate(expr->as<WelfordOp>());
-      return;
-    case ExprType::GroupedWelfordOp:
-      ptr(mutator)->mutate(expr->as<GroupedWelfordOp>());
-      return;
-    case ExprType::LoadStoreOp:
-      ptr(mutator)->mutate(expr->as<LoadStoreOp>());
-      return;
-    case ExprType::MmaOp:
-      ptr(mutator)->mutate(expr->as<MmaOp>());
-      return;
-    case ExprType::BroadcastOp:
-      ptr(mutator)->mutate(expr->as<BroadcastOp>());
-      return;
-    case ExprType::SqueezeOp:
-      ptr(mutator)->mutate(expr->as<SqueezeOp>());
-      return;
-
-    case ExprType::Split:
-      ptr(mutator)->mutate(expr->as<Split>());
-      return;
-    case ExprType::Merge:
-      ptr(mutator)->mutate(expr->as<Merge>());
-      return;
-    case ExprType::Swizzle2D:
-      ptr(mutator)->mutate(expr->as<Swizzle2D>());
-      return;
-    case ExprType::TransposeOp:
-      ptr(mutator)->mutate(expr->as<TransposeOp>());
-      return;
-    case ExprType::ExpandOp:
-      ptr(mutator)->mutate(expr->as<ExpandOp>());
-      return;
-    case ExprType::ShiftOp:
-      ptr(mutator)->mutate(expr->as<ShiftOp>());
-      return;
-    case ExprType::GatherOp:
-      ptr(mutator)->mutate(expr->as<GatherOp>());
-      return;
-    case ExprType::ViewAsScalar:
-      ptr(mutator)->mutate(expr->as<ViewAsScalar>());
-      return;
-    case ExprType::ViewOp:
-      ptr(mutator)->mutate(expr->as<ViewOp>());
-      return;
-
-    case ExprType::Allocate:
-      ptr(mutator)->mutate(expr->as<kir::Allocate>());
-      return;
-    case ExprType::BlockSync:
-      ptr(mutator)->mutate(expr->as<kir::BlockSync>());
-      return;
-    case ExprType::GridSync:
-      ptr(mutator)->mutate(expr->as<kir::GridSync>());
-      return;
-    case ExprType::CpAsyncWait:
-      ptr(mutator)->mutate(expr->as<kir::CpAsyncWait>());
-      return;
-    case ExprType::CpAsyncCommit:
-      ptr(mutator)->mutate(expr->as<kir::CpAsyncCommit>());
-      return;
-    case ExprType::AddressCompute:
-      ptr(mutator)->mutate(expr->as<kir::AddressCompute>());
-      return;
-    case ExprType::InitMagicZero:
-      ptr(mutator)->mutate(expr->as<kir::InitMagicZero>());
-      return;
-    case ExprType::UpdateMagicZero:
-      ptr(mutator)->mutate(expr->as<kir::UpdateMagicZero>());
-      return;
-    case ExprType::ForLoop:
-      ptr(mutator)->mutate(expr->as<kir::ForLoop>());
-      return;
-    case ExprType::IfThenElse:
-      ptr(mutator)->mutate(expr->as<kir::IfThenElse>());
-      return;
-    case ExprType::GridReduction:
-      ptr(mutator)->mutate(expr->as<kir::GridReduction>());
-      return;
-    case ExprType::GroupedGridReduction:
-      ptr(mutator)->mutate(expr->as<kir::GroupedGridReduction>());
-      return;
-    case ExprType::GridBroadcast:
-      ptr(mutator)->mutate(expr->as<kir::GridBroadcast>());
-      return;
-    case ExprType::GridWelford:
-      ptr(mutator)->mutate(expr->as<kir::GridWelford>());
-      return;
-    case ExprType::GroupedGridWelford:
-      ptr(mutator)->mutate(expr->as<kir::GroupedGridWelford>());
-      return;
-    case ExprType::AllocateFusedReduction:
-      ptr(mutator)->mutate(expr->as<kir::AllocateFusedReduction>());
-      return;
-    default:
-      TORCH_INTERNAL_ASSERT(false, "Unknown exprtype in dispatch!");
-  }
 }
 
 template <typename T>
@@ -655,8 +619,6 @@ template void Statement::mutatorDispatch(OptOutMutator&, Statement*);
 template void Statement::mutatorDispatch(OptOutMutator*, Statement*);
 template void Val::mutatorDispatch(OptOutMutator&, Val*);
 template void Val::mutatorDispatch(OptOutMutator*, Val*);
-template void Expr::mutatorDispatch(OptOutMutator&, Expr*);
-template void Expr::mutatorDispatch(OptOutMutator*, Expr*);
 
 void OptOutDispatch::handle(Statement* s) {
   Statement::dispatch(this, s);
@@ -685,7 +647,10 @@ void OptOutConstDispatch::handle(const Val* v) {
 void OptInConstDispatch::unhandled(const Statement* stmt) {
   if (stmt->isExpr()) {
     TORCH_INTERNAL_ASSERT(
-        false, "Handle not overriden for ", stmt->getExprType().value(), ".");
+        false,
+        "Handle not overriden for ",
+        stmt->as<Expr>()->getOpString(),
+        ".");
   } else if (stmt->isVal()) {
     TORCH_INTERNAL_ASSERT(
         false, "Handle not overriden for ", stmt->getValType().value(), ".");
@@ -697,7 +662,10 @@ void OptInConstDispatch::unhandled(const Statement* stmt) {
 void OptInDispatch::unhandled(Statement* stmt) {
   if (stmt->isExpr()) {
     TORCH_INTERNAL_ASSERT(
-        false, "Handle not overriden for ", stmt->getExprType().value(), ".");
+        false,
+        "Handle not overriden for ",
+        stmt->as<Expr>()->getOpString(),
+        ".");
   } else if (stmt->isVal()) {
     TORCH_INTERNAL_ASSERT(
         false, "Handle not overriden for ", stmt->getValType().value(), ".");
@@ -756,6 +724,12 @@ void OptOutConstDispatch::handle(const BinaryOp* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const TernaryOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const SelectOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutConstDispatch::handle(const IndexSelectOp* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const RNGOp* stmt) {
@@ -859,6 +833,9 @@ void OptOutConstDispatch::handle(const kir::GridWelford* stmt) {
 void OptOutConstDispatch::handle(const kir::GroupedGridWelford* stmt) {
   unhandled(stmt);
 }
+void OptOutConstDispatch::handle(const kir::VectorizedWelfordOp* stmt) {
+  unhandled(stmt);
+}
 void OptOutConstDispatch::handle(const kir::AllocateFusedReduction* stmt) {
   unhandled(stmt);
 }
@@ -915,6 +892,12 @@ void OptOutDispatch::handle(BinaryOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(TernaryOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(SelectOp* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(IndexSelectOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(RNGOp* stmt) {
@@ -1016,6 +999,9 @@ void OptOutDispatch::handle(kir::GridWelford* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::GroupedGridWelford* stmt) {
+  unhandled(stmt);
+}
+void OptOutDispatch::handle(kir::VectorizedWelfordOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(kir::AllocateFusedReduction* stmt) {

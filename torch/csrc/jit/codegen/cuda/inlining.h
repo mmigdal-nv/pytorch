@@ -16,13 +16,12 @@ class MaxPosCalculator {
   // Root domains in producer that's unmappable to any of its consumers
   std::unordered_set<IterDomain*> unmappable_dims_;
 
-  // User set IterDomains to not inline, used in schedulers to avoid inlining
-  // trivial reductions
+  // User set IterDomains to not inline
   std::unordered_set<IterDomain*> uninlinable_ids_;
 
   // Iterate through all TVs and collect the dimensions of each TV that don't
   // map to all its consumer TVs.
-  void buildUnmappableDims();
+  void buildUnmappableDims(bool compute_at_only);
 
   // Utility function to return if an id of tv is a valid iter domain to inline
   // within. This is used in getMaxPos{PasC,CasP}. Different variations of the
@@ -59,7 +58,9 @@ class MaxPosCalculator {
       bool best_effort = false,
       bool check_siblings = true);
 
-  MaxPosCalculator(const std::unordered_set<IterDomain*>& uninlinable_ids = {});
+  MaxPosCalculator(
+      const std::unordered_set<IterDomain*>& uninlinable_ids = {},
+      bool compute_at_only = false);
 };
 
 // Inline to the right most allowed position for all tensors in the current

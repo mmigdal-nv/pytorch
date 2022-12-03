@@ -5,6 +5,11 @@
 #include <torch/csrc/jit/codegen/cuda/type.h>
 #include <torch/csrc/jit/ir/ir.h>
 
+#include <sstream>
+#include <string>
+#include <type_traits>
+#include <typeinfo>
+
 namespace torch {
 namespace jit {
 namespace fuser {
@@ -60,7 +65,9 @@ enum class DebugDumpOption {
   Cubin, //! Dump compiled CUBIN
   Ptx, //! Dump compiled PTX
   BankConflictInfo, //! Dump bank confliction info
-  SyncMap //! RAW dependency info
+  SyncMap, //! RAW dependency info
+  LowerVerbose, //! Print all passes' transform in GpuLower::lower
+  EndOfOption //! Placeholder for counting the number of elements
 };
 
 TORCH_CUDA_CU_API bool isDebugDumpEnabled(DebugDumpOption option);
@@ -77,7 +84,9 @@ enum class DisableOption {
   Fma, //! Disable FMA instructions
   IndexHoist, //! Disable index hoisting
   Nvtx, //! Disable NVTX instrumentation
-  PredicateElimination //! Disable predicate elimination
+  PredicateElimination, //! Disable predicate elimination
+  WelfordVectorization, //! Disable vectorizaton of Welford ops
+  EndOfOption //! Placeholder for counting the number of elements
 };
 
 TORCH_CUDA_CU_API bool isOptionDisabled(DisableOption option);
@@ -91,7 +100,8 @@ enum class EnableOption {
   KernelProfile, //! Enable intra-kernel performance profiling
   LinearDecomposition, //! Enable linear-bias decomposition
   ConvDecomposition, //! Enable conv-bias decomposition
-  BankConflictDetection //! Enable inlined checking of bank conflicts
+  GraphOp, //! Enable graphOps(index_select/gather/scatter)
+  EndOfOption //! Placeholder for counting the number of elements
 };
 
 TORCH_CUDA_CU_API bool isOptionEnabled(EnableOption option);
@@ -151,7 +161,7 @@ class PolymorphicBase {
     return downcast_ptr;
   }
 
-  //! Check if the runtime time is T (or derived from T)
+  //! Check if the runtime type is T (or derived from T)
   //!
   //! \note Don't use this for conditional casts. Instead, use:
   //!
@@ -164,6 +174,46 @@ class PolymorphicBase {
   template <class T>
   bool isA() const {
     return dynamic_cast<const T*>(this) != nullptr;
+  }
+
+  //! Check if the runtime type is strictly T. Returns false for classes
+  //! derived from T
+  template <class T>
+  bool isStrictlyA() const {
+    return typeid(*this) == typeid(T);
+  }
+
+ private:
+  template <int> // unused template argument
+  bool isOneOf() const {
+    return false;
+  }
+  template <int, class T1, class... T>
+  bool isOneOf() const {
+    return isA<T1>() || isOneOf<0, T...>();
+  }
+  template <int> // unused template argument
+  bool isStrictlyOneOf() const {
+    return false;
+  }
+  template <int, class T1, class... T>
+  bool isStrictlyOneOf() const {
+    return isStrictlyA<T1>() || isStrictlyOneOf<0, T...>();
+  }
+
+ public:
+  //! Check if the runtime type is one of the given types (or derived from
+  //! one of the given types)
+  template <class... T>
+  bool isOneOf() const {
+    return isOneOf<0, T...>();
+  }
+
+  //! Check if the runtime type is strictly one of the given types. Derived
+  //! types not in the given list does not count.
+  template <class... T>
+  bool isStrictlyOneOf() const {
+    return isStrictlyOneOf<0, T...>();
   }
 };
 
@@ -189,6 +239,94 @@ std::vector<KeyType> getSortedKeys(
   }
   std::sort(keys.begin(), keys.end(), cmp);
   return keys;
+}
+
+// If std::stringstream << is defined for T, then use << to get its string
+// otherwise, just returns a "<attr>"
+
+template <typename T>
+struct Printer {
+  static std::string toString(const T& value) {
+    return "<attr>";
+  }
+};
+
+#if 0
+
+// Waiting for C++20....
+
+#include <concepts>
+
+template<typename T>
+concept Printable = requires(T a)
+{
+  { std::stringstream{} << a } -> std::convertible_to<std::stringstream>;
+};
+
+template <Printable T>
+struct Printer<T> {
+  static std::string toString(const T& value) {
+    std::stringstream ss;
+    ss << value;
+    return ss.str();
+  }
+};
+
+#else
+
+#define SPECIALIZE_PRINTER(T)                     \
+  template <>                                     \
+  struct Printer<T> {                             \
+    static std::string toString(const T& value) { \
+      std::stringstream ss;                       \
+      ss << value;                                \
+      return ss.str();                            \
+    }                                             \
+  }
+
+SPECIALIZE_PRINTER(bool);
+SPECIALIZE_PRINTER(int);
+SPECIALIZE_PRINTER(std::string);
+SPECIALIZE_PRINTER(int64_t);
+SPECIALIZE_PRINTER(DataType);
+SPECIALIZE_PRINTER(MemoryType);
+SPECIALIZE_PRINTER(UnaryOpType);
+SPECIALIZE_PRINTER(BinaryOpType);
+SPECIALIZE_PRINTER(TernaryOpType);
+SPECIALIZE_PRINTER(LoadStoreOpType);
+SPECIALIZE_PRINTER(DoubleBufferLoopStage);
+SPECIALIZE_PRINTER(Swizzle2DType);
+SPECIALIZE_PRINTER(SwizzleMode);
+SPECIALIZE_PRINTER(std::vector<int>);
+SPECIALIZE_PRINTER(std::vector<int64_t>);
+
+#undef SPECIALIZE_PRINTER
+
+#endif // if 0
+
+// Stringification with delimiter
+template <typename Iterator>
+std::string toDelimitedString(
+    Iterator first,
+    Iterator last,
+    std::string delim = ", ") {
+  std::stringstream ss;
+  bool first_val = true;
+  for (auto it = first; it != last; ++it) {
+    if (!first_val) {
+      ss << delim;
+    }
+    ss << *it;
+    first_val = false;
+  }
+  return ss.str();
+}
+
+template <typename Printable>
+std::string toDelimitedString(
+    const std::vector<Printable>& vec,
+    std::string delim = ", ") {
+  return toDelimitedString(vec.begin(), vec.end(), delim);
 }
 
 } // namespace cuda

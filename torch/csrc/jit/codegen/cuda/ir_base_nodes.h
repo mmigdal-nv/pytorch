@@ -5,6 +5,7 @@
 #include <c10/util/Exception.h>
 #include <c10/util/Optional.h>
 
+#include <torch/csrc/jit/codegen/cuda/ir_builder_passkey.h>
 #include <torch/csrc/jit/codegen/cuda/type.h>
 #include <torch/csrc/jit/codegen/cuda/utils.h>
 
@@ -70,6 +71,14 @@ class ExprPasskey {
 
 TORCH_CUDA_CU_API void swap(Fusion& a, Fusion& b) noexcept;
 
+#define NVFUSER_DECLARE_CLONE \
+  virtual Statement* clone(IrCloner* ir_cloner) const override;
+
+#define NVFUSER_DEFINE_CLONE(ClassName)                    \
+  Statement* ClassName::clone(IrCloner* ir_cloner) const { \
+    return IrBuilder::clone(this, ir_cloner);              \
+  }
+
 //! Statement is the highest level node representation. Everything that is
 //! considered "IR" will be derived from this class at some point. Both Values
 //! and Expr's are a Statement. If there will ever be any more fundamental
@@ -106,16 +115,13 @@ class TORCH_CUDA_CU_API Statement : public NonCopyable, public PolymorphicBase {
   virtual c10::optional<DataType> getDataType() const {
     return c10::nullopt;
   }
-  virtual c10::optional<ExprType> getExprType() const {
-    return c10::nullopt;
-  }
 
   // Short cut to figure out if it is a value/expression
   bool isVal() const {
     return getValType() != c10::nullopt;
   }
   bool isExpr() const {
-    return getExprType() != c10::nullopt;
+    return isA<Expr>();
   }
 
   // Make sure this is a Val and return it as a Val*
@@ -148,11 +154,7 @@ class TORCH_CUDA_CU_API Statement : public NonCopyable, public PolymorphicBase {
   void setName(IrBuilderPasskey, StmtNameType name);
 
   virtual bool sameType(const Statement* const other) {
-    if (isVal() && other->isVal())
-      return getValType().value() == other->getValType().value();
-    if (isExpr() && other->isExpr())
-      return getExprType().value() == other->getExprType().value();
-    return false;
+    return typeid(*this) == typeid(*other);
   }
 
   // Return if this statement is the same as another statement
@@ -163,8 +165,10 @@ class TORCH_CUDA_CU_API Statement : public NonCopyable, public PolymorphicBase {
 
   static bool lessThan(const Statement* stmt1, const Statement* stmt2);
 
-  std::string toString() const;
-  std::string toInlineString() const;
+  virtual std::string toString() const;
+  virtual std::string toInlineString() const;
+
+  virtual Statement* clone(IrCloner* ir_cloner) const;
 
  protected:
   Statement(IrBuilderPasskey);
@@ -257,6 +261,10 @@ class TORCH_CUDA_CU_API Val : public Statement {
     return isScalar() && dtype_ == DataType::Double;
   }
 
+  bool isABool() const {
+    return isScalar() && dtype_ == DataType::Bool;
+  }
+
   // If this Val is an integer with a direct constant value associated with it,
   // will return the value of that constant integer. If this integer has
   // defining expressions it will return a c10::nullopt. Those values should be
@@ -269,6 +277,12 @@ class TORCH_CUDA_CU_API Val : public Statement {
   // infered using evaluateDouble.
   c10::optional<double> getDouble() const;
 
+  // If this Val is a bool with a direct constant value associated with it,
+  // will return the value of that constant bool. If this bool has defining
+  // expressions it will return a c10::nullopt. Those values should be infered
+  // using evaluateBool.
+  c10::optional<bool> getBool() const;
+
   // If this Val is a constant integer, and its history is comprised only of
   // constant values, will return the value of that constant integer. Cannot
   // make constant as expression evaluator takes non-constant Vals.
@@ -278,6 +292,11 @@ class TORCH_CUDA_CU_API Val : public Statement {
   // constant values, will return the value of that constant double. Cannot
   // make constant as expression evaluator takes non-constant Vals.
   double evaluateDouble();
+
+  // If this Val is a constant bool, and its history is comprised only of
+  // constant values, will return the value of that constant bool. Cannot
+  // make constant as expression evaluator takes non-constant Vals.
+  bool evaluateBool();
 
   // Returns if no dependencies and is a constant scalar.
   virtual bool isConst() const {
@@ -300,7 +319,8 @@ class TORCH_CUDA_CU_API Val : public Statement {
   }
 
   // Determine if value definition matches given expression type
-  bool isDefinitionType(ExprType expression_type) const;
+  template <typename T>
+  inline bool isDefinitionType() const;
 
   const std::vector<Expr*>& uses() const;
 
@@ -353,6 +373,8 @@ class TORCH_CUDA_CU_API Val : public Statement {
     dtype_ = DataType::Int32;
   }
 
+  NVFUSER_DECLARE_CLONE
+
  protected:
   friend Fusion;
 
@@ -391,6 +413,41 @@ class TORCH_CUDA_CU_API Val : public Statement {
   int evaluator_index_ = -1;
 };
 
+//! A Val object that stores a plain data. Note that this class is only intended
+//! to hold non-IR data, such as DataType, std::vector<int>, etc. Please don't
+//! use this class to hold IR nodes or their pointers.
+template <typename T>
+class TORCH_CUDA_CU_API Attribute : public Val {
+ public:
+  T value;
+  Attribute(IrBuilderPasskey passkey, const T& value)
+      : Val(passkey, ValType::Attribute), value(value) {}
+  Attribute(const Attribute* src, IrCloner* ir_cloner)
+      : Val(src, ir_cloner), value(src->value) {}
+  template <typename... Args>
+  Attribute(IrBuilderPasskey passkey, Args... args)
+      : Val(passkey, ValType::Attribute), value(std::forward<Args>(args)...) {}
+
+  NVFUSER_DECLARE_CLONE
+
+  bool sameAs(const Statement* other) const override {
+    if (auto pv = dynamic_cast<const Attribute*>(other)) {
+      return pv->value == value;
+    }
+    return false;
+  }
+
+  virtual std::string toString() const override {
+    return Printer<T>::toString(value);
+  }
+};
+
+using newObjectFuncType = Expr*(
+    IrContainer*,
+    std::vector<Val*>,
+    std::vector<Val*>,
+    std::vector<Statement*>);
+
 //!  A Expr represents a "computation." These are functions that takes inputs
 //!  and produce outputs, inputs and outputs all being Vals. There are
 //!  specializations of BinaryOp which takes 2 inputs and produces 1 output, and
@@ -427,27 +484,26 @@ class TORCH_CUDA_CU_API Val : public Statement {
 //!  4) Printing functions should be added to ir_iostream.h/.cpp
 //!  5) Lower case convenience functions should be added to arith.h/.cpp (If
 //!     user facing)
-//!  6) An enum value must be added to ExprType in type.h
 //!  7) A string entry must be added in expr_type_string_map
 //!  8) Entry added to ir_graphviz .cpp/.h
 //!
 class TORCH_CUDA_CU_API Expr : public Statement {
  public:
-  explicit Expr(IrBuilderPasskey, ExprType type);
+  explicit Expr(IrBuilderPasskey);
 
   Expr(const Expr* src, IrCloner* ir_cloner);
 
+  Expr(
+      IrBuilderPasskey,
+      std::vector<Val*> inputs,
+      std::vector<Val*> outputs,
+      std::vector<Statement*> attributes);
+
+  virtual newObjectFuncType* newObjectFunc() const = 0;
+
   // Creates a new instance of the expression with all its field copied.
   // Note that unlike IrCloner, this function only do a shallow copy
-  virtual Expr* shallowCopy() const = 0;
-
-  c10::optional<ExprType> getExprType() const override {
-    return etype_;
-  }
-
-  ExprType etype() const {
-    return etype_;
-  }
+  Expr* shallowCopy() const;
 
   bool sameAs(const Statement* other) const override;
 
@@ -460,12 +516,24 @@ class TORCH_CUDA_CU_API Expr : public Statement {
     return outputs_;
   }
 
+  const auto& attributes() const {
+    return attributes_;
+  }
+
   auto input(size_t index) const {
-    return inputs_[index];
+    return inputs_.at(index);
   }
 
   auto output(size_t index) const {
-    return outputs_[index];
+    return outputs_.at(index);
+  }
+
+  auto attribute(size_t index) const {
+    return attributes_.at(index);
+  }
+
+  auto attributeVal(size_t index) const {
+    return dynamic_cast<Val*>(attributes_.at(index));
   }
 
   // Dispatch functions, definitions in dispatch.cpp
@@ -474,9 +542,6 @@ class TORCH_CUDA_CU_API Expr : public Statement {
 
   template <typename T>
   static void constDispatch(T handler, const Expr* const);
-
-  template <typename T>
-  static void mutatorDispatch(T mutator, Expr*);
 
   // TODO: Protect based on being in kernel container
   kir::Predicate* predicate() const;
@@ -493,14 +558,18 @@ class TORCH_CUDA_CU_API Expr : public Statement {
   // TODO: Protect based on being in kernel container
   Expr* withWritePredicate(kir::Predicate* write_predicate);
 
+  // Get the name of an expression
+  virtual const char* getOpString() const = 0;
+
+  // Get the label for Graphviz
+  virtual std::string getGraphvizLabel() const;
+
  protected:
   // TODO: Protect based on being in kernel container
   void setPredicate(kir::Predicate* predicate);
 
   // TODO: Protect based on being in kernel container
   void setWritePredicate(kir::Predicate* write_predicate);
-
-  void copyPredicatesFrom(const Expr* expr);
 
   // TODO: Add Fusion passkey
   void addInput(Val* input) {
@@ -514,20 +583,57 @@ class TORCH_CUDA_CU_API Expr : public Statement {
     outputs_.push_back(output);
   }
 
+  // TODO: Add Fusion passkey
+  void addAttribute(Statement* attr) {
+    attributes_.push_back(attr);
+  }
+
   ExprPasskey exprPasskey() {
     return ExprPasskey();
   }
 
  private:
-  ExprType etype_ = ExprType::Invalid;
   std::vector<Val*> inputs_;
   std::vector<Val*> outputs_;
+  std::vector<Statement*> attributes_;
 
   kir::Predicate* predicate_ = nullptr;
 
   // Only used for reduction-related expressions
   kir::Predicate* write_predicate_ = nullptr;
 };
+
+template <typename T>
+bool Val::isDefinitionType() const {
+  if (definition() != nullptr) {
+    return definition()->isA<T>();
+  }
+  return false;
+}
+
+#define NVFUSER_DECLARE_CLONE_AND_CREATE                        \
+  virtual Statement* clone(IrCloner* ir_cloner) const override; \
+  static Expr* newObject(                                       \
+      IrContainer* container,                                   \
+      std::vector<Val*> inputs,                                 \
+      std::vector<Val*> outputs,                                \
+      std::vector<Statement*> attributes);                      \
+  virtual newObjectFuncType* newObjectFunc() const override {   \
+    return newObject;                                           \
+  }
+
+#define NVFUSER_DEFINE_CLONE_AND_CREATE(ClassName)         \
+  Statement* ClassName::clone(IrCloner* ir_cloner) const { \
+    return IrBuilder::clone(this, ir_cloner);              \
+  }                                                        \
+  Expr* ClassName::newObject(                              \
+      IrContainer* container,                              \
+      std::vector<Val*> inputs,                            \
+      std::vector<Val*> outputs,                           \
+      std::vector<Statement*> attributes) {                \
+    return IrBuilder::create<ClassName>(                   \
+        container, inputs, outputs, attributes);           \
+  }
 
 } // namespace cuda
 } // namespace fuser
