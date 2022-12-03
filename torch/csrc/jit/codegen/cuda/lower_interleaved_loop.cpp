@@ -668,7 +668,7 @@ class LoopInterLeaver : kir::ExprMutator {
     TORCH_INTERNAL_ASSERT(
         !sub_loops_.empty(), "Cannot generate config for empty subloops");
     InterLeaveConfig interleave_config;
-    ExpressionEvaluator const_evaluator(sub_loops_[0]->iter_domain()->fusion());
+    ExpressionEvaluator const_evaluator;
 
     for (auto fl : sub_loops_) {
       auto maybe_value = const_evaluator.evaluate(fl->stop());
