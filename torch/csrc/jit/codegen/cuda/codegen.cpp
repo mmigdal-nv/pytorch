@@ -653,14 +653,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     }
   }
 
-  void genBankConflictCheck(Val* accessor, size_t vector_word) {
-    if (isOptionEnabled(EnableOption::BankConflictDetection)) {
-      indent() << "checkBankConflict((size_t)&" << gen(accessor) << ","
-               << vector_word << ", /*call_id = */" << bank_conflict_check_id_++
-               << ");\n";
-    }
-  }
-
   void genLdMatrix(const LoadStoreOp* ldst, int vector_word_size) {
     auto dtype = ldst->in()->getDataType().value();
     indent() << "Turing::ldMatrix";
@@ -670,7 +662,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     code_ << " (";
     code_ << "*" << genVectorPointer(ldst->out(), dtype, vector_word_size)
           << "," << genMaybeHoistedPointer(ldst->in()) << ");\n";
-    genBankConflictCheck(ldst->in(), 16);
   }
 
   void handle(const FullOp* fop) final {
@@ -894,19 +885,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
 
     if (!print_inline_) {
       code_ << ";\n";
-    }
-
-    if (auto in_tv = dynamic_cast<kir::TensorIndex*>(uop->in())) {
-      if (in_tv->view()->getMemoryType() == MemoryType::Shared) {
-        genBankConflictCheck(in_tv, dataTypeSize(in_tv->getDataType().value()));
-      }
-    }
-
-    if (auto out_tv = dynamic_cast<kir::TensorIndex*>(uop->out())) {
-      if (out_tv->view()->getMemoryType() == MemoryType::Shared) {
-        genBankConflictCheck(
-            out_tv, dataTypeSize(out_tv->getDataType().value()));
-      }
     }
   }
 

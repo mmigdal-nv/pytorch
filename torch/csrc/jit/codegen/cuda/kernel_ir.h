@@ -274,6 +274,10 @@ class TORCH_CUDA_CU_API BlockSync final : public Expr {
     return aligned_;
   }
 
+  bool isWarHazardSync() const {
+    return attribute(0)->as<Attribute<bool>>()->value;
+  }
+
  private:
   // TODO: war_sync_ is only used for testing/validation purposes.
   bool war_sync_ = false;
@@ -283,11 +287,6 @@ class TORCH_CUDA_CU_API BlockSync final : public Expr {
   //!  more details on aligned sync see :
   //! https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-bar
   bool aligned_ = false;
-
-  // TODO: war_sync_ is only used for testing/validation purposes.
-  bool isWarHazardSync() const {
-    return attribute(0)->as<Attribute<bool>>()->value;
-  }
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is
@@ -375,6 +374,8 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
     GMEM_DECREMENT
   };
 
+  using Expr::Expr;
+
   // Constructor for BASE_ADDRESS mode calculation
   // (Default).
   explicit AddressCompute(
@@ -413,7 +414,11 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       TensorView* data_tensor,
       Val* loop_index = nullptr);
 
-  Expr* shallowCopy() const override;
+  virtual const char* getOpString() const override {
+    return "AddressCompute";
+  }
+
+  NVFUSER_DECLARE_CLONE_AND_CREATE
 
   auto dataTv() const {
     return data_tensor_;
@@ -491,22 +496,6 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
   // Gmem increment parameters below:
   //  The increment value to apply to the pointer.
   kir::TensorIndex* increment_value_ = nullptr;
-};
-
-// Synchronize all blocks in device, implies cooperative group launch is
-// required.
-class TORCH_CUDA_CU_API GridSync final : public Expr {
- public:
-  explicit GridSync(
-      IrBuilderPasskey passkey,
-      ParallelTypeBitmap sync_dims,
-      Val* sync_buffer);
-
-  Expr* shallowCopy() const override;
-
-  ParallelTypeBitmap syncDims() const {
-    return sync_dims_;
-  }
 };
 
 // Simply prints "DEFINE_MAGIC_ZERO" in the code in accordance with magic_zero
@@ -764,53 +753,28 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
 
   //! Returns all loop transform related information.
   auto loopTransformInfo() const {
-    return loop_transform_info_;
+    return attribute(6)->as<Attribute<LoopTransformInfo>>()->value;
   }
 
   //! Returns the stage of a double buffered iterdomain
   //!  that this for loop materializes.
   auto doubleBufferLoopStage() const {
-    // return attribute(6)->as<Attribute<DoubleBufferLoopStage>>()->value;
-    return loop_transform_info_.double_buffer_loop_stage;
+    return loopTransformInfo().double_buffer_loop_stage;
   }
 
   //! Returns if this loop is used to calculate
   //!  base index for lifted memory address.
   bool isBaseIndexLoop() const {
-    return loop_transform_info_.is_base_index_loop;
+    return loopTransformInfo().is_base_index_loop;
   }
 
   bool isInterleaveUnit() const {
-    return loop_transform_info_.is_interleave_unit;
+    return loopTransformInfo().is_interleave_unit;
   }
 
  private:
   //! Returns if a loop could be unrolled.
   bool isUnrollable() const;
-
- private:
-  IterDomain* const iter_domain_ = nullptr;
-
-  Val* index_ = nullptr;
-  Val* start_ = nullptr;
-  Val* stop_ = nullptr;
-  Val* step_ = nullptr;
-
-  // vectorize is true when the for-loop contains a vectorize set
-  // the flag is used to omit the for-loop from the kernel
-  bool vectorize_ = false;
-  // [pre | vectorize | post] <= inner-most, merged root domain
-  // shift_ is applied to vectorize and post sections.
-  Val* vectorize_shift_ = nullptr;
-
-  //! True if unroll is required for avoiding stack allocation
-  bool unroll_required_ = false;
-
-  Scope body_;
-
-  //! Keeps track of loop transformation status of this instance
-  //!  of for loop.
-  LoopTransformInfo loop_transform_info_;
 };
 
 //! IfThenElse provides scoping for an boolean operator. Exprs placed in its
@@ -1190,6 +1154,7 @@ class TORCH_CUDA_CU_API GroupedGridWelford final : public GroupedWelfordOp {
         ->as<Attribute<ParallelTypeBitmap>>()
         ->value;
   }
+
   ParallelTypeBitmap& threadPredicate() {
     return attribute(numGroupedWelfordOpAttr() + 4)
         ->as<Attribute<ParallelTypeBitmap>>()

@@ -230,12 +230,14 @@ InitMagicZero::InitMagicZero(IrBuilderPasskey passkey) : Expr(passkey) {
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(InitMagicZero)
 
+NVFUSER_DEFINE_CLONE_AND_CREATE(UpdateMagicZero)
+
 AddressCompute::AddressCompute(
     IrBuilderPasskey passkey,
     AddressCompute::AddressComputeOpType op_type,
     Val* address_tensor,
     Val* data_tensor)
-    : Expr(passkey, ExprType::AddressCompute),
+    : Expr(passkey),
       op_type_(op_type),
       data_tensor_(data_tensor),
       address_tensor_(address_tensor) {
@@ -250,7 +252,7 @@ AddressCompute::AddressCompute(
     Val* data_tensor,
     TensorIndex* increment_value,
     bool is_decrement)
-    : Expr(passkey, ExprType::AddressCompute),
+    : Expr(passkey),
       op_type_(AddressCompute::AddressComputeOpType::GMEM_INCREMENT),
       data_tensor_(data_tensor),
       address_tensor_(address_tensor),
@@ -271,7 +273,7 @@ AddressCompute::AddressCompute(
     int loop_offset,
     int stage_number,
     Val* loop_index)
-    : Expr(passkey, ExprType::AddressCompute),
+    : Expr(passkey),
       op_type_(AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH),
       data_tensor_(data_tv),
       double_buffer_switch_index_(double_buffer_switch_index),
@@ -292,7 +294,7 @@ AddressCompute::AddressCompute(
     int loop_offset,
     TensorView* data_tensor,
     Val* loop_index)
-    : Expr(passkey, ExprType::AddressCompute),
+    : Expr(passkey),
       op_type_(AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE),
       data_tensor_(data_tensor),
       address_tensor_(address_tensor),
@@ -305,18 +307,7 @@ AddressCompute::AddressCompute(
       "IR type only valid for Kernel container.");
 }
 
-Expr* AddressCompute::shallowCopy() const {
-  TORCH_INTERNAL_ASSERT(false);
-}
-
-InitMagicZero::InitMagicZero(IrBuilderPasskey passkey)
-    : Expr(passkey, ExprType::InitMagicZero) {
-  TORCH_INTERNAL_ASSERT(
-      passkey.ir_container_->isA<kir::Kernel>(),
-      "IR type only valid for Kernel container.");
-}
-
-NVFUSER_DEFINE_CLONE_AND_CREATE(UpdateMagicZero)
+NVFUSER_DEFINE_CLONE_AND_CREATE(AddressCompute)
 
 void Scope::insert(std::vector<Expr*>::const_iterator pos, Expr* expr) {
   exprs_.insert(pos, expr);
@@ -389,17 +380,7 @@ ForLoop::ForLoop(
     Val* vectorize_shift,
     bool unroll_required,
     LoopTransformInfo loop_transform_info)
-    : Expr(passkey),
-      iter_domain_{iter_domain},
-      index_(index),
-      start_(start),
-      stop_(stop),
-      step_(step),
-      vectorize_(vectorize),
-      vectorize_shift_(vectorize_shift),
-      unroll_required_(unroll_required),
-      body_(this),
-      loop_transform_info_(loop_transform_info) {
+    : Expr(passkey) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
@@ -424,8 +405,8 @@ ForLoop::ForLoop(
   addAttribute(vectorize_shift);
   addAttribute(IrBuilder::create<Attribute<bool>>(
       passkey.ir_container_, unroll_required));
-  addAttribute(IrBuilder::create<Attribute<DoubleBufferLoopStage>>(
-      passkey.ir_container_, double_buffer_loop_stage));
+  addAttribute(IrBuilder::create<Attribute<LoopTransformInfo>>(
+      passkey.ir_container_, loop_transform_info));
   // Storing IR nodes as Attribute is not safe with IrCloner, but fortunately
   // kernel IR does not need this feature.
   addAttribute(

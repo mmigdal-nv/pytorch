@@ -1680,7 +1680,7 @@ std::vector<Val*> Index::getGlobalProducerStridedIndices(
       continue;
     } else {
       if (auto tile_entry =
-              gpu_lower->predicatePeelingInfo().getMaybePeeledTileEntry(
+              GpuLower::current()->predicatePeelingInfo().getMaybePeeledTileEntry(
                   loops, root_dom[i])) {
         // Add the "predicate peeling offset", see [Predicate Peeling]
         //  to the tensor index if this root domain is predicate peeled.
@@ -3444,8 +3444,7 @@ kir::TensorIndex* Index::getReferenceRootPredicateIndex(
   for (auto contig_id_entry : contig_id_infos) {
     auto contig_id = contig_id_entry.id;
     // No predicates needed for braodcasted indices.
-    if (contig_id->isBroadcast() ||
-        gpu_lower->trivialReductionInfo().isDerived(contig_id)) {
+    if (contig_id->isBroadcast()) {
       continue;
     }
 
