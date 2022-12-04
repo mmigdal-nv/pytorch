@@ -267,26 +267,20 @@ class TORCH_CUDA_CU_API BlockSync final : public Expr {
   //! Sets the flag signifying that this block sync is
   //!  thread aligned.
   void convertToAligned() {
-    aligned_ = true;
-  }
-
-  bool isAligned() const {
-    return aligned_;
+    attribute(1)->as<Attribute<bool>>()->value = true;
   }
 
   bool isWarHazardSync() const {
     return attribute(0)->as<Attribute<bool>>()->value;
   }
 
- private:
-  // TODO: war_sync_ is only used for testing/validation purposes.
-  bool war_sync_ = false;
-
   //! tracks if this sync is thread aligned, i.e. all threads on
   //!  the same block are guaranteed to reach this sync.
   //!  more details on aligned sync see :
   //! https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-bar
-  bool aligned_ = false;
+  bool isAligned() const {
+    return attribute(1)->as<Attribute<bool>>()->value;
+  }
 };
 
 // Synchronize all blocks in device, implies cooperative group launch is
@@ -657,6 +651,14 @@ struct LoopTransformInfo {
   LoopTransformInfo& incrementLoop() {
     is_increment_loop = true;
     return *this;
+  }
+
+  bool operator==(const LoopTransformInfo& other) const {
+    return double_buffer_loop_stage == other.double_buffer_loop_stage &&
+        predicate_peel_stage == other.predicate_peel_stage &&
+        is_base_index_loop == other.is_base_index_loop &&
+        is_interleave_unit == other.is_interleave_unit &&
+        is_increment_loop == other.is_increment_loop;
   }
 };
 

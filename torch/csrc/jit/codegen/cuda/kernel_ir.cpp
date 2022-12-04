@@ -187,6 +187,8 @@ BlockSync::BlockSync(IrBuilderPasskey passkey, bool war_sync) : Expr(passkey) {
       "IR type only valid for Kernel container.");
   addAttribute(
       IrBuilder::create<Attribute<bool>>(passkey.ir_container_, war_sync));
+  addAttribute(
+      IrBuilder::create<Attribute<bool>>(passkey.ir_container_, false));
 }
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(BlockSync)

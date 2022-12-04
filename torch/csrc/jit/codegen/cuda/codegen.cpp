@@ -2895,8 +2895,6 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   std::deque<const kir::ForLoop*> grouped_loops_;
   //! Used to replace symbolic indices with concrete values
   std::unordered_map<const Int*, int64_t> index_replacement_map_;
-  //! Keep track of bank conflict check instances
-  int bank_conflict_check_id_ = 0;
 };
 
 } // namespace
