@@ -232,6 +232,10 @@ void Expr::dispatch(T handler, Expr* expr) {
     ptr(handler)->handle(expr->as<kir::IfThenElse>());
     return;
   }
+  if (expr->isStrictlyA<kir::AddressCompute>()) {
+    ptr(handler)->handle(expr->as<kir::AddressCompute>());
+    return;
+  }
   if (expr->isStrictlyA<kir::GridReduction>()) {
     ptr(handler)->handle(expr->as<kir::GridReduction>());
     return;
@@ -471,6 +475,10 @@ void Expr::constDispatch(T handler, const Expr* expr) {
   }
   if (expr->isStrictlyA<kir::GridReduction>()) {
     ptr(handler)->handle(expr->as<kir::GridReduction>());
+    return;
+  }
+  if (expr->isStrictlyA<kir::AddressCompute>()) {
+    ptr(handler)->handle(expr->as<kir::AddressCompute>());
     return;
   }
   if (expr->isStrictlyA<kir::GroupedGridReduction>()) {
