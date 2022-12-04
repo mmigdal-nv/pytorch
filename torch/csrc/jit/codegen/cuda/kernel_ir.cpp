@@ -232,6 +232,12 @@ InitMagicZero::InitMagicZero(IrBuilderPasskey passkey) : Expr(passkey) {
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(InitMagicZero)
 
+UpdateMagicZero::UpdateMagicZero(IrBuilderPasskey passkey) : Expr(passkey) {
+  TORCH_INTERNAL_ASSERT(
+      passkey.ir_container_->isA<kir::Kernel>(),
+      "IR type only valid for Kernel container.");
+}
+
 NVFUSER_DEFINE_CLONE_AND_CREATE(UpdateMagicZero)
 
 AddressCompute::AddressCompute(
