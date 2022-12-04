@@ -414,82 +414,79 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
 
   NVFUSER_DECLARE_CLONE_AND_CREATE
 
+  // Tensor that this address compute is calculating address for.
   auto dataTv() const {
-    return data_tensor_;
+    return attributeVal(1);
   }
-
-  auto addressTv() const {
-    return address_tensor_;
-  }
-
-  auto opType() const {
-    return op_type_;
-  }
-
-  auto doubleBufferSwitchIndex() const {
-    return double_buffer_switch_index_;
-  }
-
-  auto doubleBufferByteSize() const {
-    return buffer_size_in_byte_;
-  }
-
-  auto loopOffset() const {
-    return loop_offset_;
-  }
-
-  auto stageNumber() const {
-    return stage_number_;
-  }
-
-  auto loopIndex() const {
-    return loop_index_;
-  }
-
-  auto incrementValue() const {
-    return increment_value_;
-  }
-
-  bool isDecrement() const {
-    return op_type_ == AddressComputeOpType::GMEM_DECREMENT;
-  }
-
- private:
-  // The type of computation this op computes,
-  //  currently only do compute address.
-  AddressComputeOpType op_type_ = AddressComputeOpType::BASE_ADDRESS;
-
-  // Tensor that this address compute is calculating
-  //   address for.
-  Val* data_tensor_ = nullptr;
 
   // Tensor that stores pre-computed address for the
   //  data tensor.
-  Val* address_tensor_ = nullptr;
+  auto addressTv() const {
+    return attributeVal(2);
+  }
 
-  // Double buffer switch and update parameters below:
+  // The type of computation this op computes,
+  //  currently only do compute address.
+  auto opType() const {
+    return attribute(0)->as<Attribute<AddressComputeOpType>>()->value;
+  }
 
+  // This is a double buffer switch and update parameters:
   // The switching index that this op is updating.
-  Val* double_buffer_switch_index_ = nullptr;
+  auto doubleBufferSwitchIndex() const {
+    return attributeVal(3);
+  }
 
+  // This is a double buffer switch and update parameters:
   // The original buffer alloc size used for double buffer
   //   update calculation.
-  Val* buffer_size_in_byte_ = nullptr;
+  auto doubleBufferByteSize() const {
+    return attributeVal(4);
+  }
 
+  // This is a double buffer switch and update parameters:
   // The double buffer loop offset that is used for
   //  computing the double buffer size update.
-  int loop_offset_ = 0;
+  auto loopOffset() const {
+    return attribute(5)->as<Attribute<int>>()->value;
+  }
 
+  // This is a double buffer switch and update parameters:
   // The double buffer loop offset that is used for
   //  computing the double buffer size update.
-  int stage_number_ = 0;
+  auto stageNumber() const {
+    return attribute(6)->as<Attribute<int>>()->value;
+  }
 
+  // This is a double buffer switch and update parameters:
   // The double buffer loop index.
-  Val* loop_index_ = nullptr;
+  auto loopIndex() const {
+    return attributeVal(7);
+  }
 
+  // This is a double buffer switch and update parameters:
   // Gmem increment parameters below:
   //  The increment value to apply to the pointer.
-  kir::TensorIndex* increment_value_ = nullptr;
+  kir::TensorIndex* incrementValue() const {
+    return dynamic_cast<kir::TensorIndex*>(attribute(8));
+  }
+
+  bool isDecrement() const {
+    return opType() == AddressComputeOpType::GMEM_DECREMENT;
+  }
+
+ private:
+  explicit AddressCompute(
+      IrBuilderPasskey passkey,
+      AddressComputeOpType op_type,
+      Val* data_tensor,
+      Val* address_tensor,
+      Val* double_buffer_switch_index,
+      Val* buffer_size_in_byte,
+      int loop_offset,
+      int stage_number,
+      Val* loop_index,
+      kir::TensorIndex* increment_value);
 };
 
 // Simply prints "DEFINE_MAGIC_ZERO" in the code in accordance with magic_zero

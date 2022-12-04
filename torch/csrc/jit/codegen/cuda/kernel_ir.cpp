@@ -242,17 +242,49 @@ NVFUSER_DEFINE_CLONE_AND_CREATE(UpdateMagicZero)
 
 AddressCompute::AddressCompute(
     IrBuilderPasskey passkey,
-    AddressCompute::AddressComputeOpType op_type,
+    AddressComputeOpType op_type,
+    Val* data_tensor,
     Val* address_tensor,
-    Val* data_tensor)
-    : Expr(passkey),
-      op_type_(op_type),
-      data_tensor_(data_tensor),
-      address_tensor_(address_tensor) {
+    Val* double_buffer_switch_index,
+    Val* buffer_size_in_byte,
+    int loop_offset,
+    int stage_number,
+    Val* loop_index,
+    kir::TensorIndex* increment_value)
+    : Expr(passkey) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
+  addAttribute(IrBuilder::create<Attribute<AddressComputeOpType>>(
+      passkey.ir_container_, op_type));
+  addAttribute(data_tensor);
+  addAttribute(address_tensor);
+  addAttribute(double_buffer_switch_index);
+  addAttribute(buffer_size_in_byte);
+  addAttribute(
+      IrBuilder::create<Attribute<int>>(passkey.ir_container_, loop_offset));
+  addAttribute(
+      IrBuilder::create<Attribute<int>>(passkey.ir_container_, stage_number));
+  addAttribute(loop_index);
+  addAttribute(increment_value);
 }
+
+AddressCompute::AddressCompute(
+    IrBuilderPasskey passkey,
+    AddressCompute::AddressComputeOpType op_type,
+    Val* address_tensor,
+    Val* data_tensor)
+    : AddressCompute(
+          passkey,
+          op_type,
+          data_tensor,
+          address_tensor,
+          nullptr,
+          nullptr,
+          0,
+          0,
+          nullptr,
+          nullptr) {}
 
 AddressCompute::AddressCompute(
     IrBuilderPasskey passkey,
@@ -260,18 +292,18 @@ AddressCompute::AddressCompute(
     Val* data_tensor,
     TensorIndex* increment_value,
     bool is_decrement)
-    : Expr(passkey),
-      op_type_(AddressCompute::AddressComputeOpType::GMEM_INCREMENT),
-      data_tensor_(data_tensor),
-      address_tensor_(address_tensor),
-      increment_value_(increment_value) {
-  if (is_decrement) {
-    op_type_ = AddressCompute::AddressComputeOpType::GMEM_DECREMENT;
-  }
-  TORCH_INTERNAL_ASSERT(
-      passkey.ir_container_->isA<kir::Kernel>(),
-      "IR type only valid for Kernel container.");
-}
+    : AddressCompute(
+          passkey,
+          is_decrement ? AddressCompute::AddressComputeOpType::GMEM_DECREMENT
+                       : AddressCompute::AddressComputeOpType::GMEM_INCREMENT,
+          data_tensor,
+          address_tensor,
+          nullptr,
+          nullptr,
+          0,
+          0,
+          nullptr,
+          increment_value) {}
 
 AddressCompute::AddressCompute(
     IrBuilderPasskey passkey,
@@ -281,18 +313,17 @@ AddressCompute::AddressCompute(
     int loop_offset,
     int stage_number,
     Val* loop_index)
-    : Expr(passkey),
-      op_type_(AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH),
-      data_tensor_(data_tv),
-      double_buffer_switch_index_(double_buffer_switch_index),
-      buffer_size_in_byte_(buffer_size_in_byte),
-      loop_offset_(loop_offset),
-      stage_number_(stage_number),
-      loop_index_(loop_index) {
-  TORCH_INTERNAL_ASSERT(
-      passkey.ir_container_->isA<kir::Kernel>(),
-      "IR type only valid for Kernel container.");
-}
+    : AddressCompute(
+          passkey,
+          AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_SWITCH,
+          data_tv,
+          nullptr,
+          double_buffer_switch_index,
+          buffer_size_in_byte,
+          loop_offset,
+          stage_number,
+          loop_index,
+          nullptr) {}
 
 AddressCompute::AddressCompute(
     IrBuilderPasskey passkey,
@@ -302,18 +333,17 @@ AddressCompute::AddressCompute(
     int loop_offset,
     TensorView* data_tensor,
     Val* loop_index)
-    : Expr(passkey),
-      op_type_(AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE),
-      data_tensor_(data_tensor),
-      address_tensor_(address_tensor),
-      buffer_size_in_byte_(buffer_size_in_byte),
-      loop_offset_(loop_offset),
-      stage_number_(stage_number),
-      loop_index_(loop_index) {
-  TORCH_INTERNAL_ASSERT(
-      passkey.ir_container_->isA<kir::Kernel>(),
-      "IR type only valid for Kernel container.");
-}
+    : AddressCompute(
+          passkey,
+          AddressCompute::AddressComputeOpType::DOUBLE_BUFFER_UPDATE,
+          data_tensor,
+          address_tensor,
+          nullptr,
+          buffer_size_in_byte,
+          loop_offset,
+          stage_number,
+          loop_index,
+          nullptr) {}
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(AddressCompute)
 
