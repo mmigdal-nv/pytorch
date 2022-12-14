@@ -1,12 +1,14 @@
 #pragma once
 #include <c10/util/complex.h>
 #include <torch/csrc/jit/codegen/cuda/arith.h>
+#include <torch/csrc/jit/codegen/cuda/ir_interface_nodes.h>
 #include <torch/csrc/jit/codegen/cuda/ops/alias.h>
 #include <torch/csrc/jit/codegen/cuda/ops/normalization.h>
 #include <torch/csrc/jit/codegen/cuda/python_frontend/fusion_definition.h>
 #include <torch/csrc/jit/codegen/cuda/utils.h>
 
 #include <algorithm>
+#include <complex>
 
 namespace nvfuser {
 
@@ -948,7 +950,8 @@ struct ConstantRecord : RecordFunctor {
   virtual void print(std::ostream& os, bool close_function = true) const {
     RecordFunctor::print(os, false);
     if (std::is_same<ValueType, bool>::value) {
-      os << (value_ ? "True" : "False");
+      bool value = torch::jit::fuser::cuda::__toBool(value_);
+      os << (value ? "True" : "False");
     } else {
       os << std::showpoint << value_;
     }

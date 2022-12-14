@@ -19,11 +19,13 @@
 #include <nvfuser_resources/block_reduction.h>
 #include <nvfuser_resources/block_sync_atomic.h>
 #include <nvfuser_resources/block_sync_default.h>
+#include <nvfuser_resources/block_welford_outer.h>
 #include <nvfuser_resources/broadcast.h>
 #include <nvfuser_resources/fp16_support.h>
 #include <nvfuser_resources/fused_reduction.h>
 #include <nvfuser_resources/fused_welford_helper.h>
 #include <nvfuser_resources/fused_welford_impl.h>
+#include <nvfuser_resources/fused_welford_impl_outer.h>
 #include <nvfuser_resources/grid_broadcast.h>
 #include <nvfuser_resources/grid_reduction.h>
 #include <nvfuser_resources/grid_sync.h>
@@ -125,6 +127,8 @@ std::string kernelPreamble() {
   ss << nvfuser_resources::fused_welford_helper_cu;
   ss << nvfuser_resources::fused_reduction_cu;
   ss << nvfuser_resources::fused_welford_impl_cu;
+  ss << nvfuser_resources::block_welford_outer_cu;
+  ss << nvfuser_resources::fused_welford_impl_outer_cu;
 
   // Random utilities
   ss << nvfuser_resources::PhiloxCudaStateRaw_cu;
@@ -952,7 +956,8 @@ std::pair<NvrtcFunction, std::string> nvrtcCompile(
     const std::string& code,
     const std::string& func_name,
     int id,
-    c10::optional<int> opt_block_size) {
+    c10::optional<int> opt_block_size,
+    const int max_register_heuristic) {
   FUSER_PERF_SCOPE("executor_utils::NVRTC");
   if (isOptionDisabled(DisableOption::ArchCheck)) {
     TORCH_WARN(
@@ -1100,28 +1105,35 @@ std::pair<NvrtcFunction, std::string> nvrtcCompile(
 #ifndef USE_ROCM
   // keeping the string outside the loop for lifetime
   std::string max_register_usage = "--maxrregcount=";
-  uint32_t max_register = 0;
-  if (opt_block_size.has_value() && opt_block_size.value() > 0) {
-    int num_partition = 0;
-    int reg_allocation_granularity = 0;
-    cudaOccDeviceProp occ_prop(*prop);
-    cudaOccSubPartitionsPerMultiprocessor(&num_partition, &occ_prop);
-    cudaOccRegAllocationGranularity(&reg_allocation_granularity, &occ_prop);
-    int warp_size = prop->warpSize;
-    int num_warps = ceilDiv(opt_block_size.value(), warp_size);
+  // The maximum possible count allowed by ptxas is 255
+  int max_register = 255;
+  bool valid_block_size =
+      opt_block_size.has_value() && opt_block_size.value() > 0;
+  if (max_register_heuristic < 255 || valid_block_size) {
+    if (valid_block_size) {
+      int num_partition = 0;
+      int reg_allocation_granularity = 0;
+      cudaOccDeviceProp occ_prop(*prop);
+      cudaOccSubPartitionsPerMultiprocessor(&num_partition, &occ_prop);
+      cudaOccRegAllocationGranularity(&reg_allocation_granularity, &occ_prop);
+      int warp_size = prop->warpSize;
+      int num_warps = ceilDiv(opt_block_size.value(), warp_size);
 
-    // warps could be distributed unevenly across partition
-    int max_warps_per_sm_partition = ceilDiv(num_warps, num_partition);
-    // registers are evenly distributed across partitions, partition with most
-    // wraps determins the maximum register available per warp
-    int max_reg_per_warp =
-        prop->regsPerBlock / num_partition / max_warps_per_sm_partition;
-    // clamp down to register allocation granularity at warp level
-    int effective_max_reg_per_warp = max_reg_per_warp /
-        reg_allocation_granularity * reg_allocation_granularity;
-    // The maximum possible count allowed by ptxas is 255
-    max_register = static_cast<uint32_t>(
-        std::min(effective_max_reg_per_warp / warp_size, 255));
+      // warps could be distributed unevenly across partition
+      int max_warps_per_sm_partition = ceilDiv(num_warps, num_partition);
+      // registers are evenly distributed across partitions, partition with most
+      // wraps determins the maximum register available per warp
+      int max_reg_per_warp =
+          prop->regsPerBlock / num_partition / max_warps_per_sm_partition;
+      // clamp down to register allocation granularity at warp level
+      int effective_max_reg_per_warp = max_reg_per_warp /
+          reg_allocation_granularity * reg_allocation_granularity;
+      max_register =
+          std::min(max_register, effective_max_reg_per_warp / warp_size);
+    }
+
+    max_register = std::min(max_register, max_register_heuristic);
+
     if (compile_to_sass) {
       max_register_usage += std::to_string(max_register);
       args.push_back("--ptxas-options");
@@ -1135,7 +1147,9 @@ std::pair<NvrtcFunction, std::string> nvrtcCompile(
     for (auto arg : args) {
       ptxas_log << arg << " ";
     }
-    ptxas_log << " ; block size=" << opt_block_size.value() << "\n";
+    if (valid_block_size) {
+      ptxas_log << " ; block size=" << opt_block_size.value() << "\n";
+    }
   }
 #endif
 
@@ -1161,6 +1175,9 @@ std::pair<NvrtcFunction, std::string> nvrtcCompile(
 
     ptxas_log << log.data() << std::endl;
     if (isDebugDumpEnabled(DebugDumpOption::PrintPtxasLog)) {
+      if (max_register > 0) {
+        std::cout << "Max register count: " << max_register << std::endl;
+      }
       std::cout << log.data() << std::endl;
     }
     AT_CUDA_NVRTC_CHECK(result);

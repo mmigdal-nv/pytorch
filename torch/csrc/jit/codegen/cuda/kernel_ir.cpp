@@ -1,4 +1,5 @@
 #include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
+#include <torch/csrc/jit/codegen/cuda/expr_simplifier.h>
 #include <torch/csrc/jit/codegen/cuda/ir_builder.h>
 #include <torch/csrc/jit/codegen/cuda/ir_cloner.h>
 #include <torch/csrc/jit/codegen/cuda/kernel.h>
@@ -64,45 +65,64 @@ Predicate::Predicate(IrBuilderPasskey passkey, const Predicate* other)
       other->value_ == nullptr, "No support yet for predicate deep copy");
 }
 
+std::string Predicate::toString(int indent_size) const {
+  if (predicate_type() == PredicateType::Manual) {
+    return value()->toString();
+  }
+  return predicate_type2string(predicate_type());
+}
+
+std::string Predicate::toInlineString(int indent_size) const {
+  if (predicate_type() == PredicateType::Manual) {
+    return value()->toInlineString();
+  }
+  return predicate_type2string(predicate_type());
+}
+
 TensorIndex::TensorIndex(
     IrBuilderPasskey passkey,
     const TensorView* view,
-    std::vector<Val*> indices,
+    Val* index,
     Val* base_address,
     Val* uniform_address)
     : Val(passkey, ValType::TensorIndex, view->getDataType().value()),
       view_(view),
-      indices_(indices),
+      index_(index),
       base_address_(base_address),
       uniform_address_(uniform_address) {
   TORCH_INTERNAL_ASSERT(
       passkey.ir_container_->isA<kir::Kernel>(),
       "IR type only valid for Kernel container.");
   TORCH_INTERNAL_ASSERT(
-      std::all_of(
-          indices.begin(),
-          indices.end(),
-          [](Val* v) { return isIntegralType(v->dtype()); }),
+      isIntegralType(index->dtype()),
       "Cannot index with a value other than an int.");
-  indices_.erase(
-      std::remove_if(
-          indices_.begin(),
-          indices_.end(),
-          [](Val* index) { return index->isZeroInt(); }),
-      indices_.end());
-  // If indices becomes empty, just put one ZeroInt
-  if (indices_.empty()) {
-    indices_.push_back(FusionGuard::getCurFusion()->zeroVal());
-  }
 }
 
-Val* TensorIndex::index(int i) const {
-  TORCH_INTERNAL_ASSERT(
-      nDims() > 0, "Tried to get an index of a 0-dim TensorIndex");
-  if (i < 0)
-    i += nDims();
-  TORCH_INTERNAL_ASSERT(i >= 0 && i < int(nDims()));
-  return indices_[i];
+std::string TensorIndex::toString(int indent_size) const {
+  std::stringstream ss;
+  ss << "T" << ir_utils::varName(this);
+  switch (view()->getMemoryType()) {
+    case MemoryType::Global:
+      ss << "_g";
+      break;
+    case MemoryType::Shared:
+      ss << "_s";
+      break;
+    case MemoryType::Local:
+      ss << "_l";
+      break;
+    default:
+      TORCH_INTERNAL_ASSERT(false, "Unknown tensor memory type.");
+  }
+  ss << "[";
+  ss << index()->toInlineString(indent_size);
+  ss << "]";
+  ss << " view( T" << ir_utils::varName(view()) << " )";
+  return ss.str();
+}
+
+std::string TensorIndex::toInlineString(int indent_size) const {
+  return toString(indent_size);
 }
 
 Allocate::Allocate(
@@ -556,6 +576,10 @@ Val* ForLoop::step() const {
   return attributeVal(2);
 }
 
+Val* ForLoop::simplifiedStop() const {
+  return simplifyExpr(stop(), {});
+}
+
 bool ForLoop::isTrivial() const {
   // These loops are not materialized
   if (vectorize() || iter_domain()->isBroadcast() ||
@@ -604,6 +628,56 @@ bool ForLoop::isTrivial() const {
   }
 
   return false;
+}
+
+namespace {
+
+//! A utility class to check if an expression of a particular type exists
+class ExprFinder : kir::ConstIrVisitor {
+ public:
+  //! True if expr or any of its nested expressions is a type included in
+  //! expr_types
+  static bool exists(
+      const Expr* expr,
+      const std::unordered_set<std::type_index>& expr_types) {
+    ExprFinder finder(expr_types);
+    finder.handle(std::vector<const Expr*>{expr});
+    return finder.is_found_;
+  }
+
+ private:
+  ExprFinder(const std::unordered_set<std::type_index>& expr_types)
+      : expr_types_(expr_types) {}
+
+  using kir::ConstIrVisitor::handle;
+
+  void handle(const Expr* expr) final {
+    if (expr_types_.find(typeid(*expr)) != expr_types_.end()) {
+      is_found_ = true;
+      return;
+    }
+    kir::ConstIrVisitor::handle(expr);
+  }
+
+ private:
+  const std::unordered_set<std::type_index>& expr_types_;
+  bool is_found_ = false;
+};
+
+} // namespace
+
+bool ForLoop::isGroup() const {
+  //! True if loop is grouped. The IterDomain of the loop must have
+  //! ParallelType::Group, but it isn't sufficient as the loop may be
+  //! for an initialization expression, for which the loop shold not
+  //! be grouped. Make sure a GroupedGridReduction is found.
+  if (iter_domain()->getParallelType() != ParallelType::Group) {
+    return false;
+  }
+
+  return ExprFinder::exists(
+      this,
+      {typeid(kir::GroupedGridReduction), typeid(kir::GroupedGridWelford)});
 }
 
 IfThenElse::IfThenElse(IrBuilderPasskey passkey, Predicate* cond)
@@ -740,7 +814,8 @@ GroupedGridWelford::GroupedGridWelford(
     Val* entrance_index,
     Val* entrances,
     Val* buffer_stride,
-    bool is_allreduce)
+    bool is_allreduce,
+    bool use_outer_opt)
     : GroupedWelfordOp(
           passkey,
           std::move(output_vals),
@@ -769,6 +844,49 @@ GroupedGridWelford::GroupedGridWelford(
     addAttribute(reduction_buffers[1].at(i));
     addAttribute(reduction_buffers[2].at(i));
   }
+
+  addAttribute(
+      IrBuilder::create<Attribute<bool>>(passkey.ir_container_, use_outer_opt));
+}
+
+int GroupedGridWelford::getSmemBufferSize(int bdimx, int bdimy, int bdimz)
+    const {
+  auto out_tv = ir_utils::getTvOutput(this);
+  auto kernel = dynamic_cast<kir::Kernel*>(container());
+  TORCH_INTERNAL_ASSERT(kernel != nullptr);
+
+  // By default, the required size is the same as the normal Welford reduction
+  if (!useOuterOpt()) {
+    return bdimx * bdimy * bdimz * dataTypeSize(out_tv->getDataType().value()) *
+        2 +
+        bdimx * bdimy * bdimz *
+        dataTypeSize(DataType::Index, kernel->indexType());
+  }
+
+  // In the outer-reduction version, the size is blockDim.x * NumberOfWarps *
+  // GroupCount
+
+  int group_count = 1;
+  for (auto axis : out_tv->domain()->domain()) {
+    auto pt = axis->getParallelType();
+    if (pt == ParallelType::Group) {
+      auto extent_int = axis->extent()->getInt();
+      TORCH_INTERNAL_ASSERT(extent_int.has_value());
+      group_count *= (int)extent_int.value();
+    }
+  }
+
+  TORCH_INTERNAL_ASSERT(group_count > 1);
+
+  int num_warps = bdimx * bdimy / 32;
+  TORCH_INTERNAL_ASSERT((bdimx * bdimy) % 32 == 0);
+
+  int buf_size_for_avg_var = bdimx * num_warps * group_count *
+      dataTypeSize(out_tv->getDataType().value());
+  int buf_size_for_N =
+      num_warps * dataTypeSize(DataType::Index, kernel->indexType());
+
+  return buf_size_for_avg_var * 2 + buf_size_for_N;
 }
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(GroupedGridWelford)

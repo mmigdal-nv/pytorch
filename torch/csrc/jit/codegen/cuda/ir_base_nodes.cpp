@@ -60,16 +60,16 @@ bool Statement::lessThan(const Statement* stmt1, const Statement* stmt2) {
   return stmt1->name() < stmt2->name();
 }
 
-std::string Statement::toString() const {
+std::string Statement::toString(int indent_size) const {
   std::stringstream ss;
-  IrPrinter ir_printer(ss);
+  IrPrinter ir_printer(ss, indent_size);
   ir_printer.handle(this);
   return ss.str();
 }
 
-std::string Statement::toInlineString() const {
+std::string Statement::toInlineString(int indent_size) const {
   std::stringstream ss;
-  IrPrinter ir_printer(ss);
+  IrPrinter ir_printer(ss, indent_size);
   ir_printer.print_inline(this);
   return ss.str();
 }
@@ -117,12 +117,13 @@ const std::vector<Expr*>& Val::uses() const {
 // for index expressions.
 void Val::resolveIndexDtype() {
   TORCH_INTERNAL_ASSERT(
-      vtype_ == ValType::TensorView || vtype_ == ValType::Scalar,
+      vtype_ == ValType::TensorView || vtype_ == ValType::Scalar ||
+          vtype_ == ValType::NamedScalar,
       "Resolving index type is currently only supported on tensor view or scalar values. "
       "Value type: ",
       vtype_);
   TORCH_INTERNAL_ASSERT(
-      dtype_ == DataType::Index || dtype_ == DataType::Int,
+      isIntegralType(dtype_),
       "Can only resolve index type if a Val has an Index or Int DataType. ",
       "Data type: ",
       dtype_);
@@ -159,7 +160,15 @@ class ConstCheck : private OptOutConstDispatch {
   }
 
   void handle(const NamedScalar* ns) final {
-    is_const_ = is_const_ && false;
+    is_const_ = false;
+  }
+
+  void handle(const TensorView* ns) final {
+    is_const_ = false;
+  }
+
+  void handle(const kir::TensorIndex* ns) final {
+    is_const_ = false;
   }
 
   void handle(const Expr* expr) final {
@@ -169,7 +178,7 @@ class ConstCheck : private OptOutConstDispatch {
   }
 
   void handle(const Val* val) final {
-    if (!val->isAnInt()) {
+    if (!val->isIntegralScalar()) {
       is_int_ = false;
     }
 
@@ -196,6 +205,40 @@ class ConstCheck : private OptOutConstDispatch {
 
 } // namespace
 
+bool Val::sameAs(const Statement* other) const {
+  if (this == other) {
+    return true;
+  }
+  if (auto other_val = dynamic_cast<const Val*>(other)) {
+    if (definition_ == nullptr || other_val->definition_ == nullptr) {
+      return false;
+    }
+    if (vtype_ != other_val->vtype_) {
+      return false;
+    }
+    if (dtype_ != other_val->dtype_) {
+      return false;
+    }
+    if (!definition_->sameAs(other_val->definition_)) {
+      return false;
+    }
+    if (definition_->outputs().size() !=
+        other_val->definition_->outputs().size()) {
+      return false;
+    }
+    // For definition with multiple outputs, only outputs at the same position
+    // could be the same
+    for (auto i : c10::irange(definition_->outputs().size())) {
+      if ((definition_->output(i) == this) !=
+          (other_val->definition_->output(i) == other_val)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 bool Val::isConstScalar() const {
   if (!isScalar()) {
     return false;
@@ -204,7 +247,7 @@ bool Val::isConstScalar() const {
 }
 
 bool Val::isConstInt() const {
-  return ConstCheck::isConst(this) && isAnInt();
+  return ConstCheck::isConst(this) && isIntegralScalar();
 }
 
 int64_t Val::evaluateInt() {
@@ -259,14 +302,14 @@ bool Val::evaluateBool() {
 }
 
 c10::optional<int64_t> Val::getInt() const {
-  if (isConstScalar() && isAnInt() && isA<Int>()) {
+  if (isConstScalar() && isIntegralScalar() && isA<Int>()) {
     return this->as<Int>()->value();
   }
   return c10::nullopt;
 }
 
 c10::optional<double> Val::getDouble() const {
-  if (isConstScalar() && isADouble() && isA<Double>()) {
+  if (isConstScalar() && isFloatingPointScalar() && isA<Double>()) {
     return this->as<Double>()->value();
   }
   return c10::nullopt;
@@ -325,9 +368,9 @@ Expr::Expr(IrBuilderPasskey passkey) : Statement(passkey) {}
 
 Expr::Expr(const Expr* src, IrCloner* ir_cloner)
     : Statement(src, ir_cloner),
+      attributes_(ir_cloner->clone(src->attributes_)),
       inputs_(ir_cloner->clone(src->inputs_)),
-      outputs_(ir_cloner->clone(src->outputs_)),
-      attributes_(ir_cloner->clone(src->attributes_)) {}
+      outputs_(ir_cloner->clone(src->outputs_)) {}
 
 Expr::Expr(
     IrBuilderPasskey passkey,
@@ -335,9 +378,9 @@ Expr::Expr(
     std::vector<Val*> outputs,
     std::vector<Statement*> attributes)
     : Statement(passkey),
+      attributes_(std::move(attributes)),
       inputs_(std::move(inputs)),
-      outputs_(std::move(outputs)),
-      attributes_(std::move(attributes)) {}
+      outputs_(std::move(outputs)) {}
 
 Expr* Expr::shallowCopy() const {
   auto result =

@@ -54,6 +54,7 @@ void Val::dispatch(T handler, Val* val) {
           return;
         case DataType::Int:
         case DataType::Int32:
+        case DataType::Index:
           // Dispatch to Int even with Int32 as we don't have Int32 IR
           // node.
           ptr(handler)->handle(val->as<Int>());
@@ -87,7 +88,12 @@ void Val::dispatch(T handler, Val* val) {
     default:
       break;
   }
-  TORCH_INTERNAL_ASSERT(false, "Unknown valtype in dispatch!");
+  TORCH_INTERNAL_ASSERT(
+      false,
+      "Unknown valtype in dispatch! val: ",
+      val->toString(),
+      " = ",
+      val->toInlineString());
 }
 
 template <typename T>
@@ -290,6 +296,7 @@ void Val::constDispatch(T handler, const Val* val) {
           ptr(handler)->handle(val->as<Double>());
           return;
         case DataType::Int:
+        case DataType::Index:
         case DataType::Int32:
           // Dispatch to Int even with Int32 as we don't have Int32 IR
           // node.
@@ -328,7 +335,12 @@ void Val::constDispatch(T handler, const Val* val) {
     default:
       break;
   }
-  TORCH_INTERNAL_ASSERT(false, "Unknown valtype in dispatch!");
+  TORCH_INTERNAL_ASSERT(
+      false,
+      "Unknown valtype in dispatch! val: ",
+      val->toString(),
+      " = ",
+      val->toInlineString());
 }
 
 template <typename T>
@@ -537,14 +549,18 @@ void Val::mutatorDispatch(T mutator, Val* val) {
         case DataType::Bool:
           ptr(mutator)->mutate(val->as<Bool>());
           return;
+        case DataType::Half:
+        case DataType::BFloat16:
         case DataType::Float:
         case DataType::Double:
           ptr(mutator)->mutate(val->as<Double>());
           return;
         case DataType::Int:
         case DataType::Int32:
+        case DataType::Index:
           ptr(mutator)->mutate(val->as<Int>());
           return;
+        case DataType::ComplexFloat:
         case DataType::ComplexDouble:
           ptr(mutator)->mutate(val->as<ComplexDouble>());
           return;
@@ -571,6 +587,10 @@ void Val::mutatorDispatch(T mutator, Val* val) {
     case ValType::TensorIndex:
       ptr(mutator)->mutate(val->as<kir::TensorIndex>());
       return;
+    case ValType::Attribute:
+      TORCH_INTERNAL_ASSERT(
+          false,
+          "ValType::Attribute can not be dispatched. Template type is needed.");
     default:
       break;
   }

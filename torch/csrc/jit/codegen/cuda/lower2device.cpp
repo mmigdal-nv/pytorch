@@ -240,8 +240,11 @@ void assignRNGOffset(Fusion* fusion) {
 }
 
 // Dump expr string if enable lower_verbose
-void dumpExprsIfEnabled(const std::vector<Expr*>& exprs, std::string msg_pre) {
-  if (isDebugDumpEnabled(DebugDumpOption::LowerVerbose)) {
+void dumpExprsIfEnabled(
+    const std::vector<Expr*>& exprs,
+    std::string msg_pre,
+    bool force_enable = false) {
+  if (isDebugDumpEnabled(DebugDumpOption::LowerVerbose) || force_enable) {
     std::cout << msg_pre << ":" << std::endl;
     for (auto exp : exprs) {
       std::cout << exp->toString() << std::endl;
@@ -450,6 +453,8 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   const auto exprs_unrolled_loops =
       UnrollPass::runPass(fusion_, exprs_interleaved);
 
+  commonScalarMap().initialize(exprs_unrolled_loops);
+
   dumpExprsIfEnabled(
       exprs_unrolled_loops, "Before processMisalignedVectorization");
   const auto exprs_unrolled_mv_loops =
@@ -470,9 +475,9 @@ void GpuLower::lower(Fusion* fusion, DataType index_type) {
   const auto exprs_conditional_loops =
       generateConditionalFromPredicate(exprs_with_fused_broadcast);
 
-  dumpExprsIfEnabled(exprs_conditional_loops, "Before allocateCommonIndices");
+  dumpExprsIfEnabled(exprs_conditional_loops, "Before allocateCommonScalars");
   const auto exprs_common_index_allocated =
-      allocateCommonIndices(exprs_conditional_loops);
+      allocateCommonScalars(exprs_conditional_loops);
 
   std::vector<Expr*> exprs_welford_vectorized;
   if (!isOptionDisabled(DisableOption::WelfordVectorization)) {

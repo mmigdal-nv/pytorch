@@ -14,6 +14,7 @@
 
 #include <c10/util/irange.h>
 
+#include <complex>
 #include <sstream>
 
 namespace torch {
@@ -75,44 +76,9 @@ bool areEqualScalars(Val* v1, Val* v2) {
 template class Scalar<bool>;
 template class Scalar<int64_t>;
 template class Scalar<double>;
+template class Scalar<std::complex<double>>;
 
-ComplexDouble::ComplexDouble(IrBuilderPasskey passkey)
-    : Val(passkey, ValType::Scalar, DataType::ComplexDouble),
-      maybe_value_{c10::nullopt} {}
-
-ComplexDouble::ComplexDouble(IrBuilderPasskey passkey, ScalarType value)
-    : Val(passkey, ValType::Scalar, DataType::ComplexDouble),
-      maybe_value_{value} {}
-
-ComplexDouble::ComplexDouble(
-    IrBuilderPasskey passkey,
-    c10::optional<ScalarType> value)
-    : Val(passkey, ValType::Scalar, DataType::ComplexDouble),
-      maybe_value_{value} {}
-
-ComplexDouble::ComplexDouble(const ComplexDouble* src, IrCloner* ir_cloner)
-    : Val(src, ir_cloner), maybe_value_(src->maybe_value_) {}
-
-NVFUSER_DEFINE_CLONE(ComplexDouble)
-
-bool ComplexDouble::sameAs(const Statement* other) const {
-  if (this == other) {
-    return true;
-  }
-  if (!other->isA<ComplexDouble>()) {
-    return false;
-  }
-  const auto other_complex = other->as<ComplexDouble>();
-  if (isConst() && other_complex->isConst())
-    return *value() == *(other_complex->value());
-  return false;
-}
-
-FullOp::FullOp(
-    IrBuilderPasskey passkey,
-    Val* out,
-    Val* fill_value,
-    DataType dtype)
+FullOp::FullOp(IrBuilderPasskey passkey, Val* out, Val* fill_value)
     : Expr(passkey) {
   if (out->isA<TensorView>()) {
     auto tv_root = out->as<TensorView>()->getRootDomain();
@@ -122,8 +88,6 @@ FullOp::FullOp(
   }
   addInput(fill_value);
   addOutput(out);
-  addAttribute(
-      IrBuilder::create<Attribute<DataType>>(passkey.ir_container_, dtype));
 }
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(FullOp)
@@ -167,8 +131,7 @@ ARangeOp::ARangeOp(
     Val* start,
     Val* end,
     Val* step,
-    DataType dtype,
-    Val* linear_index)
+    DataType dtype)
     : Expr(passkey) {
   addInput(start);
   addInput(end);
@@ -176,17 +139,11 @@ ARangeOp::ARangeOp(
   addOutput(out);
   addAttribute(
       IrBuilder::create<Attribute<DataType>>(passkey.ir_container_, dtype));
-  addAttribute(linear_index);
 }
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(ARangeOp)
 
-EyeOp::EyeOp(
-    IrBuilderPasskey passkey,
-    Val* out,
-    DataType dtype,
-    Val* index1,
-    Val* index2)
+EyeOp::EyeOp(IrBuilderPasskey passkey, Val* out, DataType dtype)
     : Expr(passkey) {
   if (out->isA<TensorView>()) {
     addInput(out->as<TensorView>()->getRootDomain()[0]->extent());
@@ -198,8 +155,6 @@ EyeOp::EyeOp(
   addOutput(out);
   addAttribute(
       IrBuilder::create<Attribute<DataType>>(passkey.ir_container_, dtype));
-  addAttribute(index1);
-  addAttribute(index2);
 }
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(EyeOp)
@@ -752,7 +707,7 @@ GroupedWelfordOp::GroupedWelfordOp(
 NVFUSER_DEFINE_CLONE_AND_CREATE(GroupedWelfordOp)
 
 int GroupedWelfordOp::getExprIndexOfOutput(Val* output_val) const {
-  for (const auto expr_idx : c10::irange(numExprs())) {
+  for (const auto expr_idx : c10::irange(numHorizontallyGroupedExprs())) {
     if (outputVals().at(expr_idx).getNameOf(output_val).has_value()) {
       return expr_idx;
     }
@@ -1146,13 +1101,13 @@ IterDomain::IterDomain(
       "IterDomain cannot be both a broadcast and rfactor domain.");
 
   TORCH_INTERNAL_ASSERT(
-      extent->isAnInt(),
+      extent->isIntegralScalar(),
       "Cannot create an iter domain over an extent that is not an int but received ",
       extent,
       " .");
 
   TORCH_INTERNAL_ASSERT(
-      start->isAnInt(),
+      start->isIntegralScalar(),
       "Cannot create an iter domain with a start that is not an int but received ",
       start,
       " .");
@@ -1214,6 +1169,36 @@ bool IterDomain::sameAs(const Statement* other) const {
   }
 
   return is_same;
+}
+
+std::string IterDomain::toString(int indent_size) const {
+  std::stringstream ss;
+  ss << getIterType();
+  ss << getParallelType();
+  ss << ir_utils::varName(this);
+  ss << "{";
+  if (!start()->isZeroInt()) {
+    ss << start()->toInlineString() << " : ";
+  }
+  if (stop() != extent()) {
+    ss << stop()->toInlineString() << " : ";
+  }
+  if (isBroadcast() && hasExpandedExtent()) {
+    ss << expandedExtent()->toInlineString();
+  } else {
+    ss << extent()->toInlineString();
+  }
+  ss << "}";
+  if (isRFactorProduct())
+    ss << "rf";
+  if (hasPaddingToMultipleOfWarp()) {
+    ss << "_p";
+  }
+  return ss.str();
+}
+
+std::string IterDomain::toInlineString(int indent_size) const {
+  return toString(indent_size);
 }
 
 // Returns a new IterDomain matching properties of this except for
@@ -1319,7 +1304,8 @@ std::pair<IterDomain*, IterDomain*> IterDomain::split(
       !in->extent()->isZeroInt(),
       "Splitting IterDomains with ending values that are 0 is not supported at this time.");
 
-  TORCH_CHECK(factor->isAnInt(), "Cannot split by non-integer value ", factor);
+  TORCH_CHECK(
+      factor->isIntegralScalar(), "Cannot split by non-integer value ", factor);
 
   if (factor->getValType() == ValType::Scalar) {
     TORCH_CHECK(
@@ -1702,6 +1688,27 @@ bool TensorDomain::sameAs(
       return false;
   }
   return true;
+}
+
+std::string TensorDomain::toString(int indent_size) const {
+  std::stringstream ss;
+  if (nDims() == 0) {
+    ss << "[ 0 ]";
+    return ss.str();
+  }
+  ss << "[ ";
+  for (const auto i : c10::irange(nDims())) {
+    ss << axis(i)->toString();
+    if (i != nDims() - 1) {
+      ss << ", ";
+    }
+  }
+  ss << " ]";
+  return ss.str();
+}
+
+std::string TensorDomain::toInlineString(int indent_size) const {
+  return toString(indent_size);
 }
 
 void TensorDomain::setContiguity(const std::vector<bool>& contig) {
@@ -2102,7 +2109,7 @@ Split::Split(
     Val* stop_offset)
     : Expr(passkey) {
   TORCH_INTERNAL_ASSERT(
-      factor->isAnInt(),
+      factor->isIntegralScalar(),
       "Attempted to create a Split node with a non-integer factor.");
   if (start_offset == nullptr) {
     start_offset = passkey.ir_container_->zeroVal();

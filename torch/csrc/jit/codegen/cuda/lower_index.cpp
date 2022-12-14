@@ -103,8 +103,9 @@ void IndexLowering::handle(const RNGOp* rop) {
   TORCH_INTERNAL_ASSERT(out_tv != nullptr, "rand scalar not yet supported");
 
   // TensorIndex for philox subsequence and component.
-  auto philox_index = SimplifyingIrBuilder::create<kir::TensorIndex>(
-      out_tv, Index::getLinearLogicalIndex(out_tv, for_loops_));
+  auto philox_index = Index::getLinearLogicalIndex(out_tv, for_loops_);
+  philox_index = GpuLower::current()->commonScalarMap().hoistScalar(
+      philox_index, for_loops_);
 
   // TensorIndex for writing rand_like output.
   const auto out = lowerDstIndex(out_tv);
@@ -127,9 +128,10 @@ void IndexLowering::handle(const FullOp* fop) {
 
   // TensorIndex for writing output.
   const auto out = lowerDstIndex(out_tv);
-  auto lowered =
-      IrBuilder::create<FullOp>(out, fop->getFillValue(), fop->dtype());
+  auto result = fop->getFillValue();
+  GpuLower::current()->commonScalarMap().hoistScalar(result, for_loops_);
 
+  auto lowered = IrBuilder::create<UnaryOp>(UnaryOpType::Set, out, result);
   pushBack(lowered);
   GpuLower::current()->propagateExprInfo(fop, back());
 }
@@ -140,14 +142,11 @@ void IndexLowering::handle(const ARangeOp* aop) {
   auto out_tv = dynamic_cast<TensorView*>(aop->output(0));
   TORCH_INTERNAL_ASSERT(out_tv != nullptr);
 
-  // linear index for computing arange output
-  auto linear_index = SimplifyingIrBuilder::create<kir::TensorIndex>(
-      out_tv, Index::getLinearLogicalIndex(out_tv, for_loops_));
-
   // TensorIndex for writing arange output.
   const auto out = lowerDstIndex(out_tv);
-  auto lowered = IrBuilder::create<ARangeOp>(
-      out, aop->start(), aop->end(), aop->step(), aop->dtype(), linear_index);
+  auto result = Index::arange(
+      out_tv, for_loops_, aop->start(), aop->step(), aop->dtype());
+  auto lowered = IrBuilder::create<UnaryOp>(UnaryOpType::Set, out, result);
 
   pushBack(lowered);
   GpuLower::current()->propagateExprInfo(aop, back());
@@ -157,15 +156,10 @@ void IndexLowering::handle(const EyeOp* eop) {
   auto out_tv = dynamic_cast<TensorView*>(eop->output(0));
   TORCH_INTERNAL_ASSERT(out_tv != nullptr);
 
-  // linear index for computing eye output
-  auto indices = Index::getPerDimLogicalIndex(out_tv, for_loops_);
-  TORCH_INTERNAL_ASSERT(indices.size() == 2);
-  auto index1 = indices[0];
-  auto index2 = indices[1];
-
   // TensorIndex for writing eye output.
   const auto out = lowerDstIndex(out_tv);
-  auto lowered = IrBuilder::create<EyeOp>(out, eop->dtype(), index1, index2);
+  auto result = Index::eye(out_tv, for_loops_, eop->dtype());
+  auto lowered = IrBuilder::create<UnaryOp>(UnaryOpType::Set, out, result);
 
   pushBack(lowered);
   GpuLower::current()->propagateExprInfo(eop, back());
@@ -574,10 +568,10 @@ void IndexLowering::handle(const GroupedReductionOp* grouped_rop) {
   const bool has_block_reduce = out_domain->hasBlockReduction();
   const bool has_grid_reduce = out_domain->hasGridReduction();
 
-  std::vector<Val*> indexed_outputs(grouped_rop->numExprs());
-  std::vector<Val*> indexed_inputs(grouped_rop->numExprs());
+  std::vector<Val*> indexed_outputs(grouped_rop->numHorizontallyGroupedExprs());
+  std::vector<Val*> indexed_inputs(grouped_rop->numHorizontallyGroupedExprs());
 
-  for (const auto i : c10::irange(grouped_rop->numExprs())) {
+  for (const auto i : c10::irange(grouped_rop->numHorizontallyGroupedExprs())) {
     indexed_outputs.at(i) = lowerDstIndex(grouped_rop->output(i));
     indexed_inputs.at(i) =
         lowerSrcIndex(grouped_rop->input(i), grouped_rop->output(i));
@@ -588,7 +582,8 @@ void IndexLowering::handle(const GroupedReductionOp* grouped_rop) {
   } else if (has_block_reduce) {
     handleBlockReduction(grouped_rop, indexed_outputs, indexed_inputs);
   } else {
-    for (const auto i : c10::irange(grouped_rop->numExprs())) {
+    for (const auto i :
+         c10::irange(grouped_rop->numHorizontallyGroupedExprs())) {
       pushBack(IrBuilder::create<BinaryOp>(
           grouped_rop->getReductionOpType(i),
           indexed_outputs.at(i),
@@ -892,13 +887,15 @@ void IndexLowering::handle(const GroupedWelfordOp* grouped_wop) {
 
   const bool has_grid_reduce = out_domain->hasGridReduction();
 
-  std::vector<WelfordTriplet> indexed_outputs(grouped_wop->numExprs());
-  std::vector<WelfordTriplet> indexed_inputs(grouped_wop->numExprs());
+  std::vector<WelfordTriplet> indexed_outputs(
+      grouped_wop->numHorizontallyGroupedExprs());
+  std::vector<WelfordTriplet> indexed_inputs(
+      grouped_wop->numHorizontallyGroupedExprs());
 
   auto output_vals = grouped_wop->outputVals();
   auto input_vals = grouped_wop->inputVals();
 
-  for (const auto i : c10::irange(grouped_wop->numExprs())) {
+  for (const auto i : c10::irange(grouped_wop->numHorizontallyGroupedExprs())) {
     const auto& output = output_vals.at(i);
     const auto& input = input_vals.at(i);
     WelfordTriplet indexed_output;
@@ -942,6 +939,120 @@ std::vector<kir::Allocate*> IndexLowering::allocateWelfordWorkBuffer(
 
   return work_buffers;
 }
+
+namespace {
+
+// Returns true if a GroupedWelfordOp op is eligible for using the
+// outer-optimized grouped welford runtime function
+bool canUseOuterOptRuntimeKernel(const GroupedWelfordOp* grouped_wop) {
+  const auto out_tv = ir_utils::getTvOutput(grouped_wop);
+  const auto out_domain = out_tv->domain();
+
+  if (!out_domain->hasGridReduction()) {
+    return false;
+  }
+
+  // TIDx and BIDx must be used for non-reduction domains. TIDy and
+  // BIDy must be used for reduction domains.
+  ParallelTypeBitmap used_pts;
+  for (auto leaf_id : out_domain->domain()) {
+    auto pt = leaf_id->getParallelType();
+    if (isParallelTypeThread(pt)) {
+      used_pts.set(pt);
+      if ((leaf_id->isReduction() &&
+           (pt == ParallelType::BIDy || pt == ParallelType::TIDy)) ||
+          (leaf_id->getIterType() == IterType::Iteration &&
+           (pt == ParallelType::BIDx || pt == ParallelType::TIDx))) {
+        // valid pattern
+        continue;
+      } else {
+        return false;
+      }
+    }
+  }
+
+  ParallelTypeBitmap valid_pt_map;
+  valid_pt_map.set(ParallelType::BIDx);
+  valid_pt_map.set(ParallelType::BIDy);
+  valid_pt_map.set(ParallelType::TIDx);
+  valid_pt_map.set(ParallelType::TIDy);
+  if (used_pts != valid_pt_map) {
+    return false;
+  }
+
+  // TIDx and TIDy must be static constant
+  const auto& par_dim_map = GpuLower::current()->parallelDimensionMap();
+  auto tidx_val = par_dim_map.get(ParallelType::TIDx);
+  auto tidy_val = par_dim_map.get(ParallelType::TIDy);
+  if (!tidx_val->isConstInt() || !tidy_val->isConstInt()) {
+    return false;
+  }
+  auto tidx = static_cast<int>(tidx_val->evaluateInt());
+  auto tidy = static_cast<int>(tidy_val->evaluateInt());
+
+  // TIDz and BIDz must be unused or just 1. This contraint can be
+  // lifted if necessary.
+  auto tidz_val = par_dim_map.get(ParallelType::TIDz);
+  if (tidz_val != nullptr && !tidz_val->isOneInt()) {
+    return false;
+  }
+  auto bidz_val = par_dim_map.get(ParallelType::BIDz);
+  if (bidz_val != nullptr && !bidz_val->isOneInt()) {
+    return false;
+  }
+
+  // Warp reduction along threadIdx.y is a key factor for the
+  // outer-optimized kernel. The larger (32 / blockDim.x) is, the more
+  // effective. It shouldn't give any perf benefit when blockDim.x >=
+  // 32 as there's no warp reduction. blockDim.x == 16 is not
+  // preferable, but still would be better than the default
+  // implementation. blockDim.x == 8 is preferred.
+  if (tidx > 16) {
+    return false;
+  }
+
+  int num_grouped_iterations = 1;
+  for (auto axis : out_domain->domain()) {
+    if (axis->getParallelType() == ParallelType::Group) {
+      TORCH_INTERNAL_ASSERT(
+          axis->extent()->isConstInt(),
+          "Grouped IterDomain must have a static integer extent: ",
+          axis->extent()->toInlineString());
+      num_grouped_iterations *= axis->extent()->evaluateInt();
+    }
+  }
+
+  // Assumptions about TIDx/TIDy and group size
+  if (tidy % num_grouped_iterations != 0 || tidx > 32 || 32 % tidx != 0 ||
+      num_grouped_iterations < 32 / tidx) {
+    return false;
+  }
+
+  // Only considers the case where all outputs are local. This
+  // eliminates thread predicates
+  if (std::any_of(
+          grouped_wop->outputs().begin(),
+          grouped_wop->outputs().end(),
+          [](const Val* output) {
+            return !output->isA<TensorView>() ||
+                output->as<TensorView>()->getMemoryType() != MemoryType::Local;
+          })) {
+    return false;
+  }
+
+  // Must not be predicated. If the per-thread serial reduction is
+  // rfactored, the remaining block+grid reduction is not predicated.
+  if (!((grouped_wop->predicate()->hasValue() &&
+         grouped_wop->predicate()->value()) ||
+        GpuLower::current()->predicateElimination().canOmitPredicate(
+            grouped_wop))) {
+    return false;
+  }
+
+  return true;
+}
+
+} // namespace
 
 void IndexLowering::handleGroupedGridWelford(
     const GroupedWelfordOp* op,
@@ -1002,6 +1113,10 @@ void IndexLowering::handleGroupedGridWelford(
   const auto& thread_pred =
       GpuLower::current()->threadPredMap().getPredicatedParallelTypes(out_tv);
 
+  bool use_outer_opt =
+      !isOptionDisabled(DisableOption::GroupedGridWelfordOuterOpt) &&
+      canUseOuterOptRuntimeKernel(op);
+
   auto indexed_op = IrBuilder::create<kir::GroupedGridWelford>(
       output_vals,
       input_vals,
@@ -1012,7 +1127,8 @@ void IndexLowering::handleGroupedGridWelford(
       entrance_ind,
       n_entrances,
       work_buf_size_info.buffer_stride,
-      op->isAllreduce());
+      op->isAllreduce(),
+      use_outer_opt);
 
   indexed_op = indexed_op->withThreadPredicate(thread_pred);
 

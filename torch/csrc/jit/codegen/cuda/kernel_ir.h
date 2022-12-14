@@ -63,6 +63,10 @@ class TORCH_CUDA_CU_API Predicate final : public Val {
 
   explicit Predicate(IrBuilderPasskey passkey, const Predicate* other);
 
+  std::string toString(int indent_size = 0) const override;
+
+  std::string toInlineString(int indent_size = 0) const override;
+
   PredicateType predicate_type() const {
     return ptype_;
   }
@@ -131,18 +135,16 @@ class TORCH_CUDA_CU_API TensorIndex final : public Val {
   TensorIndex(
       IrBuilderPasskey,
       const TensorView* view,
-      std::vector<Val*> indices,
+      Val* index,
       Val* base_address = nullptr,
       Val* uniform_address = nullptr);
 
-  std::vector<Val*>::size_type nDims() const {
-    return indices_.size();
-  }
+  std::string toString(int indent_size = 0) const override;
 
-  Val* index(int i) const;
+  std::string toInlineString(int indent_size = 0) const override;
 
-  const std::vector<Val*>& indices() const {
-    return indices_;
+  Val* index() const {
+    return index_;
   }
 
   TensorView* view() const {
@@ -173,7 +175,7 @@ class TORCH_CUDA_CU_API TensorIndex final : public Val {
 
  private:
   const TensorView* view_ = nullptr;
-  std::vector<Val*> indices_;
+  Val* index_ = nullptr;
   Val* base_address_ = nullptr;
   Val* uniform_address_ = nullptr;
   bool use_smem_address_ = false;
@@ -709,6 +711,8 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
 
   Val* step() const;
 
+  Val* simplifiedStop() const;
+
   // [pre | vectorize | post] <= inner-most, merged root domain
   // shift_ is applied to vectorize and post sections.
   Val* vectorize_shift() const {
@@ -754,6 +758,9 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
   auto loopTransformInfo() const {
     return attribute(6)->as<Attribute<LoopTransformInfo>>()->value;
   }
+
+  //! True if loop is grouped reduction/welford
+  bool isGroup() const;
 
   //! Returns the stage of a double buffered iterdomain
   //!  that this for loop materializes.
@@ -1099,7 +1106,8 @@ class TORCH_CUDA_CU_API GroupedGridWelford final : public GroupedWelfordOp {
       Val* entrance_index,
       Val* entrances,
       Val* buffer_stride,
-      bool is_allreduce = false);
+      bool is_allreduce = false,
+      bool use_outer_opt = false);
 
   NVFUSER_DECLARE_CLONE_AND_CREATE
 
@@ -1166,6 +1174,15 @@ class TORCH_CUDA_CU_API GroupedGridWelford final : public GroupedWelfordOp {
     result->threadPredicate() = thread_predicate;
     return result;
   }
+
+  // True if the outer-optimized kernel should be used
+  bool useOuterOpt() const {
+    auto offset = numGroupedWelfordOpAttr() + 5 + outputs().size();
+    return attribute(offset)->as<Attribute<bool>>()->value;
+  }
+
+  //! Return the required smem buffer size
+  int getSmemBufferSize(int bdimx, int bdimy, int bdimz) const;
 };
 
 //! Represents a WelfordOp with the division by count is hoisted out

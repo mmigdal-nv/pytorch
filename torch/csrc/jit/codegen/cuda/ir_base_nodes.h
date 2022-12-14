@@ -165,8 +165,9 @@ class TORCH_CUDA_CU_API Statement : public NonCopyable, public PolymorphicBase {
 
   static bool lessThan(const Statement* stmt1, const Statement* stmt2);
 
-  virtual std::string toString() const;
-  virtual std::string toInlineString() const;
+  virtual std::string toString(int indent_size = 0) const;
+
+  virtual std::string toInlineString(int indent_size = 0) const;
 
   virtual Statement* clone(IrCloner* ir_cloner) const;
 
@@ -253,12 +254,12 @@ class TORCH_CUDA_CU_API Val : public Statement {
   // Returns if all dependencies are constant integers
   bool isConstInt() const;
 
-  bool isAnInt() const {
-    return isScalar() && dtype_ == DataType::Int;
+  bool isIntegralScalar() const {
+    return isScalar() && isIntegralType(dtype_);
   }
 
-  bool isADouble() const {
-    return isScalar() && dtype_ == DataType::Double;
+  bool isFloatingPointScalar() const {
+    return isScalar() && isFloatingPointType(dtype_);
   }
 
   bool isABool() const {
@@ -343,12 +344,7 @@ class TORCH_CUDA_CU_API Val : public Statement {
         getDataType() == other->as<Val>()->getDataType();
   }
 
-  // TODO: Make this more sophisticated. A value being the same as another value
-  // should be evaluated based on the DAG that created it, and that DAGs leaf
-  // nodes
-  bool sameAs(const Statement* other) const override {
-    return this == other;
-  }
+  bool sameAs(const Statement* other) const override;
 
   void setEvaluatorIndex(int to) {
     TORCH_INTERNAL_ASSERT(evaluator_index_ == -1);
@@ -437,7 +433,11 @@ class TORCH_CUDA_CU_API Attribute : public Val {
     return false;
   }
 
-  virtual std::string toString() const override {
+  virtual std::string toString(int) const override {
+    return Printer<T>::toString(value);
+  }
+
+  virtual std::string toInlineString(int) const override {
     return Printer<T>::toString(value);
   }
 };
@@ -592,11 +592,11 @@ class TORCH_CUDA_CU_API Expr : public Statement {
     return ExprPasskey();
   }
 
+  std::vector<Statement*> attributes_;
+
  private:
   std::vector<Val*> inputs_;
   std::vector<Val*> outputs_;
-  std::vector<Statement*> attributes_;
-
   kir::Predicate* predicate_ = nullptr;
 
   // Only used for reduction-related expressions

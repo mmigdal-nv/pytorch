@@ -116,18 +116,19 @@ c10::optional<EvaluatorValue> ExpressionEvaluator::evaluate(const Val* value) {
 
 c10::optional<EvaluatorValue> ExpressionEvaluator::getValue(const Val* value) {
   TORCH_INTERNAL_ASSERT(
-      value->isAnInt() || value->isADouble() || value->isABool(),
-      value->toString(),
+      value->isIntegralScalar() || value->isFloatingPointScalar() ||
+          value->isABool(),
+      value->toInlineString(),
       " is not a supported type in expression evaluation.");
 
   if (value->isScalar() && value->isConst()) {
-    if (value->isADouble()) {
+    if (value->isFloatingPointScalar()) {
       return toOptionalEvaluatorValue(value->as<Double>()->value());
     }
     if (value->isABool()) {
       return toOptionalEvaluatorValue(value->as<Bool>()->value());
     }
-    if (value->isAnInt()) {
+    if (value->isIntegralScalar()) {
       return toOptionalEvaluatorValue(value->as<Int>()->value());
     }
     TORCH_INTERNAL_ASSERT(
@@ -178,14 +179,17 @@ void ExpressionEvaluator::handle(const UnaryOp* uop) {
         known_values_[uop->out()] = *in;
         break;
       case UnaryOpType::Cast:
-        if (uop->out()->getDataType() == DataType::Int) {
+        if (isIntegralType(*uop->out()->getDataType())) {
           known_values_[uop->out()] = EvaluatorValue(in->cast<int64_t>());
-        } else if (uop->out()->getDataType() == DataType::Double) {
+        } else if (isFloatingPointType(*uop->out()->getDataType())) {
           known_values_[uop->out()] = EvaluatorValue(in->cast<double>());
         } else if (uop->out()->getDataType() == DataType::Bool) {
           known_values_[uop->out()] = EvaluatorValue(in->cast<bool>());
         } else {
-          TORCH_INTERNAL_ASSERT(false, "dtype not supported in evaluator");
+          TORCH_INTERNAL_ASSERT(
+              false,
+              "dtype not supported in evaluator: ",
+              *uop->out()->getDataType());
         }
         break;
       case UnaryOpType::Abs:

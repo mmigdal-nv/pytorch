@@ -17,6 +17,7 @@
 
 #include <c10/util/CallOnce.h>
 
+#include <complex>
 #include <unordered_map>
 #include <utility>
 
@@ -1540,7 +1541,22 @@ class IrParser {
               value_map.emplace(
                   node->output()->unique(), ValueHolder(out, format));
             },
-            isInputNonSizeZeroTensor,
+            [](const Node* node) -> bool {
+              if (auto tensor_type =
+                      node->inputs()[0]->type()->cast<TensorType>()) {
+                // index_select doesn't support 0-dim tensors
+                if (tensor_type->dim() == 0) {
+                  return false;
+                }
+              }
+              for (const auto& val : node->inputs()) {
+                auto tensor_type = val->type()->cast<TensorType>();
+                if (tensor_type && is_zero_sized_tensor(tensor_type)) {
+                  return false;
+                }
+              }
+              return true;
+            },
             nullptr);
       }
     }
@@ -3559,7 +3575,8 @@ class IrParser {
             static_cast<c10::TypePtr>(ComplexType::get()))) {
       CgValue cg_val = nullptr;
       if (auto ival = constant_as<c10::complex<double>>(val)) {
-        cg_val = IrBuilder::create<ComplexDouble>(ival.value());
+        cg_val = IrBuilder::create<ComplexDouble>(
+            static_cast<std::complex<double>>(ival.value()));
       } else {
         cg_val = IrBuilder::create<ComplexDouble>();
       }

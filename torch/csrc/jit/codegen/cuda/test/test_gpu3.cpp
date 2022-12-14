@@ -1413,8 +1413,8 @@ TEST_F(NVFuserTest, FusionCodegenAllocatedScalars_CUDA) {
       ks1, MemoryType::Local, kernel->oneVal());
 
   auto tk0 = kernel->inputs()[0]->as<TensorView>();
-  auto tki0 = IrBuilder::create<kir::TensorIndex>(tk0, std::vector<Val*>{ks0});
-  auto tki1 = IrBuilder::create<kir::TensorIndex>(tk0, std::vector<Val*>{ks1});
+  auto tki0 = IrBuilder::create<kir::TensorIndex>(tk0, ks0);
+  auto tki1 = IrBuilder::create<kir::TensorIndex>(tk0, ks1);
   auto tk0_expr = IrBuilder::create<UnaryOp>(UnaryOpType::Set, tki0, tki1);
 
   // Insert the scalar expression and the allocation of the
@@ -1544,7 +1544,8 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
         auto out_ti = arith_expr->outputs()[0]->as<kir::TensorIndex>();
         if (out_ti->view()->name() == 1) {
           // Ref: T1[*, hoisted_index] = T0[*, hoisted_index * T0.stride];
-          auto t1_index = out_ti->index(1);
+          auto t1_index =
+              out_ti->index()->definition()->as<BinaryOp>()->input(1);
           TORCH_CHECK(
               t1_index == hoisted_index,
               "Invalid index: ",
@@ -1561,7 +1562,7 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
           auto in0 = arith_expr->inputs().front()->as<kir::TensorIndex>();
           TORCH_CHECK(in0->view()->name() == 0);
           // hoisted_index * T0.stride[1]
-          auto t0_index = in0->index(1);
+          auto t0_index = in0->index()->definition()->as<BinaryOp>()->input(1);
           TORCH_CHECK(
               is_index_times_ns(t0_index, hoisted_index, "T0.stride[1]"),
               "Invalid index: ",
@@ -1570,7 +1571,8 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
               expr->toString());
         } else if (out_ti->view()->name() == 2) {
           // Ref: T3[*, hoisted_index] = T2[*, hoisted_index];
-          auto out_index = out_ti->index(1);
+          auto out_index =
+              out_ti->index()->definition()->as<BinaryOp>()->input(1);
           TORCH_CHECK(
               out_index == hoisted_index,
               "Invalid index: ",
@@ -1587,7 +1589,7 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
           TORCH_CHECK(arith_expr->inputs().size() == 1);
           auto in0 = arith_expr->inputs().front()->as<kir::TensorIndex>();
           TORCH_CHECK(in0->view()->name() == 1);
-          auto in0_index = in0->index(1);
+          auto in0_index = in0->index()->definition()->as<BinaryOp>()->input(1);
           TORCH_CHECK(
               in0_index == hoisted_index,
               "Invalid index: ",
@@ -1596,7 +1598,7 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
               expr->toString());
         } else if (out_ti->view()->name() == 3) {
           // Ref: T3[hoisted_index] = T2[hoisted_index];
-          auto out_index = out_ti->index(0);
+          auto out_index = out_ti->index();
           TORCH_CHECK(
               out_index == hoisted_index,
               "Invalid index: ",
@@ -1613,7 +1615,7 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
           TORCH_CHECK(arith_expr->inputs().size() == 1);
           auto in0 = arith_expr->inputs().front()->as<kir::TensorIndex>();
           TORCH_CHECK(in0->view()->name() == 2);
-          auto in0_index = in0->index(0);
+          auto in0_index = in0->index();
           TORCH_CHECK(
               in0_index == hoisted_index,
               "Invalid index: ",
@@ -1632,7 +1634,7 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
           TORCH_CHECK(arith_expr->inputs().size() == 1);
           auto in0 = arith_expr->inputs().front()->as<kir::TensorIndex>();
           TORCH_CHECK(in0->view()->name() == 3);
-          auto in0_index = in0->index(0);
+          auto in0_index = in0->index();
           TORCH_CHECK(
               in0_index == hoisted_index,
               "Invalid index: ",
@@ -1641,7 +1643,7 @@ TEST_F(NVFuserTest, FusionIndexHoist1_CUDA) {
               expr->toString());
         } else if (out_ti->view()->name() == 5) {
           // Ref: T5[hoisted_index] = T4[0]
-          auto out_index = out_ti->index(0);
+          auto out_index = out_ti->index();
           TORCH_CHECK(
               out_index == hoisted_index,
               "Invalid index: ",
@@ -1718,6 +1720,64 @@ TEST_F(NVFuserTest, FusionIndexHoist2_CUDA) {
   auto ref = t0 + t1;
 
   testValidate(&fusion, cg_outputs, {t0, t1}, {ref}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionIndexHoist3_CUDA) {
+  if (isOptionDisabled(DisableOption::IndexHoist)) {
+    GTEST_SKIP() << "Index hoisting disabled";
+  }
+  auto fusion = std::make_unique<Fusion>();
+  FusionGuard fg(fusion.get());
+
+  auto input = makeContigTensor(2);
+  fusion->addInput(input);
+  auto sin_input = sin(input);
+  auto numel = mul(input->axis(0)->extent(), input->axis(1)->extent());
+  auto output = add(sin_input, numel);
+  fusion->addOutput(output);
+
+  for (auto tv : {output, sin_input}) {
+    tv->merge(0);
+    tv->split(0, 256);
+    tv->axis(0)->parallelize(ParallelType::BIDx);
+    tv->axis(1)->parallelize(ParallelType::TIDx);
+  }
+  inlineMost();
+
+  const auto options = at::TensorOptions().dtype(kFloat).device(at::kCUDA, 0);
+  at::Tensor t0 = at::arange(10000, options).view({100, 100});
+  at::Tensor t1 = t0.sin() + 10000;
+
+  FusionExecutor fe;
+  fe.compileFusion(fusion.get(), {t0});
+  auto cg_outputs = fe.runFusion({t0});
+
+  const std::string expected_kernel = R"(
+__global__ void CUDAGeneratedKernel(Tensor<float, 2> T0, Tensor<float, 2> T2) {
+  int64_t i38;
+  i38 = (256 * ((nvfuser_index_t)blockIdx.x)) + ((nvfuser_index_t)threadIdx.x);
+  int64_t i7;
+  i7 = T0.size[0] * T0.size[1];
+  bool b71;
+  b71 = i38 < i7;
+  float f8;
+  f8 = (float)(i7);
+  float T1[1];
+  if (b71) {
+    T1[0]
+       = sinf(T0[i38]);
+  }
+  if (b71) {
+    T2[i38]
+      = T1[0]
+      + f8;
+  }
+}
+)";
+
+  assertCUDAKernel(fusion.get(), expected_kernel);
+
+  testValidate(fusion.get(), cg_outputs, {t0}, {t1}, __LINE__, __FILE__);
 }
 
 TEST_F(NVFuserTest, FusionTestGridComm_CUDA) {
@@ -7348,6 +7408,47 @@ TEST_F(NVFuserTest, FusionSimpleInterleaving1_CUDA) {
   auto cg_outputs = fe.runFusion({t0});
 
   testValidate(&fusion, cg_outputs, {t0}, {t0}, __LINE__, __FILE__);
+}
+
+TEST_F(NVFuserTest, FusionRepro2241_CUDA) {
+  std::unique_ptr<Fusion> fusion_ptr = std::make_unique<Fusion>();
+  auto fusion = fusion_ptr.get();
+  FusionGuard fg(fusion);
+
+  {
+    TensorView* t6 = makeContigConcreteTensor({1}, DataType::Int);
+    TensorView* t15 = makeContigConcreteTensor({3, 2, 1, 2}, DataType::Double);
+    TensorView* t20 = makeContigConcreteTensor({1, 1, 1, 1}, DataType::Int);
+    fusion->addInput(t6);
+    fusion->addInput(t15);
+    fusion->addInput(t20);
+    auto sample_total = sum(t15, {0, 1, 2, 3}, true);
+    auto sample_mean = div(sample_total, t20);
+    auto x = sub(t15, sample_mean);
+    auto input = mul(x, x);
+    auto total = sum(input, {0, 1, 2, 3});
+    auto t7 = div(total, t6);
+    fusion->addOutput(t7);
+  }
+
+  FusionExecutorCache fec(std::move(fusion_ptr));
+
+  auto options = at::TensorOptions().device(at::kCUDA, 0);
+  at::Tensor t6 = at::tensor({15}, options.dtype(kLong));
+  at::Tensor t15 = at::randn({3, 2, 1, 2}, options.dtype(kDouble));
+  at::Tensor t20 = at::tensor({12}, options.dtype(kLong)).expand({1, 1, 1, 1});
+
+  auto cg_outputs = fec.runFusionWithInputs({t6, t15, t20});
+
+  auto sample_total = at::sum(t15, {0, 1, 2, 3}, true);
+  auto sample_mean = at::div(sample_total, t20);
+  auto x = at::sub(t15, sample_mean);
+  auto input = at::mul(x, x);
+  auto total = at::sum(input, {0, 1, 2, 3}, false);
+  auto t7 = at::div(total, t6);
+
+  testValidate(
+      fec.fusion(), cg_outputs, {t6, t15, t20}, {t7}, __LINE__, __FILE__);
 }
 
 // Test file size should be up to 10K LoC. Create a new file for more tests.

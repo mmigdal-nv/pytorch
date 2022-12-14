@@ -281,6 +281,9 @@ bool useDirectSmemAddress(const TensorView* tv);
 //!  used in thread indexing, i.e. thhreadIdx and blockDim.
 bool dependsOnThreadNamedScalars(Val* val);
 
+//! Test if an expression is a scalar expression.
+bool isScalarExpr(Expr* expr);
+
 } // namespace lower_utils
 
 } // namespace cuda

@@ -226,7 +226,8 @@ void FusionExecutor::debugCompileFusionFromStr(
 void FusionExecutor::compileFusion(
     Fusion* fusion,
     const KernelArgumentHolder& args,
-    const LaunchParams& launch_constraints) {
+    const LaunchParams& launch_constraints,
+    const int maxrregcount) {
   FUSER_PERF_SCOPE("compileFusion");
 
   TORCH_INTERNAL_ASSERT(
@@ -373,11 +374,13 @@ void FusionExecutor::compileFusion(
   block_size_high_water_mark = std::max<int64_t>(
       (block_size.has_value() ? block_size.value() : 1),
       block_size_high_water_mark);
+  maxrregcount_high_water_mark = maxrregcount;
   std::tie(compiled_kernel_, last_compiler_log_) = executor_utils::nvrtcCompile(
       structured_code,
       (kernelNamespace() + "::" + kernelName()).c_str(),
       fusion_id_,
-      block_size);
+      block_size,
+      maxrregcount_high_water_mark);
   TORCH_INTERNAL_ASSERT(
       fusion_id_ > 0, "failed to assign a fusion_id_ after compilation.");
 
@@ -742,6 +745,13 @@ LaunchParams FusionExecutor::computeLaunchParams(
     reduction_broadcast_workspace =
         dataTypeSize(kernel_summary.largest_smem_data_type) * welford_factor *
         launch_params.bdimx() * launch_params.bdimy() * launch_params.bdimz();
+
+    if (kernel_summary.has_outer_grouped_grid_welford) {
+      reduction_broadcast_workspace = std::max(
+          reduction_broadcast_workspace,
+          (uint64_t)
+              kernel_summary.outer_grouped_grid_welford_largest_smem_size);
+    }
   }
 
   // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
@@ -990,6 +1000,7 @@ KernelArgumentHolder FusionExecutor::inferOutputSizes(
 std::vector<at::Tensor> FusionExecutor::runFusion(
     KernelArgumentHolder& args,
     const LaunchParams& launch_constraints,
+    const int maxrregcount,
     const std::vector<at::Tensor>& outputs) {
   FUSER_PERF_SCOPE("FusionExecutor::RunFusion");
   TORCH_INTERNAL_ASSERT(compiled());
@@ -1013,6 +1024,7 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
                 << " (strides = " << output.strides() << ")" << std::endl;
     }
     std::cout << launch_constraints.toString();
+    std::cout << "maxrregcount= " << maxrregcount << std::endl;
   }
 
   ExecutorEntry* executor_entry = nullptr;
@@ -1119,18 +1131,22 @@ std::vector<at::Tensor> FusionExecutor::runFusion(
         computeLaunchParams(launch_constraints, expr_eval, warp_size_);
 
     // Recompile the kernel if the number of threads in the block has increased
-    if (launch_params_.nThreads() > block_size_high_water_mark) {
+    // or maxrregcount has changed
+    if (launch_params_.nThreads() > block_size_high_water_mark ||
+        maxrregcount != maxrregcount_high_water_mark) {
       const auto kernel = lowered_->kernel();
       kernel_code_ = codegen::generateCudaKernel(kernel, kernelName());
       const auto structured_code = getStructuredCode(kernel_code_);
       block_size_high_water_mark = launch_params_.nThreads();
+      maxrregcount_high_water_mark = maxrregcount;
 
       std::tie(compiled_kernel_, last_compiler_log_) =
           executor_utils::nvrtcCompile(
               structured_code,
               (kernelNamespace() + "::" + kernelName()).c_str(),
               fusion_id_,
-              block_size_high_water_mark);
+              block_size_high_water_mark,
+              maxrregcount_high_water_mark);
     }
 
     if (kernel()->summary().has_cooperative_grid_reduction) {

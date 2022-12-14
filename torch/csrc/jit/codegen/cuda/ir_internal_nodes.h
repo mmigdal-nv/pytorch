@@ -34,16 +34,12 @@ class TORCH_CUDA_CU_API FullOp : public Expr {
  public:
   using Expr::Expr;
 
-  FullOp(IrBuilderPasskey, Val* out, Val* fill_value, DataType dtype);
+  FullOp(IrBuilderPasskey, Val* out, Val* fill_value);
 
   NVFUSER_DECLARE_CLONE_AND_CREATE
 
   virtual const char* getOpString() const override {
     return "FullOp";
-  }
-
-  DataType dtype() const {
-    return attribute(0)->as<Attribute<DataType>>()->value;
   }
 
   Val* getFillValue() const {
@@ -113,8 +109,7 @@ class TORCH_CUDA_CU_API ARangeOp : public Expr {
       Val* start,
       Val* end,
       Val* step,
-      DataType dtype,
-      Val* linear_index = nullptr);
+      DataType dtype);
 
   NVFUSER_DECLARE_CLONE_AND_CREATE
 
@@ -136,10 +131,6 @@ class TORCH_CUDA_CU_API ARangeOp : public Expr {
 
   Val* step() const {
     return input(2);
-  }
-
-  Val* getLinearLogicalIndex() const {
-    return attributeVal(1);
   }
 };
 
@@ -165,12 +156,7 @@ class TORCH_CUDA_CU_API EyeOp : public Expr {
  public:
   using Expr::Expr;
 
-  EyeOp(
-      IrBuilderPasskey,
-      Val* out,
-      DataType dtype,
-      Val* index1 = nullptr,
-      Val* index2 = nullptr);
+  EyeOp(IrBuilderPasskey, Val* out, DataType dtype);
 
   NVFUSER_DECLARE_CLONE_AND_CREATE
 
@@ -180,14 +166,6 @@ class TORCH_CUDA_CU_API EyeOp : public Expr {
 
   DataType dtype() const {
     return attribute(0)->as<Attribute<DataType>>()->value;
-  }
-
-  Val* getIndex1() const {
-    return attributeVal(1);
-  }
-
-  Val* getIndex2() const {
-    return attributeVal(2);
   }
 };
 
@@ -513,12 +491,12 @@ class TORCH_CUDA_CU_API GroupedReductionOp : public Expr {
 
   //! Number of expressions grouped horizontally. It does not reflect
   //! iteration grouping.
-  size_t numExprs() const {
+  size_t numHorizontallyGroupedExprs() const {
     return getReductionOpTypes().size();
   }
 
   std::vector<Val*> initVals() const {
-    auto size = numExprs();
+    auto size = numHorizontallyGroupedExprs();
     std::vector<Val*> result;
     result.reserve(size);
     for (auto i : c10::irange(2, 2 + size)) {
@@ -795,7 +773,7 @@ class TORCH_CUDA_CU_API GroupedWelfordOp : public Expr {
   //! Number of expressions grouped horizontally. It does not reflect
   //! iteration grouping. As horizontal grouping is not supported,
   //! this always returns 1.
-  size_t numExprs() const {
+  size_t numHorizontallyGroupedExprs() const {
     return 1;
   }
 
@@ -1280,6 +1258,10 @@ class TORCH_CUDA_CU_API IterDomain : public Val {
 
   bool sameAs(const Statement* other) const override;
 
+  std::string toString(int indent_size = 0) const override;
+
+  std::string toInlineString(int indent_size = 0) const override;
+
   //! Returns a new IterDomain matching properties of this
   //!
   //! This does NOT copy the is_rfactor_domain flag.
@@ -1601,6 +1583,10 @@ class TORCH_CUDA_CU_API TensorDomain : public Val {
   static bool sameAs(
       const std::vector<IterDomain*>& lhs,
       const std::vector<IterDomain*>& rhs);
+
+  std::string toString(int indent_size = 0) const override;
+
+  std::string toInlineString(int indent_size = 0) const override;
 
   const std::vector<IterDomain*>& domain() const {
     return domain_;
@@ -1976,6 +1962,14 @@ class TORCH_CUDA_CU_API NamedScalar : public Val {
   }
 
   bool sameAs(const Statement* other) const override;
+
+  std::string toString(int indent_size = 0) const override {
+    return name_;
+  }
+
+  std::string toInlineString(int indent_size = 0) const override {
+    return name_;
+  }
 
   //! Return the named scalar extent of a parallel dimension (e.g. blockDim.x)
   //! WARNING: Only works with Fusion container at the moment

@@ -77,7 +77,7 @@ Val* simplifiedInt(Val* val) {
 Val* promoteSize(Val* v1, Val* v2) {
   if (v1 == nullptr) {
     TORCH_INTERNAL_ASSERT(
-        v2 == nullptr || v2->isAnInt(),
+        v2 == nullptr || v2->isIntegralScalar(),
         "Expecting Int's only in this routine.");
     return v2;
   }
@@ -85,7 +85,8 @@ Val* promoteSize(Val* v1, Val* v2) {
     return v1;
   }
   TORCH_INTERNAL_ASSERT(
-      v1->isAnInt() && v2->isAnInt(), "Expecting Int's only in this routine.");
+      v1->isIntegralScalar() && v2->isIntegralScalar(),
+      "Expecting Int's only in this routine.");
 
   if (!v1->isConstInt() && !v2->isConstInt()) {
     return v1;
@@ -124,6 +125,8 @@ Val* newScalar(ValType vtype, DataType dtype) {
           return IrBuilder::create<Double>(DataType::Double);
         case DataType::Int32:
           return IrBuilder::create<Int>(DataType::Int32);
+        case DataType::Index:
+          return IrBuilder::create<Int>(DataType::Index);
         case DataType::Int:
           return IrBuilder::create<Int>(DataType::Int);
         case DataType::ComplexFloat:
@@ -620,6 +623,9 @@ TensorView* full(
     const std::vector<Val*>& shape,
     Val* fill_value,
     DataType dtype) {
+  if (fill_value->getDataType() != dtype) {
+    fill_value = castOp(dtype, fill_value);
+  }
   auto n = shape.size();
   auto out = TensorViewBuilder()
                  .ndims(n)
@@ -627,7 +633,7 @@ TensorView* full(
                  .contiguity(std::vector<bool>(n, true))
                  .shape(shape)
                  .build();
-  IrBuilder::create<FullOp>(out, fill_value, dtype);
+  IrBuilder::create<FullOp>(out, fill_value);
   return out;
 }
 
@@ -683,17 +689,32 @@ TensorView* arange(Val* start, Val* end, DataType dtype) {
 
 TensorView* arange(Val* start, Val* end, Val* step, DataType dtype) {
   if (isIntegralType(dtype)) {
-    start = castOp(DataType::Int, start);
-    end = castOp(DataType::Int, end);
-    step = castOp(DataType::Int, step);
+    if (start->getDataType() != DataType::Int) {
+      start = castOp(DataType::Int, start);
+    }
+    if (end->getDataType() != DataType::Int) {
+      end = castOp(DataType::Int, end);
+    }
+    if (step->getDataType() != DataType::Int) {
+      step = castOp(DataType::Int, step);
+    }
   } else if (isFloatingPointType(dtype)) {
-    start = castOp(DataType::Double, start);
-    end = castOp(DataType::Double, end);
-    step = castOp(DataType::Double, step);
+    if (start->getDataType() != DataType::Double) {
+      start = castOp(DataType::Double, start);
+    }
+    if (end->getDataType() != DataType::Double) {
+      end = castOp(DataType::Double, end);
+    }
+    if (step->getDataType() != DataType::Double) {
+      step = castOp(DataType::Double, step);
+    }
   }
   // Make sure no negative value is passed to ceilDiv as the device
   // implementation of ceilDiv assumes positive inputs
-  auto size = castOp(DataType::Int, ceilDiv(abs(sub(end, start)), abs(step)));
+  auto size = ceilDiv(abs(sub(end, start)), abs(step));
+  if (size->getDataType() != DataType::Int) {
+    size = castOp(DataType::Int, size);
+  }
   auto out = TensorViewBuilder()
                  .ndims(1)
                  .dtype(dtype)
@@ -1394,9 +1415,12 @@ TensorView* maybeFullInsteadOfReduction(
       TensorDomain* td = IrBuilder::create<TensorDomain>(
           new_root, TensorDomain::getContiguousContiguity(new_root));
 
-      dtype = dtype == DataType::Null ? tv->getDataType().value() : dtype;
+      dtype = (dtype == DataType::Null ? tv->getDataType().value() : dtype);
       auto output = IrBuilder::create<TensorView>(td, dtype);
-      IrBuilder::create<FullOp>(output, init, dtype);
+      if (init->getDataType() != dtype) {
+        init = castOp(dtype, init);
+      }
+      IrBuilder::create<FullOp>(output, init);
       return output;
     }
   }
@@ -1513,7 +1537,7 @@ TensorView* sum(
   if (isFloatingPointType(v1_dtype)) {
     init = IrBuilder::create<Double>(0.0);
   } else if (isComplexType(v1_dtype)) {
-    init = IrBuilder::create<ComplexDouble>(c10::complex<double>(0.0, 0.0));
+    init = IrBuilder::create<ComplexDouble>(std::complex<double>(0.0, 0.0));
   } else if (isIntegralType(v1_dtype)) {
     init = FusionGuard::getCurFusion()->zeroVal();
   } else if (isBooleanType(v1_dtype)) {
