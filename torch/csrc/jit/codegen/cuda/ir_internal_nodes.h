@@ -42,6 +42,9 @@ class TORCH_CUDA_CU_API FullOp : public Expr {
     return "FullOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* getFillValue() const {
     return inputs().back();
   }
@@ -63,6 +66,9 @@ class TORCH_CUDA_CU_API SelectOp : public Expr {
   virtual const char* getOpString() const override {
     return "SelectOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   IterDomain* getSelectAxis() const {
     return attribute(0)->as<IterDomain>();
@@ -91,6 +97,9 @@ class TORCH_CUDA_CU_API IndexSelectOp : public Expr {
     return "IndexSelectOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   IterDomain* getSelectAxis() const {
     return attribute(0)->as<IterDomain>();
   }
@@ -116,6 +125,9 @@ class TORCH_CUDA_CU_API ARangeOp : public Expr {
   virtual const char* getOpString() const override {
     return "ARangeOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   DataType dtype() const {
     return attribute(0)->as<Attribute<DataType>>()->value;
@@ -164,6 +176,9 @@ class TORCH_CUDA_CU_API EyeOp : public Expr {
     return "EyeOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   DataType dtype() const {
     return attribute(0)->as<Attribute<DataType>>()->value;
   }
@@ -187,6 +202,12 @@ class TORCH_CUDA_CU_API UnaryOp : public Expr {
     return "UnaryOp";
   }
 
+  virtual std::vector<EvaluatorValue> evaluate(
+      const std::vector<EvaluatorValue>& inputs) const override;
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -197,6 +218,9 @@ class TORCH_CUDA_CU_API UnaryOp : public Expr {
   UnaryOpType getUnaryOpType() const {
     return attribute(0)->as<Attribute<UnaryOpType>>()->value;
   }
+
+ private:
+  void printHelper(std::stringstream& ss, std::string input) const;
 };
 
 //! A specialization for Binary operations. Binary operations take in two inputs
@@ -215,6 +239,12 @@ class TORCH_CUDA_CU_API BinaryOp : public Expr {
     return "BinaryOp";
   }
 
+  virtual std::vector<EvaluatorValue> evaluate(
+      const std::vector<EvaluatorValue>& inputs) const override;
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -228,6 +258,13 @@ class TORCH_CUDA_CU_API BinaryOp : public Expr {
   BinaryOpType getBinaryOpType() const {
     return attribute(0)->as<Attribute<BinaryOpType>>()->value;
   }
+
+ private:
+  void printHelper(
+      std::stringstream& ss,
+      int indent_size,
+      std::string lhs,
+      std::string rhs) const;
 };
 
 class TORCH_CUDA_CU_API TernaryOp : public Expr {
@@ -248,6 +285,12 @@ class TORCH_CUDA_CU_API TernaryOp : public Expr {
     return "TernaryOp";
   }
 
+  virtual std::vector<EvaluatorValue> evaluate(
+      const std::vector<EvaluatorValue>& inputs) const override;
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -265,6 +308,14 @@ class TORCH_CUDA_CU_API TernaryOp : public Expr {
   TernaryOpType getTernaryOpType() const {
     return attribute(0)->as<Attribute<TernaryOpType>>()->value;
   }
+
+ private:
+  void printHelper(
+      std::stringstream& ss,
+      int indent_size,
+      std::string in1,
+      std::string in2,
+      std::string in3) const;
 };
 
 //! A specialization for random number generator (RNG) operations. RNG
@@ -302,6 +353,9 @@ class TORCH_CUDA_CU_API RNGOp : public Expr {
   virtual const char* getOpString() const override {
     return "RNGOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   RNGOpType getRNGOpType() const {
     return attribute(0)->as<Attribute<Attributes>>()->value.rtype;
@@ -357,6 +411,9 @@ class TORCH_CUDA_CU_API BroadcastOp : public Expr {
     return "BroadcastOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -400,6 +457,9 @@ class TORCH_CUDA_CU_API SqueezeOp : public Expr {
   virtual const char* getOpString() const override {
     return "SqueezeOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   Val* out() const {
     return output(0);
@@ -446,6 +506,9 @@ class TORCH_CUDA_CU_API ReductionOp : public Expr {
     return "ReductionOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -488,6 +551,9 @@ class TORCH_CUDA_CU_API GroupedReductionOp : public Expr {
   virtual const char* getOpString() const override {
     return "GroupedReductionOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   //! Number of expressions grouped horizontally. It does not reflect
   //! iteration grouping.
@@ -678,6 +744,9 @@ class TORCH_CUDA_CU_API WelfordOp : public Expr {
     return "WelfordOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return outputTriplet().avg();
   }
@@ -769,6 +838,9 @@ class TORCH_CUDA_CU_API GroupedWelfordOp : public Expr {
   virtual const char* getOpString() const override {
     return "GroupedWelfordOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   //! Number of expressions grouped horizontally. It does not reflect
   //! iteration grouping. As horizontal grouping is not supported,
@@ -908,6 +980,9 @@ class TORCH_CUDA_CU_API MmaOp : public Expr {
     return "MmaOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -951,6 +1026,9 @@ class TORCH_CUDA_CU_API TransposeOp : public Expr {
     return "TransposeOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   TensorView* out() const {
     return output(0)->as<TensorView>();
   }
@@ -981,6 +1059,9 @@ class TORCH_CUDA_CU_API ExpandOp : public Expr {
   virtual const char* getOpString() const override {
     return "ExpandOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   TensorView* out() const {
     return output(0)->as<TensorView>();
@@ -1015,6 +1096,9 @@ class TORCH_CUDA_CU_API ShiftOp : public Expr {
   virtual const char* getOpString() const override {
     return "ShiftOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   Val* out() const {
     return output(0);
@@ -1062,6 +1146,9 @@ class TORCH_CUDA_CU_API GatherOp : public Expr {
     return "GatherOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -1106,6 +1193,9 @@ class TORCH_CUDA_CU_API ViewAsScalar : public Expr {
     return "ViewAsScalar";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -1137,6 +1227,9 @@ class TORCH_CUDA_CU_API ViewOp : public Expr {
     return "ViewOp";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* out() const {
     return output(0);
   }
@@ -1163,6 +1256,9 @@ class TORCH_CUDA_CU_API LoadStoreOp : public Expr {
   virtual const char* getOpString() const override {
     return "LoadStoreOp";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   Val* out() const {
     return output(0);
@@ -1784,6 +1880,9 @@ class TORCH_CUDA_CU_API Split : public Expr {
     return "Split";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   IterDomain* outer() const {
     return output(0)->as<IterDomain>();
   }
@@ -1839,6 +1938,9 @@ class TORCH_CUDA_CU_API Merge : public Expr {
     return "Merge";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   IterDomain* out() const {
     return output(0)->as<IterDomain>();
   }
@@ -1869,6 +1971,9 @@ class TORCH_CUDA_CU_API Swizzle2D : public Expr {
   virtual const char* getOpString() const override {
     return "Swizzle2D";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   // Output iterdomain pair corresponding
   //  to the original input iterdomain pair.

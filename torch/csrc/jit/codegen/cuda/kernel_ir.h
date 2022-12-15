@@ -216,6 +216,9 @@ class TORCH_CUDA_CU_API Allocate final : public Expr {
 
   NVFUSER_DECLARE_CLONE_AND_CREATE
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* buffer() const {
     return attributeVal(0);
   }
@@ -272,6 +275,10 @@ class TORCH_CUDA_CU_API BlockSync final : public Expr {
     attribute(1)->as<Attribute<bool>>()->value = true;
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
+  // TODO: war_sync_ is only used for testing/validation purposes.
   bool isWarHazardSync() const {
     return attribute(0)->as<Attribute<bool>>()->value;
   }
@@ -302,6 +309,9 @@ class TORCH_CUDA_CU_API GridSync final : public Expr {
     return "GridSync";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   ParallelTypeBitmap syncDims() const {
     return attribute(0)->as<Attribute<ParallelTypeBitmap>>()->value;
   }
@@ -324,6 +334,9 @@ class TORCH_CUDA_CU_API CpAsyncWait final : public Expr {
     return "CpAsyncWait";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   //! Returns the remaining number of stages that are not synchronized
   //!  after this op.
   unsigned int keepStages() const {
@@ -345,6 +358,9 @@ class TORCH_CUDA_CU_API CpAsyncCommit final : public Expr {
   virtual const char* getOpString() const override {
     return "CpAsyncCommit";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 };
 
 //! An Expression type that handles pre-computation of memory address
@@ -504,6 +520,9 @@ class TORCH_CUDA_CU_API InitMagicZero final : public Expr {
   virtual const char* getOpString() const override {
     return "InitMagicZero";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 };
 
 // Simply prints "UPDATE_MAGIC_ZERO" in the code in accordance with magic_zero
@@ -519,12 +538,17 @@ class TORCH_CUDA_CU_API UpdateMagicZero final : public Expr {
   virtual const char* getOpString() const override {
     return "UpdateMagicZero";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 };
 
 // TODO(kir): promote to IR node
 class TORCH_CUDA_CU_API Scope {
  public:
   explicit Scope(Expr* owner) : owner_(owner) {}
+
+  std::string toString(int indent_size = 0) const;
 
   const std::vector<Expr*>& exprs() const {
     return exprs_;
@@ -701,6 +725,9 @@ class TORCH_CUDA_CU_API ForLoop final : public Expr {
     return "ForLoop";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Val* index() const {
     return input(0);
   }
@@ -802,6 +829,9 @@ class TORCH_CUDA_CU_API IfThenElse final : public Expr {
     return "IfThenElse";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   Scope& thenBody() {
     return attribute(0)->as<Attribute<Scope>>()->value;
   }
@@ -852,6 +882,9 @@ class TORCH_CUDA_CU_API GridReduction final : public ReductionOp {
   virtual const char* getOpString() const override {
     return "GridReduction";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   Allocate* reduction_buffer() const {
     return attribute(num_reduction_op_attr)->as<Allocate>();
@@ -921,6 +954,9 @@ class TORCH_CUDA_CU_API GroupedGridReduction final : public GroupedReductionOp {
   virtual const char* getOpString() const override {
     return "GroupedGridReduction";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   std::vector<Allocate*> reduction_buffers() const {
     auto offset = numGroupedReductionOpAttr() + 5;
@@ -1002,6 +1038,9 @@ class TORCH_CUDA_CU_API GridBroadcast final : public Expr {
     return "GridBroadcast";
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
   BroadcastOp* broadcast_op() const {
     return attribute(0)->as<BroadcastOp>();
   }
@@ -1043,6 +1082,9 @@ class TORCH_CUDA_CU_API GridWelford final : public Expr {
   virtual const char* getOpString() const override {
     return "GridWelford";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   WelfordOp* welford_op() const {
     return attribute(0)->as<WelfordOp>();
@@ -1118,6 +1160,9 @@ class TORCH_CUDA_CU_API GroupedGridWelford final : public GroupedWelfordOp {
   virtual const char* getOpString() const override {
     return "GroupedGridWelford";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   std::array<std::vector<Allocate*>, 3> reduction_buffers() const {
     auto offset = numGroupedWelfordOpAttr() + 5;
@@ -1258,6 +1303,9 @@ class TORCH_CUDA_CU_API AllocateFusedReduction final : public Expr {
   virtual const char* getOpString() const override {
     return "AllocateFusedReduction";
   }
+
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
 
   //! GridReduction, GridWelford, GroupedGridReduction or GroupedGridWelford
   Expr* gridExpr() const {
