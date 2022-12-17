@@ -665,7 +665,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
           if (out_tv->getMemoryType() == MemoryType::Local &&
               !(out_tv->isDoubleBuffered() || out_tv->isCircularBuffered())) {
             // Vectorized initialization
-            indent() << ir_utils::varName(out_tv) << ".set(" << gen(uop->in());
+            indent() << ir_utils::varName(out_tv) << ".set(" << gen(uop->in()) << ");\n";
           } else if (
               uop->out()->isA<kir::TensorIndex>() &&
               uop->out()->as<kir::TensorIndex>()->useSmemAddress()) {
