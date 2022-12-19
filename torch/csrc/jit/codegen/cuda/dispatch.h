@@ -79,6 +79,7 @@ class BinaryOp;
 class TernaryOp;
 class SelectOp;
 class IndexSelectOp;
+class TorchGatherOp;
 class RNGOp;
 class ReductionOp;
 class GroupedReductionOp;
@@ -158,6 +159,7 @@ class TORCH_CUDA_CU_API OptOutConstDispatch : public PolymorphicBase {
   virtual void handle(const TernaryOp* stmt);
   virtual void handle(const SelectOp* stmt);
   virtual void handle(const IndexSelectOp* stmt);
+  virtual void handle(const TorchGatherOp* stmt);
   virtual void handle(const RNGOp* stmt);
   virtual void handle(const ReductionOp* stmt);
   virtual void handle(const GroupedReductionOp* stmt);
@@ -229,6 +231,7 @@ class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
   virtual void handle(TernaryOp* stmt);
   virtual void handle(SelectOp* stmt);
   virtual void handle(IndexSelectOp* stmt);
+  virtual void handle(TorchGatherOp* stmt);
   virtual void handle(RNGOp* stmt);
   virtual void handle(ReductionOp* stmt);
   virtual void handle(GroupedReductionOp* stmt);

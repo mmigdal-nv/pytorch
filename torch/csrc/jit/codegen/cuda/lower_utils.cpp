@@ -144,6 +144,7 @@ bool isTvOp(const Expr* expr) {
           TernaryOp,
           SelectOp,
           IndexSelectOp,
+          TorchGatherOp,
           RNGOp,
           FullOp,
           ARangeOp,
