@@ -1,6 +1,46 @@
+// todo pack values
 // aligned register array for vectorized load/store
+
+
+
+
+
+template <typename scalar_t, int size>
+struct array_storage {
+  scalar_t array[size];
+  __device__ scalar_t& operator[](const unsigned int i) {
+    return array[i];
+  }
+};
+
+
+template <int size>
+struct array_storage<__half, size> {
+
+  struct half_pair{
+    __half first, second;
+  };
+
+
+  half_pair array[(size+1)/2];
+
+  __device__ __half& operator[](const unsigned int i) {
+    
+    if(i%2 == 0){
+      return array[i/2].first;
+    } else {
+      return array[i/2].second;
+    }
+    
+   
+  }
+};
+
+
+
 template <typename scalar_t, int size, int align_size>
 struct alignas(sizeof(scalar_t) * align_size) Array {
+  //array_storage<scalar_t, size> array;
   scalar_t array[size];
 
   __device__ void set(scalar_t v) {

@@ -94,6 +94,7 @@ bool needsMagicZero(
     kir::ForLoop* loop,
     IterDomain* reference_domain,
     Val* ind) {
+      //return false;
   if (ind->isConstScalar()) {
     return false;
   }

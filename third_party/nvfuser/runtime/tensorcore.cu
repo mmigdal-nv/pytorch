@@ -316,21 +316,21 @@ DEVICE_INLINE void m16n8k16TN(
     Array<__half, 4, 4>* B) {
   unsigned const* _A = reinterpret_cast<unsigned const*>(A);
   unsigned const* _B = reinterpret_cast<unsigned const*>(B);
-  unsigned* _C = reinterpret_cast<unsigned*>(C);
-  const unsigned* _D = reinterpret_cast<const unsigned*>(C);
+  float* _C = reinterpret_cast<float*>(C);
+  const float* _D = reinterpret_cast<const float*>(C);
 
-  asm("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
-      : "=r"(_C[0]), "=r"(_C[1]), "=r"(_C[2]), "=r"(_C[3])
+  asm volatile ("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
+      : "=f"(_C[0]), "=f"(_C[1]), "=f"(_C[2]), "=f"(_C[3])
       : "r"(_A[0]),
         "r"(_A[1]),
         "r"(_A[2]),
         "r"(_A[3]),
         "r"(_B[0]),
         "r"(_B[1]),
-        "r"(_D[0]),
-        "r"(_D[1]),
-        "r"(_D[2]),
-        "r"(_D[3]));
+        "f"(_D[0]),
+        "f"(_D[1]),
+        "f"(_D[2]),
+        "f"(_D[3]));
 }
 
 } // namespace util

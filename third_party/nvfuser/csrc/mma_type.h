@@ -12,9 +12,14 @@ struct GemmTile {
   int m, n, k;
   GemmTile(int m_, int n_, int k_) : m(m_), n(n_), k(k_) {}
 
-  bool operator==(const GemmTile& other) {
+  bool operator==(const GemmTile& other) const{
     return m == other.m && n == other.n && k == other.k;
   }
+
+  bool operator!=(const GemmTile& other) const {
+     return !(*this == other);
+   }
+
 
   GemmTile operator/(const GemmTile& other) {
     return GemmTile(m / other.m, n / other.n, k / other.k);
