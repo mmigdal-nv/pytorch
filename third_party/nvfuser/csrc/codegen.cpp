@@ -503,17 +503,24 @@ class CudaKernelGenerator : private OptOutConstDispatch {
   }
 
   // Utility function to emit a cp.async intrinsic
-  void genCpAsync(const LoadStoreOp* ldst, int vec_size) {
+  void genCpAsync(
+      const LoadStoreOp* ldst,
+      int vec_size,
+      CacheLoadHint cache_hint) {
     auto dtype = ldst->in()->getDataType().value();
+
+    const char* cache_hint_str = cache_hint == CacheLoadHint::ca ? "ca"
+        : cache_hint == CacheLoadHint::cg                        ? "cg"
+                                                                 : "cs";
 
     if (ldst->predicate() == nullptr) {
       // Out of line predicate variant
-      indent() << "Ampere::cpAsync("
+      indent() << "Ampere::cpAsync<CacheLoadHint::" << cache_hint_str << ">("
                << genVectorPointer(ldst->out(), dtype, vec_size) << ","
                << genVectorPointer(ldst->in(), dtype, vec_size) << ");\n";
     } else {
       // Inline predicate variant
-      indent() << "Ampere::cpAsync("
+      indent() << "Ampere::cpAsync<CacheLoadHint::" << cache_hint_str << ">("
                << genVectorPointer(ldst->out(), dtype, vec_size) << ","
                << genVectorPointer(ldst->in(), dtype, vec_size) << ","
                << genInline(ldst->predicate()) << ");\n";
@@ -1272,7 +1279,13 @@ class CudaKernelGenerator : private OptOutConstDispatch {
         genLdMatrix(ldst, vector_word_size);
         break;
       case LoadStoreOpType::CpAsync:
-        genCpAsync(ldst, vector_word_size);
+        genCpAsync(ldst, vector_word_size, CacheLoadHint::ca);
+        break;
+      case LoadStoreOpType::CpAsyncCG:
+        genCpAsync(ldst, vector_word_size, CacheLoadHint::cg);
+        break;
+      case LoadStoreOpType::CpAsyncCS:
+        genCpAsync(ldst, vector_word_size, CacheLoadHint::cs);
         break;
       default:
         TORCH_INTERNAL_ASSERT(false, "LoadStoreOp: Unknown op type");

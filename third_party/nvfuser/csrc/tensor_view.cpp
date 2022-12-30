@@ -1180,6 +1180,11 @@ TensorView* TensorView::cacheBefore(c10::optional<LoadStoreOpType> cache_op) {
       !hasComputeAt(),
       "Caching computed-at tensors is not allowed. Apply caching before computeAt");
 
+  // TORCH_CHECK(
+  //     cache_op != LoadStoreOpType::CpAsyncNoL1 ||
+  //         getMemoryType() == MemoryType::Global,
+  //     "Bypassing L1 only supported on global memory loads");
+
   // It also did additional transformation when a producer tensor has computeAt.
   // Make sure we no longer rely on that behavior.
   if (definition() != nullptr) {
@@ -1319,6 +1324,11 @@ TensorView* TensorView::cacheAfter(c10::optional<LoadStoreOpType> cache_op) {
   TORCH_CHECK(
       !ir_utils::isSelectInput(this) && !ir_utils::isIndexSelectLookupTv(this),
       "Right now, caching tensors that are input to the select op is not allowed as they must be in global memory.")
+
+  // TORCH_CHECK(
+  //     cache_op != LoadStoreOpType::CpAsyncNoL1 ||
+  //         getMemoryType() == MemoryType::Global,
+  //     "Bypassing L1 only supported on global memory loads");
 
   // It also did additional transformation when this tensor is an
   // input and the outputs of its consumers have computeAt. Make sure

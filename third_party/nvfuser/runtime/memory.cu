@@ -1,6 +1,9 @@
 // Utility macro for this file
 #define DEVICE_INLINE __device__ inline
 
+enum class CacheLoadHint { ca, cg, cs };
+enum class CacheStoreHint { ca, cg, cs };
+
 #if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 750))
 
 namespace Turing {
@@ -135,7 +138,7 @@ DEVICE_INLINE unsigned toSmem(void* ptr) {
 
 // Global to SMEM load that is asynchronous,
 // not guaranteed to be completed until cpAsyncBarrier() is called.
-template <typename dtype, int len>
+template <CacheLoadHint hint, typename dtype, int len>
 DEVICE_INLINE void cpAsync(
     Array<dtype, len, len>* smem_ptr,
     void const* gmem_ptr) {
@@ -146,15 +149,23 @@ DEVICE_INLINE void cpAsync(
       byte_size == 4 || byte_size == 8 || byte_size == 16,
       "cp_async : unsupported byte size");
 
-  asm volatile(
-      "cp.async.ca.shared.global [%0], [%1], %2;\n" ::"r"(smem_addr),
-      "l"(gmem_ptr),
-      "n"(byte_size));
+#define GENERATE_CP_ASYNC(this_hint, instruction)           \
+  if constexpr (hint == this_hint)                          \
+    asm volatile(                                           \
+        instruction##" [%0], [%1], %2;\n" ::"r"(smem_addr), \
+        "l"(gmem_ptr),                                      \
+        "n"(byte_size));
+
+  GENERATE_CP_ASYNC(CacheLoadHint::ca, "cp.async.ca.shared.global")
+  GENERATE_CP_ASYNC(CacheLoadHint::cg, "cp.async.cg.shared.global.L2::128B")
+  GENERATE_CP_ASYNC(CacheLoadHint::cs, "cp.async.cs.shared.global")
+
+#undef GENERATE_CP_ASYNC
 }
 
 // Global to SMEM load that is asynchronous,
 // not guaranteed to be completed until cpAsyncBarrier() is called.
-template <typename dtype, int len>
+template <CacheLoadHint hint, typename dtype, int len>
 DEVICE_INLINE void cpAsync(
     Array<dtype, len, len>* smem_ptr,
     void const* gmem_ptr,
@@ -166,15 +177,23 @@ DEVICE_INLINE void cpAsync(
       byte_size == 4 || byte_size == 8 || byte_size == 16,
       "cp_async : unsupported byte size");
 
-  asm volatile(
-      "{\n"
-      "  .reg .pred p;\n"
-      "  setp.ne.b32 p, %3, 0;\n"
-      "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
-      "}\n" ::"r"(smem_addr),
-      "l"(gmem_ptr),
-      "n"(byte_size),
-      "r"((int)predicate));
+#define GENERATE_CP_ASYNC_PREDICATE(this_hint, instruction) \
+  if constexpr (hint == this_hint)                          \
+    asm volatile(                                           \
+        "{\n"                                               \
+        "  .reg .pred p;\n"                                 \
+        "  setp.ne.b32 p, %3, 0;\n"                         \
+        "@p "##instruction##" [%0], [%1], %2;\n"            \
+        "}\n" ::"r"(smem_addr),                             \
+        "l"(gmem_ptr),                                      \
+        "n"(byte_size),                                     \
+        "r"((int)predicate));
+
+  GENERATE_CP_ASYNC_PREDICATE(CacheLoadHint::ca, "cp.async.ca.shared.global")
+  GENERATE_CP_ASYNC_PREDICATE(
+      CacheLoadHint::cg, "cp.async.cg.shared.global.L2::128B")
+  GENERATE_CP_ASYNC_PREDICATE(CacheLoadHint::cs, "cp.async.cs.shared.global")
+#undef GENERATE_CP_ASYNC_PREDICATE
 }
 
 // TODO: Might have a different category of sync if we want to build out this:

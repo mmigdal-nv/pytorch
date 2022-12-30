@@ -321,9 +321,18 @@ static constexpr std::array<IdMappingMode, 4> kIdMappingModes = {
     IdMappingMode::LOOP,
     IdMappingMode::PERMISSIVE};
 
+enum class CacheLoadHint { ca, cg, cs };
+enum class CacheStoreHint { ca, cg, cs };
+
 // Used to annotate the special memory intrinsics that a loadstore
 //  op will be lowered to.
-enum class LoadStoreOpType { LdMatrix, LdMatrixTranspose, CpAsync };
+enum class LoadStoreOpType {
+  LdMatrix,
+  LdMatrixTranspose,
+  CpAsync,
+  CpAsyncCG,
+  CpAsyncCS
+};
 
 // Used to label what part of the double buffered iterdomain
 //  a for loop is materializing.
