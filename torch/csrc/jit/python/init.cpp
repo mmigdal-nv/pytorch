@@ -7,7 +7,6 @@
 #include <torch/csrc/jit/api/module.h>
 #include <torch/csrc/jit/backends/backend_init.h>
 #include <torch/csrc/jit/codegen/cuda/interface.h>
-#include <torch/csrc/jit/codegen/cuda/python_frontend/python_bindings.h>
 #include <torch/csrc/jit/codegen/fuser/interface.h>
 #include <torch/csrc/jit/codegen/fuser/kernel_cache.h>
 #if (!defined(FBCODE_CAFFE2) && defined(BUILD_ONEDNN_GRAPH))
@@ -40,6 +39,7 @@
 #include <torch/csrc/jit/passes/frozen_conv_add_relu_fusion.h>
 #include <torch/csrc/jit/passes/frozen_conv_folding.h>
 #include <torch/csrc/jit/passes/frozen_graph_optimizations.h>
+#include <torch/csrc/jit/passes/frozen_linear_folding.h>
 #include <torch/csrc/jit/passes/frozen_linear_transpose.h>
 #include <torch/csrc/jit/passes/frozen_ops_to_mkldnn.h>
 #include <torch/csrc/jit/passes/fuse_linear.h>
@@ -399,6 +399,7 @@ void initJITBindings(PyObject* module) {
       .def("_jit_pass_fold_frozen_conv_bn", &FoldFrozenConvBatchnorm)
       .def("_jit_pass_fold_frozen_conv_add_or_sub", &FoldFrozenConvAddOrSub)
       .def("_jit_pass_fold_frozen_conv_mul_or_div", &FoldFrozenConvMulOrDiv)
+      .def("_jit_pass_fold_frozen_linear_bn", &FoldFrozenLinearBatchnorm)
       .def("_jit_pass_convert_frozen_ops_to_mkldnn", &ConvertFrozenOpsToMKLDNN)
       .def("_jit_pass_fuse_frozen_conv_add_relu", &FuseFrozenConvAddRelu)
       .def("_jit_pass_transpose_frozen_linear", &FrozenLinearTranspose)
@@ -642,9 +643,9 @@ void initJITBindings(PyObject* module) {
             std::vector<TypePtr> input_types;
             for (Value* v : g->inputs()) {
               if (auto tt = v->type()->cast<TensorType>()) {
-                input_types.push_back(tt);
+                input_types.emplace_back(tt);
               } else {
-                input_types.push_back(nullptr);
+                input_types.emplace_back(nullptr);
               }
             }
             EraseShapeInformation(g);
@@ -1148,38 +1149,65 @@ void initJITBindings(PyObject* module) {
   // NB: This isn't actually used for regular PyTorch symbolic tracing;
   // XLA is what needs this
 #define SYMNODE_UNARY(n) .def(#n, [](c10::SymNode a) { return a->n(); })
-#define SYMNODE_UNARY2(n2, n) .def(#n2, [](c10::SymNode a) { return a->n(); })
 #define SYMNODE_BINARY(n) \
   .def(#n, [](c10::SymNode a, c10::SymNode b) { return a->n(b); })
   auto symnode_class =
       py::class_<c10::SymNodeImpl, c10::SymNode>(m, "_SymNode")
+      // clang-format off
       // These DO NOT install magic methods; the SymInt/SymFloat wrapper in
       // Python is responsible for this
       SYMNODE_UNARY(clone)
-      // Named these for consistency with inner python class, but maybe
-      // should change the python side
-      SYMNODE_UNARY2(__bool__, bool_) SYMNODE_UNARY2(__int__, int_)
-          SYMNODE_UNARY2(__sym_int__, sym_int) SYMNODE_UNARY2(
-              __sym_float__, sym_float) SYMNODE_BINARY(add) SYMNODE_BINARY(sub)
-              SYMNODE_BINARY(mul) SYMNODE_BINARY(truediv) SYMNODE_BINARY(pow)
-                  SYMNODE_BINARY(floordiv) SYMNODE_BINARY(mod) SYMNODE_BINARY(
-                      eq) SYMNODE_BINARY(gt) SYMNODE_BINARY(lt)
-                      SYMNODE_BINARY(le) SYMNODE_BINARY(ge) SYMNODE_BINARY(min)
-                          SYMNODE_BINARY(max) SYMNODE_UNARY(ceil)
-                              SYMNODE_UNARY(floor) SYMNODE_UNARY(neg)
-                                  // Intentionally don't set file line, as the
-                                  // Python backtrace matters more here
-                                  .def(
-                                      "guard_int",
-                                      [](c10::SymNode a) {
-                                        return a->guard_int(nullptr, 0);
-                                      })
-                                  .def(
-                                      "__str__",
-                                      [](c10::SymNode a) { return a->str(); })
-                                  .def("__repr__", [](c10::SymNode a) {
-                                    return a->str();
-                                  });
+      SYMNODE_UNARY(is_int)
+      SYMNODE_UNARY(is_float)
+      SYMNODE_UNARY(bool_)
+      SYMNODE_UNARY(int_)
+      SYMNODE_UNARY(sym_float)
+      SYMNODE_BINARY(add)
+      SYMNODE_BINARY(sub)
+      SYMNODE_BINARY(mul)
+      SYMNODE_BINARY(truediv)
+      SYMNODE_BINARY(pow)
+      SYMNODE_BINARY(floordiv)
+      SYMNODE_BINARY(mod)
+      SYMNODE_BINARY(eq)
+      SYMNODE_BINARY(gt)
+      SYMNODE_BINARY(lt)
+      SYMNODE_BINARY(le)
+      SYMNODE_BINARY(ge)
+      SYMNODE_BINARY(min)
+      SYMNODE_BINARY(max)
+      SYMNODE_UNARY(ceil)
+      SYMNODE_UNARY(floor)
+      SYMNODE_UNARY(neg)
+      // Intentionally don't set file line, as the
+      // Python backtrace matters more here
+      .def(
+          "guard_int",
+          [](c10::SymNode a) {
+            return a->guard_int(nullptr, 0);
+          })
+      .def(
+          "guard_float",
+          [](c10::SymNode a) {
+            return a->guard_float(nullptr, 0);
+          })
+      .def(
+          "wrap_int",
+          [](c10::SymNode a, int64_t b) {
+            return a->wrap_int(b);
+          })
+      .def(
+          "wrap_float",
+          [](c10::SymNode a, double b) {
+            return a->wrap_float(b);
+          })
+      .def(
+          "__str__",
+          [](c10::SymNode a) { return a->str(); })
+      .def("__repr__", [](c10::SymNode a) {
+        return a->str();
+      });
+  // clang-format on
 
   // NOLINTNEXTLINE(bugprone-unused-raii)
   py::class_<CompleteArgumentSpec>(m, "CompleteArgumentSpec")
@@ -1944,7 +1972,7 @@ void initJITBindings(PyObject* module) {
   initJitBackendBindings(module);
   initStaticModuleBindings(module);
   initTensorExprBindings(module);
-  initNvFuserPythonBindings(module);
+  // initNvFuserPythonBindings(module);
 
   setPrintHandler([](const std::string& str) {
     py::gil_scoped_acquire acquire;
