@@ -1,8 +1,8 @@
-#include <torch/csrc/jit/codegen/cuda/expr_evaluator.h>
-#include <torch/csrc/jit/codegen/cuda/ir_utils.h>
-#include <torch/csrc/jit/codegen/cuda/lower2device.h>
-#include <torch/csrc/jit/codegen/cuda/lower_interleaved_loop.h>
-#include <torch/csrc/jit/codegen/cuda/lower_utils.h>
+#include <expr_evaluator.h>
+#include <ir_utils.h>
+#include <lower2device.h>
+#include <lower_interleaved_loop.h>
+#include <lower_utils.h>
 
 namespace torch {
 namespace jit {

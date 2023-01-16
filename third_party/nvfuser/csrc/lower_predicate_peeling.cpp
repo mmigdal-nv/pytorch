@@ -1,10 +1,10 @@
-#include <torch/csrc/jit/codegen/cuda/dispatch.h>
-#include <torch/csrc/jit/codegen/cuda/instrumentation.h>
-#include <torch/csrc/jit/codegen/cuda/ir_iostream.h>
-#include <torch/csrc/jit/codegen/cuda/ir_utils.h>
-#include <torch/csrc/jit/codegen/cuda/iter_visitor.h>
-#include <torch/csrc/jit/codegen/cuda/lower2device.h>
-#include <torch/csrc/jit/codegen/cuda/lower_predicate_peeling.h>
+#include <dispatch.h>
+#include <instrumentation.h>
+#include <ir_iostream.h>
+#include <ir_utils.h>
+#include <iter_visitor.h>
+#include <lower2device.h>
+#include <lower_predicate_peeling.h>
 
 #include <unordered_set>
 

@@ -1,10 +1,10 @@
 #include <c10/util/Exception.h>
-#include <torch/csrc/jit/codegen/cuda/ir_builder.h>
-#include <torch/csrc/jit/codegen/cuda/ir_utils.h>
-#include <torch/csrc/jit/codegen/cuda/lower2device.h>
-#include <torch/csrc/jit/codegen/cuda/lower_mem_index.h>
-#include <torch/csrc/jit/codegen/cuda/lower_utils.h>
-#include <torch/csrc/jit/codegen/cuda/root_domain_map.h>
+#include <ir_builder.h>
+#include <ir_utils.h>
+#include <lower2device.h>
+#include <lower_mem_index.h>
+#include <lower_utils.h>
+#include <root_domain_map.h>
 
 namespace torch {
 namespace jit {
