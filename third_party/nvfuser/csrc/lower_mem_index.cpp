@@ -644,7 +644,7 @@ bool isSeparable(
         // Non-divisible split cannot be separated.
         return false;
       }
-    } else if (auto merge = dynamic_cast<Merge*>(id_def)) {
+    } else if (dynamic_cast<Merge*>(id_def)) {
       // When we hit a merge, check for pattern 2
 
       if (prev_id == nullptr) {
@@ -652,7 +652,7 @@ bool isSeparable(
         return false;
       }
 
-      if (auto prev_split = dynamic_cast<Split*>(prev_id->definition())) {
+      if (dynamic_cast<Split*>(prev_id->definition())) {
         auto split_leaves = getFlattenedSplitIds(id, {prev_id});
         auto merged_leaves = getFlattenedMergedIds(id);
 

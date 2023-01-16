@@ -272,6 +272,7 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
       is_double_buffered_(src->is_double_buffered_),
       is_circular_buffered_(src->is_circular_buffered_),
       circular_buffer_stage_(src->circular_buffer_stage_),
+      peeled_serial_id_(ir_cloner->clone(src->peeled_serial_id_)),
       cpu_scalar_(src->cpu_scalar_),
       has_swizzle_op_(src->has_swizzle_op_),
       lift_read_address_(src->lift_read_address_),
@@ -280,7 +281,6 @@ TensorView::TensorView(const TensorView* src, IrCloner* ir_cloner)
       skew_double_buffer_loop_(src->skew_double_buffer_loop_),
       maybe_interleave_axis_and_factor_(src->maybe_interleave_axis_and_factor_),
       compute_with_consumers_(ir_cloner->clone(src->compute_with_consumers_)),
-      peeled_serial_id_(ir_cloner->clone(src->peeled_serial_id_)),
       compute_with_pos_(src->compute_with_pos_) {}
 
 bool TensorView::hasReduction() const {
