@@ -2248,7 +2248,8 @@ Val* Index::getProducerStridedIndices(
     TensorView* producer,
     const TensorView* consumer,
     const std::vector<kir::ForLoop*>& loops,
-    const std::unordered_map<IterDomain*, Val*>& override_index) {
+    const std::unordered_map<IterDomain*, Val*>& override_index,
+    bool cvta_smem_address) {
   FUSER_PERF_SCOPE("GpuLower::Lower::Index::getProducerStridedIndices");
   if (producer->domain()->noReductions().size() == 0) {
     return GpuLower::current()->kernel()->zeroVal();
@@ -2258,8 +2259,19 @@ Val* Index::getProducerStridedIndices(
     return sumVals(getGlobalProducerStridedIndices(
         producer, consumer, loops, override_index));
   } else {
-    return sumVals(getNonGlobalProducerStridedIndices(
+    auto index = sumVals(getNonGlobalProducerStridedIndices(
         producer, consumer, loops, override_index));
+    if (cvta_smem_address && producer->getMemoryType() == MemoryType::Shared) {
+      auto base_address = IrBuilder::newScalar(DataType::SMemAddress);
+      IrBuilder::create<kir::SMemAddress>(base_address, producer);
+      auto index_bytes = IrBuilder::mulExpr(
+          index,
+          IrBuilder::newConstant(
+              dataTypeSize(*producer->getDataType()), *index->getDataType()));
+      return IrBuilder::addExpr(base_address, index_bytes);
+    } else {
+      return index;
+    }
   }
 }
 
@@ -2268,9 +2280,10 @@ kir::TensorIndex* Index::getProducerIndex(
     TensorView* producer,
     const TensorView* consumer,
     const std::vector<kir::ForLoop*>& loops,
-    const std::unordered_map<IterDomain*, Val*>& override_index) {
-  auto index =
-      getProducerStridedIndices(producer, consumer, loops, override_index);
+    const std::unordered_map<IterDomain*, Val*>& override_index,
+    bool cvta_smem_address) {
+  auto index = getProducerStridedIndices(
+      producer, consumer, loops, override_index, cvta_smem_address);
   index = GpuLower::current()->commonScalarMap().hoistScalar(index, loops);
 
   // Insert base address and uniform components into the tensor
@@ -2301,8 +2314,9 @@ kir::TensorIndex* Index::getProducerIndex(
 }
 
 Val* Index::getConsumerStridedIndices(
-    const TensorView* consumer,
-    const std::vector<kir::ForLoop*>& loops) {
+    TensorView* consumer,
+    const std::vector<kir::ForLoop*>& loops,
+    bool cvta_smem_address) {
   FUSER_PERF_SCOPE("GpuLower::Lower::Index::getConsumerStridedIndices");
   if (consumer->domain()->noReductions().size() == 0) {
     return GpuLower::current()->kernel()->zeroVal();
@@ -2311,15 +2325,27 @@ Val* Index::getConsumerStridedIndices(
   if (consumer->getMemoryType() == MemoryType::Global) {
     return sumVals(getGlobalConsumerStridedIndices(consumer, loops));
   } else {
-    return sumVals(getNonGlobalConsumerStridedIndices(consumer, loops));
+    auto index = sumVals(getNonGlobalConsumerStridedIndices(consumer, loops));
+    if (cvta_smem_address && consumer->getMemoryType() == MemoryType::Shared) {
+      auto base_address = IrBuilder::newScalar(DataType::SMemAddress);
+      IrBuilder::create<kir::SMemAddress>(base_address, consumer);
+      auto index_bytes = IrBuilder::mulExpr(
+          index,
+          IrBuilder::newConstant(
+              dataTypeSize(*consumer->getDataType()), *index->getDataType()));
+      return IrBuilder::addExpr(base_address, index_bytes);
+    } else {
+      return index;
+    }
   }
 }
 
 // Consumer is the output of an expression
 kir::TensorIndex* Index::getConsumerIndex(
-    const TensorView* consumer,
-    const std::vector<kir::ForLoop*>& loops) {
-  auto index = getConsumerStridedIndices(consumer, loops);
+    TensorView* consumer,
+    const std::vector<kir::ForLoop*>& loops,
+    bool cvta_smem_address) {
+  auto index = getConsumerStridedIndices(consumer, loops, cvta_smem_address);
   index = GpuLower::current()->commonScalarMap().hoistScalar(index, loops);
 
   // Insert base address and uniform components into the tensor

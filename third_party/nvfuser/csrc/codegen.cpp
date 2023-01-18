@@ -596,6 +596,16 @@ class CudaKernelGenerator : private OptOutConstDispatch {
           << "," << genMaybeHoistedPointer(ldst->in()) << ");\n";
   }
 
+  void handle(const kir::SMemAddress* sop) final {
+    if (!print_inline_) {
+      indent() << gen(sop->output(0)) << " = ";
+    }
+    code_ << "toSmem(" << ir_utils::varName(sop->smemTv()) << ")";
+    if (!print_inline_) {
+      code_ << ";\n";
+    }
+  }
+
   void handle(const UnaryOp* uop) final {
     bool is_vector_op = false;
     size_t vector_word_size = 1;

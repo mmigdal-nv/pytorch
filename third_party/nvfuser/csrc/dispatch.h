@@ -122,6 +122,7 @@ class VectorizedWelfordOp;
 class AllocateFusedReduction;
 class InitMagicZero;
 class UpdateMagicZero;
+class SMemAddress;
 
 } // namespace kir
 
@@ -197,6 +198,7 @@ class TORCH_CUDA_CU_API OptOutConstDispatch : public PolymorphicBase {
   virtual void handle(const kir::GroupedGridWelford*);
   virtual void handle(const kir::VectorizedWelfordOp*);
   virtual void handle(const kir::AllocateFusedReduction*);
+  virtual void handle(const kir::SMemAddress*);
 };
 
 class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
@@ -269,6 +271,7 @@ class TORCH_CUDA_CU_API OptOutDispatch : public PolymorphicBase {
   virtual void handle(kir::GroupedGridWelford* stmt);
   virtual void handle(kir::VectorizedWelfordOp* stmt);
   virtual void handle(kir::AllocateFusedReduction* stmt);
+  virtual void handle(kir::SMemAddress* stmt);
 };
 
 class TORCH_CUDA_CU_API OptInConstDispatch : public OptOutConstDispatch {
