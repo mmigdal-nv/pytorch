@@ -106,9 +106,8 @@ DEVICE_INLINE void ldMatrixT(Array<__half, 8, 8>& out, unsigned addr) {
 DEVICE_INLINE void ldMatrix(
     Array<__half, 4, 4>& out,
     nvfuser_index_t index,
-    DataPointer base_ptr) {
+    unsigned addr) {
   uint2& val = reinterpret_cast<uint2&>(out);
-  unsigned addr = util::toSmem(base_ptr);
   util::adjustPartialLdMatrixAddrInTuring(addr);
   asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%0,%1}, [%2];"
                : "=r"(val.x), "=r"(val.y)
@@ -118,9 +117,8 @@ DEVICE_INLINE void ldMatrix(
 DEVICE_INLINE void ldMatrixT(
     Array<__half, 4, 4>& out,
     nvfuser_index_t index,
-    DataPointer base_ptr) {
+    unsigned addr) {
   uint2& val = reinterpret_cast<uint2&>(out);
-  unsigned addr = util::toSmem(base_ptr);
   util::adjustPartialLdMatrixAddrInTuring(addr);
   asm volatile("ldmatrix.sync.aligned.x2.trans.m8n8.shared.b16 {%0,%1}, [%2];"
                : "=r"(val.x), "=r"(val.y)
@@ -130,9 +128,8 @@ DEVICE_INLINE void ldMatrixT(
 DEVICE_INLINE void ldMatrix(
     Array<__half, 8, 8>& out,
     nvfuser_index_t index,
-    DataPointer base_ptr) {
+    unsigned addr) {
   uint4& val = reinterpret_cast<uint4&>(out);
-  unsigned addr = util::toSmem(base_ptr);
   asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
                : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
                : "r"(addr + (unsigned)index));
@@ -141,9 +138,8 @@ DEVICE_INLINE void ldMatrix(
 DEVICE_INLINE void ldMatrixT(
     Array<__half, 8, 8>& out,
     nvfuser_index_t index,
-    DataPointer base_ptr) {
+    unsigned addr) {
   uint4& val = reinterpret_cast<uint4&>(out);
-  unsigned addr = util::toSmem(base_ptr);
   asm volatile(
       "ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
       : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
@@ -253,8 +249,7 @@ DEVICE_INLINE void cpAsync(
 // https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators
 // not guaranteed to be completed until cpAsyncBarrier() is called.
 template <typename dtype, int len>
-DEVICE_INLINE void cpAsyncCg(void* smem_ptr, void const* gmem_ptr) {
-  unsigned smem_addr = util::toSmem(smem_ptr);
+DEVICE_INLINE void cpAsyncCg(unsigned smem_addr, void const* gmem_ptr) {
   constexpr int byte_size = sizeof(dtype) * len;
 
   static_assert(
@@ -271,10 +266,9 @@ DEVICE_INLINE void cpAsyncCg(void* smem_ptr, void const* gmem_ptr) {
 // not guaranteed to be completed until cpAsyncBarrier() is called.
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsyncCg(
-    void* smem_ptr,
+    unsigned smem_addr,
     void const* gmem_ptr,
     bool predicate) {
-  unsigned smem_addr = util::toSmem(smem_ptr);
   constexpr int byte_size = sizeof(dtype) * len;
 
   static_assert(
