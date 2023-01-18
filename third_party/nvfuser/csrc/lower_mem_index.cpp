@@ -203,21 +203,6 @@ void AddressComputeInfo::build(Fusion* fusion) {
       continue;
     }
 
-    if (ir_utils::isCpAsyncOp(expr)) {
-      auto in_tv = ir_utils::getTvInput(expr);
-      auto out_tv = ir_utils::getTvOutput(expr);
-
-      // FIXME:
-      //  It'd take 2 more variants of the resource string for cp.async
-      //   to support lifting one of the producer/consumer indices. As
-      //   the eventual goal of these analysis is to be turned on generically,
-      //   the use case for lifting one of the components is limited so
-      //   not prioritizing.
-      TORCH_INTERNAL_ASSERT(
-          in_tv->shouldLiftReadAddress() == out_tv->shouldLiftWriteAddress(),
-          "For cp.async op only support either lifting both producer and consumer indexing or neither.");
-    }
-
     for (auto consumer_tv :
          ir_utils::filterByType<TensorView>(expr->outputs())) {
       if (consumer_tv->shouldLiftWriteAddress()) {

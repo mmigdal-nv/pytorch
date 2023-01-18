@@ -1493,8 +1493,8 @@ Val* simplifyExpr(Val* value, const std::list<VarInfo>& variables) {
     RUN_PASS(cancelDivMod);
     PASS_BARRIER;
     RUN_PASS(distributeDivisibleDivMod);
-    // PASS_BARRIER;
-    // RUN_PASS(distributeMul);
+    PASS_BARRIER;
+    RUN_PASS(distributeMul);
   }
 
   auto unflattened = assoc_comm::unflatten(simplified, variables);

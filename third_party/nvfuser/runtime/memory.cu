@@ -101,51 +101,6 @@ DEVICE_INLINE void ldMatrixT(Array<__half, 8, 8>& out, unsigned addr) {
       : "r"(addr));
 }
 
-// Below are the variants of ldmatrix wrapper that supports lifted
-//  memory indexing.
-DEVICE_INLINE void ldMatrix(
-    Array<__half, 4, 4>& out,
-    nvfuser_index_t index,
-    unsigned addr) {
-  uint2& val = reinterpret_cast<uint2&>(out);
-  util::adjustPartialLdMatrixAddrInTuring(addr);
-  asm volatile("ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%0,%1}, [%2];"
-               : "=r"(val.x), "=r"(val.y)
-               : "r"(addr + (unsigned)index));
-}
-
-DEVICE_INLINE void ldMatrixT(
-    Array<__half, 4, 4>& out,
-    nvfuser_index_t index,
-    unsigned addr) {
-  uint2& val = reinterpret_cast<uint2&>(out);
-  util::adjustPartialLdMatrixAddrInTuring(addr);
-  asm volatile("ldmatrix.sync.aligned.x2.trans.m8n8.shared.b16 {%0,%1}, [%2];"
-               : "=r"(val.x), "=r"(val.y)
-               : "r"(addr + (unsigned)index));
-}
-
-DEVICE_INLINE void ldMatrix(
-    Array<__half, 8, 8>& out,
-    nvfuser_index_t index,
-    unsigned addr) {
-  uint4& val = reinterpret_cast<uint4&>(out);
-  asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
-               : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
-               : "r"(addr + (unsigned)index));
-}
-
-DEVICE_INLINE void ldMatrixT(
-    Array<__half, 8, 8>& out,
-    nvfuser_index_t index,
-    unsigned addr) {
-  uint4& val = reinterpret_cast<uint4&>(out);
-  asm volatile(
-      "ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16 {%0,%1,%2,%3}, [%4];"
-      : "=r"(val.x), "=r"(val.y), "=r"(val.z), "=r"(val.w)
-      : "r"(addr + (unsigned)index));
-}
-
 } // namespace Turing
 
 #endif // Arch 75
@@ -200,7 +155,6 @@ DEVICE_INLINE void cpAsync(
 // This is the variant that supports lifted indexing
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsync(
-    nvfuser_index_t smem_index,
     unsigned smem_addr,
     nvfuser_index_t gmem_index,
     DataPointer& gmem_ptr) {
@@ -212,7 +166,7 @@ DEVICE_INLINE void cpAsync(
 
   asm volatile(
       "cp.async.ca.shared.global [%0], [%1], %2;\n" ::"r"(
-          smem_addr + (unsigned)smem_index),
+          smem_addr),
       "l"(gmem_ptr + gmem_index),
       "n"(byte_size));
 }
@@ -221,7 +175,6 @@ DEVICE_INLINE void cpAsync(
 // This is the variant that supports lifted indexing, with predicate inlined.
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsync(
-    nvfuser_index_t smem_index,
     unsigned smem_addr,
     nvfuser_index_t gmem_index,
     DataPointer& gmem_ptr,
@@ -237,7 +190,7 @@ DEVICE_INLINE void cpAsync(
       "  .reg .pred p;\n"
       "  setp.ne.b32 p, %3, 0;\n"
       "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
-      "}\n" ::"r"(smem_addr + (unsigned)smem_index),
+      "}\n" ::"r"(smem_addr),
       "l"(gmem_ptr + gmem_index),
       "n"(byte_size),
       "r"((int)predicate));
@@ -290,7 +243,6 @@ DEVICE_INLINE void cpAsyncCg(
 // This is the variant that supports lifted indexing
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsyncCg(
-    nvfuser_index_t smem_index,
     unsigned smem_addr,
     nvfuser_index_t gmem_index,
     DataPointer& gmem_ptr) {
@@ -302,7 +254,7 @@ DEVICE_INLINE void cpAsyncCg(
 
   asm volatile(
       "cp.async.cg.shared.global [%0], [%1], %2;\n" ::"r"(
-          smem_addr + (unsigned)smem_index),
+          smem_addr),
       "l"(gmem_ptr + gmem_index),
       "n"(byte_size));
 }
@@ -311,7 +263,6 @@ DEVICE_INLINE void cpAsyncCg(
 // This is the variant that supports lifted indexing, with predicate inlined.
 template <typename dtype, int len>
 DEVICE_INLINE void cpAsyncCg(
-    nvfuser_index_t smem_index,
     unsigned smem_addr,
     nvfuser_index_t gmem_index,
     DataPointer& gmem_ptr,
@@ -327,7 +278,7 @@ DEVICE_INLINE void cpAsyncCg(
       "  .reg .pred p;\n"
       "  setp.ne.b32 p, %3, 0;\n"
       "@p cp.async.cg.shared.global [%0], [%1], %2;\n"
-      "}\n" ::"r"(smem_addr + (unsigned)smem_index),
+      "}\n" ::"r"(smem_addr),
       "l"(gmem_ptr + gmem_index),
       "n"(byte_size),
       "r"((int)predicate));

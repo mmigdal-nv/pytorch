@@ -574,12 +574,12 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     if (ldst->predicate() == nullptr) {
       // Out of line predicate variant
       code_ << "<" << dtype << "," << vec_size << ">("
-            << genMaybeHoistedPointer(ldst->out()) << ","
+            << genInline(ldst->out()->as<kir::TensorIndex>()->index()) << ","
             << genMaybeHoistedPointer(ldst->in()) << ");\n";
     } else {
       // Inline predicate variant
       code_ << "<" << dtype << "," << vec_size << ">("
-            << genMaybeHoistedPointer(ldst->out()) << ","
+            << genInline(ldst->out()->as<kir::TensorIndex>()->index()) << ","
             << genMaybeHoistedPointer(ldst->in()) << ","
             << genInline(ldst->predicate()) << ");\n";
     }
@@ -593,7 +593,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     }
     code_ << " (";
     code_ << "*" << genVectorPointer(ldst->out(), dtype, vector_word_size)
-          << "," << genMaybeHoistedPointer(ldst->in()) << ");\n";
+          << "," << genInline(ldst->in()->as<kir::TensorIndex>()->index())
+          << ");\n";
   }
 
   void handle(const kir::SMemAddress* sop) final {
