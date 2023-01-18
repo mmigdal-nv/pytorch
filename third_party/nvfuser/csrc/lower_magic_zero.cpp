@@ -90,11 +90,23 @@ bool isProtectedWithMagicZero(const Val* val) {
   return bop->getBinaryOpType() == BinaryOpType::Add && isMagicZero(bop->rhs());
 }
 
+Val* maybeUnwrapMagicZero(Val* val) {
+  if (isProtectedWithMagicZero(val)) {
+    return val->definition()->as<BinaryOp>()->lhs();
+  } else {
+    return val;
+  }
+}
+
 bool needsMagicZero(
     kir::ForLoop* loop,
     IterDomain* reference_domain,
     Val* ind) {
   if (ind->isConstScalar()) {
+    return false;
+  }
+
+  if (!GpuLower::current()->isNvFuserZeroEnabled()) {
     return false;
   }
 

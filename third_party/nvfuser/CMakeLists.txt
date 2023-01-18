@@ -36,7 +36,7 @@ list(APPEND NVFUSER_SRCS
     ${NVFUSER_SRCS_DIR}/expr_simplifier.cpp
     ${NVFUSER_SRCS_DIR}/executor.cpp
     ${NVFUSER_SRCS_DIR}/executor_kernel_arg.cpp
-    ${NVFUSER_SRCS_DIR}/executor_launch_params.cpp
+    ${NVFUSER_SRCS_DIR}/executor_params.cpp
     ${NVFUSER_SRCS_DIR}/evaluator_common.cpp
     ${NVFUSER_SRCS_DIR}/executor_utils.cpp
     ${NVFUSER_SRCS_DIR}/fusion.cpp
@@ -137,7 +137,7 @@ list(APPEND NVFUSER_SRCS
 add_library(${NVFUSER_CODEGEN} SHARED ${NVFUSER_SRCS})
 # Note: for some reason, torch_compile_options gives us segfaults when we run test_jit
 #torch_compile_options(${NVFUSER_CODEGEN})
-target_compile_options(${NVFUSER_CODEGEN} PRIVATE -Wall)
+target_compile_options(${NVFUSER_CODEGEN} PRIVATE -Wall -Wno-unused-function)
 
 if(NOT USE_ROCM)
   target_compile_options(${NVFUSER_CODEGEN} PRIVATE "-DTORCH_CUDA_BUILD_MAIN_LIB")
@@ -170,7 +170,7 @@ target_include_directories(${NVFUSER_CODEGEN} PUBLIC
                           "$<BUILD_INTERFACE:${NVFUSER_SRCS_DIR}>"
                           "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/nvfuser>"
                           )
-set_property(TARGET ${NVFUSER_CODEGEN} PROPERTY CXX_STANDARD 14)
+set_property(TARGET ${NVFUSER_CODEGEN} PROPERTY CXX_STANDARD 17)
 install(TARGETS ${NVFUSER_CODEGEN} EXPORT NvfuserTargets DESTINATION "${TORCH_INSTALL_LIB_DIR}")
 # installing nvfuser headers
 install(DIRECTORY "${NVFUSER_SRCS_DIR}/"
