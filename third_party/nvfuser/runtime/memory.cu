@@ -15,6 +15,11 @@ DEVICE_INLINE unsigned toSmem(const void* raw_ptr) {
   return smem_ptr_uint;
 }
 
+DEVICE_INLINE unsigned toSmem(unsigned addr) {
+  // already converted
+  return addr;
+}
+
 #if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 750))
 
 namespace Turing {

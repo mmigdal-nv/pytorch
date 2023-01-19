@@ -1176,8 +1176,13 @@ void IndexLowering::handleGroupedGridWelford(
 }
 
 void IndexLowering::handle(const LoadStoreOp* ldst) {
-  const auto in = lowerSrcIndex(ldst->in(), ldst->out(), {}, true);
-  const auto out = lowerDstIndex(ldst->out(), true);
+  const auto in = lowerSrcIndex(
+      ldst->in(),
+      ldst->out(),
+      {},
+      !ldst->in()->as<TensorView>()->shouldLiftReadAddress());
+  const auto out = lowerDstIndex(
+      ldst->out(), !ldst->out()->as<TensorView>()->shouldLiftWriteAddress());
   auto new_ldst = IrBuilder::create<LoadStoreOp>(ldst->opType(), out, in)
                       ->withPredicate(ldst->predicate());
   pushBack(new_ldst);

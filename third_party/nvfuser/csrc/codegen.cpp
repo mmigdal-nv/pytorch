@@ -560,6 +560,27 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     return ss.str();
   }
 
+  //! Generates the given value as a pointer address as
+  //!  either:
+  //!  1. hosted_base_ptr + address_index
+  //!  2. &Tensor[index]
+  //!  depending on if the given index value carries
+  //! a hoisted component or not.
+  std::string genMaybeHoistedSmemPointer(const Val* val) {
+    auto ti = dynamic_cast<const kir::TensorIndex*>(val);
+    TORCH_INTERNAL_ASSERT(ti != nullptr, "only support tensor index input");
+    std::stringstream ss;
+
+    if (ti->hasBaseAddress()) {
+      ss << "toSmem(" << gen(ti->baseAddress()) << ") + "
+         << genTensorAddressIndex(ti, ti->view()->dtype());
+    } else {
+      ss << "&" << gen(ti) << "\n";
+    }
+
+    return ss.str();
+  }
+
   // Utility function to emit a cp.async intrinsic
   void genCpAsync(const LoadStoreOp* ldst, int vec_size) {
     auto dtype = ldst->in()->getDataType().value();
@@ -574,12 +595,12 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     if (ldst->predicate() == nullptr) {
       // Out of line predicate variant
       code_ << "<" << dtype << "," << vec_size << ">("
-            << genInline(ldst->out()->as<kir::TensorIndex>()->index()) << ","
+            << genMaybeHoistedSmemPointer(ldst->out()) << ","
             << genMaybeHoistedPointer(ldst->in()) << ");\n";
     } else {
       // Inline predicate variant
       code_ << "<" << dtype << "," << vec_size << ">("
-            << genInline(ldst->out()->as<kir::TensorIndex>()->index()) << ","
+            << genMaybeHoistedSmemPointer(ldst->out()) << ","
             << genMaybeHoistedPointer(ldst->in()) << ","
             << genInline(ldst->predicate()) << ");\n";
     }
@@ -593,7 +614,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     }
     code_ << " (";
     code_ << "*" << genVectorPointer(ldst->out(), dtype, vector_word_size)
-          << "," << genInline(ldst->in()->as<kir::TensorIndex>()->index())
+          << "," << genMaybeHoistedSmemPointer(ldst->in())
           << ");\n";
   }
 
