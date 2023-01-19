@@ -575,7 +575,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       ss << "toSmem(" << gen(ti->baseAddress()) << ") + "
          << genTensorAddressIndex(ti, ti->view()->dtype());
     } else {
-      ss << "toSmem(&" << gen(ti) << ")";
+      ss << genInline(ti->index());
     }
 
     return ss.str();
