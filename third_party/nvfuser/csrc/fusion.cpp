@@ -50,8 +50,6 @@ void swap(Fusion& a, Fusion& b) noexcept {
   swap(a.io_alias_, b.io_alias_);
   swap(a.permuted_input_map_, b.permuted_input_map_);
   swap(a.permuted_output_map_, b.permuted_output_map_);
-
-  swap(a.is_nvfuser_zero_enabled_, b.is_nvfuser_zero_enabled_);
 }
 
 std::unique_ptr<SegmentedFusion> Fusion::segment(
@@ -91,8 +89,6 @@ IrCloner Fusion::copy(const Fusion* from, Fusion* to) {
   to->all_tv_uses_valid_ = from->all_tv_uses_valid_;
   // This should never be true on copy, but copying for completeness.
   to->is_during_update_uses_ = from->is_during_update_uses_;
-
-  to->is_nvfuser_zero_enabled_ = from->is_nvfuser_zero_enabled_;
 
   return ir_cloner;
 }

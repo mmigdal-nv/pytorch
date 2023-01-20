@@ -97,8 +97,8 @@ std::string kernelPreamble() {
   ss << nvfuser_resources::array_rocm_cu;
 #endif
   ss << nvfuser_resources::random_numbers_cu;
-  ss << nvfuser_resources::index_utils_cu;
   ss << nvfuser_resources::helpers_cu;
+  ss << nvfuser_resources::index_utils_cu;
   ss << nvfuser_resources::tuple_cu;
 
   // Synchronization classes

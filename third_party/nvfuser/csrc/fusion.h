@@ -238,19 +238,6 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
     return io_alias_;
   }
 
-  //! Interface to disable nvfuser zero
-  //!  in the generated kernel.
-  void disableNvFuserZero() {
-    is_nvfuser_zero_enabled_ = false;
-  }
-
-  //! Returns true if this fusion will
-  //!  generate a kernel with nvfuser zero
-  //!  enabled.
-  bool isNvFuserZeroEnabled() const {
-    return is_nvfuser_zero_enabled_;
-  }
-
  protected:
   friend SegmentCandidateFinder;
   friend SegmentedFusion;
@@ -301,9 +288,6 @@ class TORCH_CUDA_CU_API Fusion : public IrContainer {
   //  the states are either all valid or all invalid
   bool all_tv_uses_valid_ = false;
   bool is_during_update_uses_ = false;
-
-  //! Records if nvfuser_zero is used in this fusion
-  bool is_nvfuser_zero_enabled_ = true;
 };
 
 } // namespace cuda

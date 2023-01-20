@@ -73,35 +73,6 @@ typedef unsigned SmemAddress;
 )";
 }
 
-// Generates the code that enables
-//  nvfuser_zero if enabled.
-// Generates placeholders if not enabled.
-static const char* defineNvFuserZero(bool enabled) {
-  if (enabled) {
-    return R"(
-#define NVFUSER_DEFINE_MAGIC_ZERO          \
-  __shared__ int nvfuser_zero_s;           \
-  if (threadIdx.x == 0)                    \
-    nvfuser_zero_s = 0;                    \
-  __syncthreads();                         \
-  atomicMin(&nvfuser_zero_s, threadIdx.x); \
-  int nvfuser_zero = nvfuser_zero_s;
-
-#define NVFUSER_UPDATE_MAGIC_ZERO \
-  do {                            \
-    nvfuser_zero <<= 1;           \
-  } while (0);
-)";
-  } else {
-    return R"(
-#define NVFUSER_DEFINE_MAGIC_ZERO \
-  constexpr int nvfuser_zero = 0;
-
-#define NVFUSER_UPDATE_MAGIC_ZERO
-)";
-  }
-}
-
 static const std::string& defineComplexTypes() {
   static std::string result = std::string(R"ESCAPE(
 #ifndef __NVCC__
@@ -142,9 +113,7 @@ std::string FusionExecutor::getStructuredCode(const std::string& kernel) {
 #endif
   code += includeStdComplex();
   code += std::string("namespace ") + FusionExecutor::kernelNamespace() +
-      " {\n" +
-      defineNvFuserZero(fusion_ == nullptr || fusion_->isNvFuserZeroEnabled()) +
-      defineIntegerTypes() + defineIndexMode(options_.index_mode) +
+      " {\n" + defineIntegerTypes() + defineIndexMode(options_.index_mode) +
       defineComplexTypes() + executor_utils::kernelPreamble() + kernel + "}\n";
 #ifdef USE_ROCM
   code += std::string("#pragma clang force_cuda_host_device end\n");

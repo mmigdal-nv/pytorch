@@ -572,13 +572,6 @@ void scheduleMatmul(
       params.double_buffer_options.double_buffer_smem_write) {
     cc->interleave(2, 8);
   }
-
-  // If all the indexing are lifted, should be fine disabling nvfuser_zero
-  if (params.index_lift_options.lift_gmem_read_address &&
-      params.index_lift_options.lift_smem_read_address &&
-      params.index_lift_options.lift_smem_write_address) {
-    cc->fusion()->disableNvFuserZero();
-  }
 }
 
 } // namespace cuda

@@ -1,3 +1,16 @@
+#define NVFUSER_DEFINE_MAGIC_ZERO          \
+  __shared__ int nvfuser_zero_s;           \
+  if (threadIdx.x == 0)                    \
+    nvfuser_zero_s = 0;                    \
+  __syncthreads();                         \
+  atomicMin(&nvfuser_zero_s, threadIdx.x); \
+  int nvfuser_zero = nvfuser_zero_s;
+
+#define NVFUSER_UPDATE_MAGIC_ZERO \
+  do {                            \
+    nvfuser_zero <<= 1;           \
+  } while (0);
+
 __device__ constexpr int ceilDiv(int a, int b) {
   return (a + b - 1) / b;
 }
