@@ -106,7 +106,6 @@ list(APPEND NVFUSER_SRCS
     ${NVFUSER_SRCS_DIR}/predicate_compute.cpp
     ${NVFUSER_SRCS_DIR}/python_frontend/fusion_cache.cpp
     ${NVFUSER_SRCS_DIR}/python_frontend/fusion_definition.cpp
-    ${NVFUSER_SRCS_DIR}/python_frontend/fusion_interface.cpp
     ${NVFUSER_SRCS_DIR}/register_interface.cpp
     ${NVFUSER_SRCS_DIR}/root_domain_map.cpp
     ${NVFUSER_SRCS_DIR}/scheduler/pointwise.cpp
@@ -135,10 +134,9 @@ list(APPEND NVFUSER_SRCS
 )
 
 add_library(${NVFUSER_CODEGEN} SHARED ${NVFUSER_SRCS})
-# Note: for some reason, torch_compile_options gave us segfaults when we run test_jit,
-# although it does not seem to happen anymore.
-torch_compile_options(${NVFUSER_CODEGEN})
-#target_compile_options(${NVFUSER_CODEGEN} PRIVATE -Wall -Wno-unused-function)
+# Note: for some reason, torch_compile_options gives us segfaults when we run test_jit
+#torch_compile_options(${NVFUSER_CODEGEN})
+target_compile_options(${NVFUSER_CODEGEN} PRIVATE -Wall -Wno-unused-function)
 
 if(NOT USE_ROCM)
   target_compile_options(${NVFUSER_CODEGEN} PRIVATE "-DTORCH_CUDA_BUILD_MAIN_LIB")
@@ -234,6 +232,11 @@ if(BUILD_PYTHON)
     set_target_properties(${NVFUSER} PROPERTIES LINK_FLAGS ${TORCH_PYTHON_LINK_FLAGS})
   endif()
   install(TARGETS ${NVFUSER} EXPORT NvfuserTargets DESTINATION ${TORCH_ROOT}/nvfuser/)
+
+  # install nvfuser python files
+  install(DIRECTORY "${NVFUSER_ROOT}/python/"
+          DESTINATION "${TORCH_ROOT}/nvfuser"
+          FILES_MATCHING PATTERN "*.py" )
 endif()
 
 # --- generate runtime files
