@@ -10,6 +10,7 @@
 #include <type.h>
 
 #include <iostream>
+#include "ir_interface_nodes.h"
 
 namespace torch {
 namespace jit {
@@ -481,6 +482,42 @@ AddressCompute::AddressCompute(
           stage_number,
           loop_index,
           nullptr) {}
+
+std::string AddressCompute::addressComputeOpAsString() const {
+  switch(opType()) {
+    case AddressComputeOpType::PREDICATE_INDEX: return "PREDICATE_INDEX";
+    case AddressComputeOpType::BASE_ADDRESS: return "BASE_ADDRESS";
+    case AddressComputeOpType::DOUBLE_BUFFER_SWITCH: return "DOUBLE_BUFFER_SWITCH";
+    case AddressComputeOpType::DOUBLE_BUFFER_UPDATE: return "DOUBLE_BUFFER_UPDATE";
+    case AddressComputeOpType::GMEM_INCREMENT: return "GMEM_INCREMENT";
+    case AddressComputeOpType::GMEM_DECREMENT: return "GMEM_DECREMENT";
+  }
+  return "UNSUPPORTED";
+}
+
+std::string AddressCompute::toString(int indent_size) const {
+  std::stringstream ss;
+  indent(ss, indent_size) << "AddressCompute(op=" << addressComputeOpAsString()
+    << ", dataTv=" << ir_utils::varName(dataTv())
+    << ", addressTv=" << ir_utils::varName(addressTv())
+    // << " ), doubleBufferAllocSize( " << doubleBufferByteSize()
+    << ", loopOffset=" << loopOffset()
+    << ", stageNumber=" << stageNumber()
+    << ")\n";
+  return ss.str();
+}
+
+std::string AddressCompute::toInlineString(int indent_size) const {
+  std::stringstream ss;
+  ss << "AddressCompute(op=" << addressComputeOpAsString()
+    << ", dataTv=" << ir_utils::varName(dataTv())
+    << ", addressTv=" << ir_utils::varName(addressTv())
+    // << " ), doubleBufferAllocSize( " << doubleBufferByteSize()
+    << ", loopOffset=" << loopOffset()
+    << ", stageNumber=" << stageNumber()
+    << ")\n";
+  return ss.str();
+}
 
 NVFUSER_DEFINE_CLONE_AND_CREATE(AddressCompute)
 

@@ -493,6 +493,9 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
     return opType() == AddressComputeOpType::GMEM_DECREMENT;
   }
 
+  std::string toString(int indent_size = 0) const override;
+  std::string toInlineString(int indent_size = 0) const override;
+
  private:
   explicit AddressCompute(
       IrBuilderPasskey passkey,
@@ -505,6 +508,8 @@ class TORCH_CUDA_CU_API AddressCompute final : public Expr {
       int stage_number,
       Val* loop_index,
       kir::TensorIndex* increment_value);
+
+  std::string addressComputeOpAsString() const;
 };
 
 // Simply prints "DEFINE_MAGIC_ZERO" in the code in accordance with magic_zero
