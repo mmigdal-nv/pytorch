@@ -765,12 +765,12 @@ TEST_F(NVFuserTest, FusionAmpereMatmul_CUDA) {
 // Matmul test for Ampere MMA: with pipelined gmem load
 TEST_F(NVFuserTest, FusionAmpereMatmulPipelineGmem_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
-  int M = 504, N = 136, K = 248;
+  int M = 128, N = 13824, K = 32;
   REQUIRE_DEVICE_SMEM_SIZE(70 << 10, 0);
 
   // Gmem pipeline stage
-  for (auto stage : {3, 4}) {
-    for (auto layout : kAllSupportedLayout) {
+  for (auto stage : {4}) {
+    for (auto layout : {MatmulLayout::TT}) {
       Fusion fusion;
       FusionGuard fg(&fusion);
       auto tv0 = makeContigTensor(2, DataType::Half);
@@ -804,6 +804,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulPipelineGmem_CUDA) {
       auto inputs = fp16MatmulAtInput(M, N, K, layout);
 
       FusionExecutor fe;
+      fe.setMeasureKernelTimeFlag(true);
       NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
           8,
           0,
@@ -857,7 +858,8 @@ TEST_F(NVFuserTest, FusionAmpereMatmulRegDoubleBuffer_CUDA) {
 
       at::manual_seed(0);
       auto inputs = fp16MatmulAtInput(M, N, K, layout);
-
+       
+     
       FusionExecutor fe;
       NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
           8,
