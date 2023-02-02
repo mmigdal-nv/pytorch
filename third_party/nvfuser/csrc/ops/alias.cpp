@@ -76,7 +76,7 @@ TensorView* view(TensorView* x, DataType dtype) {
   TORCH_INTERNAL_ASSERT(false, "Unsupported reinterpret casting view");
 }
 
-TensorView* view(
+TensorView* reshape(
     TensorView* x,
     const std::vector<int64_t>& original_sizes,
     const std::vector<int64_t>& new_sizes) {
@@ -84,8 +84,6 @@ TensorView* view(
   TORCH_INTERNAL_ASSERT(
       TensorDomain::noReductions(x->getMaybeRFactorDomain()).size() ==
       original_sizes.size());
-  TORCH_INTERNAL_ASSERT(
-      !original_sizes.empty(), "No support for 0-dim tensors in view support.");
 
   auto view_analysis = analyzeView(x, original_sizes, new_sizes);
 

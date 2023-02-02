@@ -1154,7 +1154,7 @@ TEST_F(NVFuserTest, FusionBroadcastConcretization3_CUDA) {
   auto tv2 = sum(tv0, {0});
   auto tv3 = set(tv2);
   auto tv4 =
-      view(tv3, {input_shape.begin() + 1, input_shape.end()}, output_shape);
+      reshape(tv3, {input_shape.begin() + 1, input_shape.end()}, output_shape);
   auto tv5 = add(tv4, IrBuilder::create<Double>(1));
   fusion.addOutput(tv5);
 
@@ -1162,7 +1162,7 @@ TEST_F(NVFuserTest, FusionBroadcastConcretization3_CUDA) {
   tv4->axis(-1)->parallelize(ParallelType::TIDx);
   tv5->axis(-1)->parallelize(ParallelType::TIDx);
 
-  // The view op adds a broadcast domain in tv4, which is
+  // The reshape op adds a broadcast domain in tv4, which is
   // parallelized. Howver, it is never materialized, so there should
   // be no parallel broadcast.
 
@@ -6142,7 +6142,7 @@ TEST_F(NVFuserTest, FusionRepro2094_CUDA) {
         {IrBuilder::create<Int>(1),
          IrBuilder::create<Int>(1024),
          IrBuilder::create<Int>(768)});
-    auto tv5 = view(tv2, {1024, 768}, {1, 1024, 768});
+    auto tv5 = reshape(tv2, {1024, 768}, {1, 1024, 768});
     auto tv6 = castOp(DataType::Float, tv5);
     auto s7 = IrBuilder::create<Double>(0.5);
     auto tv8 = mul(tv6, s7);
@@ -6186,7 +6186,7 @@ TEST_F(NVFuserTest, FusionRepro2094_CUDA) {
     auto tv29 = add(tv28, tv4);
     auto tv30 = castOp(DataType::Float, tv29);
     auto tv31 = castOp(DataType::Half, tv30);
-    auto tv32 = view(tv31, {1, 1024, 768}, {1024, 768});
+    auto tv32 = reshape(tv31, {1, 1024, 768}, {1024, 768});
     fusion->addOutput(tv5);
     fusion->addOutput(tv16);
     fusion->addOutput(tv20);
@@ -6524,7 +6524,6 @@ TEST_F(NVFuserTest, FusionHuggingFaceRepro2064_CUDA) {
 #ifndef USE_ROCM
 
 TEST_F(NVFuserTest, FusionCastings_CUDA) {
-  // TODO: this test is failing
   auto fusion_ptr = std::make_unique<Fusion>();
   Fusion& fusion = *fusion_ptr.get();
   FusionGuard fg(&fusion);
@@ -7526,6 +7525,55 @@ TEST_F(
       __LINE__,
       __FILE__,
       "");
+}
+
+TEST_F(NVFuserTest, FusionExprSortMatmulLikeSchedule_CUDA) {
+  // See https://github.com/csarofeen/pytorch/pull/2366
+  Fusion fusion;
+  FusionGuard fg(&fusion);
+
+  constexpr int M1 = 5, M2 = 5, N1 = 6, N2 = 6, K1 = 2, K2 = 2;
+
+  auto tv0 = makeContigConcreteTensor({M1, M2, K1, K2}, DataType::Double);
+  auto tv1 = makeContigConcreteTensor({N1, N2, K1, K2}, DataType::Double);
+  fusion.addInput(tv0);
+  fusion.addInput(tv1);
+
+  auto tv2 = broadcast(tv0, {false, true, false, true, false, false});
+  auto tv3 = broadcast(tv1, {true, false, true, false, false, false});
+  auto tv4 = mul(tv2, tv3);
+  auto tv5 = sum(tv4, {-1, -2});
+  fusion.addOutput(tv5);
+
+  auto tv6 = tv0->cacheAfter();
+  auto tv7 = tv1->cacheAfter();
+  auto tv8 = tv6->cacheAfter();
+  auto tv9 = tv7->cacheAfter();
+  auto tv10 = tv5->cacheBefore();
+
+  tv6->inlineAt(3);
+  tv7->inlineAt(3);
+  tv8->inlineAt(4);
+  tv9->inlineAt(4);
+  tv2->inlineAt(6);
+  tv3->inlineAt(6);
+  tv4->inlineAt(6);
+  tv10->inlineAt(4);
+
+  auto options = at::TensorOptions().dtype(kDouble).device(at::kCUDA, 0);
+
+  at::Tensor t0 = at::randn({M1, M2, K1, K2}, options);
+  at::Tensor t1 = at::randn({N1, N2, K1, K2}, options);
+  auto expect =
+      at::mm(t0.view({M1 * M2, K1 * K2}), t1.view({N1 * N2, K1 * K2}).t())
+          .view({M1, M2, N1, N2})
+          .transpose(1, 2);
+
+  FusionExecutor fe;
+  fe.compileFusion(&fusion, {t0, t1});
+  auto cg_outputs = fe.runFusion({t0, t1});
+
+  testValidate(fe.kernel(), cg_outputs, {t0, t1}, {expect}, __LINE__, __FILE__);
 }
 
 // Test file size should be up to 10K LoC. Create a new file for more tests.
