@@ -400,11 +400,11 @@ __device__ double pow(double a, int64_t b) {
   return pow(a, (double)b);
 }
 
-int64_t pow(int64_t a, int b) {
+__device__ int64_t pow(int64_t a, int b) {
   return pow(a, (int64_t)b);
 }
 
-int64_t pow(int a, int64_t b) {
+__device__ int64_t pow(int a, int64_t b) {
   return pow((int64_t)a, b);
 }
 
