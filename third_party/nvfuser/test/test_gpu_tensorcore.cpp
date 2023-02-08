@@ -2768,7 +2768,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck4warp_CUDA) {
   REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
-  for (auto layout : kAllSupportedLayout) {
+  for (auto layout : kAllSupportedMatmulLayout) {
     // Symmetric tile with 16x16x16 macro,
     //  supports mn_size of multiple of 32,
     //  and k size multiple of 16.
@@ -2809,7 +2809,10 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck4warp_CUDA) {
             8,
             0,
             fe.compileFusion(
-                &fusion, {inputs.first, inputs.second}, LaunchParams()));
+                &fusion,
+                {inputs.first, inputs.second},
+                LaunchParams(),
+                matmul_cparams));
         auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
         auto tref = atMatmul(
             inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -2830,7 +2833,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
   REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
-  for (auto layout : kAllSupportedLayout) {
+  for (auto layout : kAllSupportedMatmulLayout) {
     // ASymmetric tile with 16x16x16 macro,
     for (int m_size : {256}) {
       for (int n_size : {32, 64, 96, 128}) {
@@ -2873,7 +2876,10 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
               8,
               0,
               fe.compileFusion(
-                  &fusion, {inputs.first, inputs.second}, LaunchParams()));
+                  &fusion,
+                  {inputs.first, inputs.second},
+                  LaunchParams(),
+                  matmul_cparams));
           auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
           auto tref = atMatmul(
               inputs.first.to(at::kFloat),
@@ -2890,7 +2896,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
   REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 248;
-  for (auto layout : kAllSupportedLayout) {
+  for (auto layout : kAllSupportedMatmulLayout) {
     for (int k_size : {32, 48, 64}) {
       Fusion fusion;
       FusionGuard fg(&fusion);
@@ -2931,7 +2937,10 @@ TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
           8,
           0,
           fe.compileFusion(
-              &fusion, {inputs.first, inputs.second}, LaunchParams()));
+              &fusion,
+              {inputs.first, inputs.second},
+              LaunchParams(),
+              matmul_cparams));
       auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
       auto tref = atMatmul(
           inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
@@ -2994,7 +3003,7 @@ TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
 TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoadLargeK_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
   int M = 504, N = 136, K = 2048;
-  for (auto layout : kAllSupportedLayout) {
+  for (auto layout : kAllSupportedMatmulLayout) {
     Fusion fusion;
     FusionGuard fg(&fusion);
     auto tv0 = makeContigTensor(2, DataType::Half);
@@ -3032,7 +3041,10 @@ TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoadLargeK_CUDA) {
         8,
         0,
         fe.compileFusion(
-            &fusion, {inputs.first, inputs.second}, LaunchParams()));
+            &fusion,
+            {inputs.first, inputs.second},
+            LaunchParams(),
+            matmul_cparams));
     auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
     auto tref = atMatmul(
         inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
