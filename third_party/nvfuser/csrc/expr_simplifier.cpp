@@ -1697,8 +1697,8 @@ Val* simplifyExpr(Val* value, const std::list<VarInfo>& variables) {
     RUN_PASS(distributeDivisibleDivMod);
     PASS_BARRIER;
     RUN_PASS(distributeMul);
-    PASS_BARRIER;
-    RUN_PASS(reducePredicateRegisterUsage);
+    //PASS_BARRIER;
+    //RUN_PASS(reducePredicateRegisterUsage);
   }
 
   auto unflattened = assoc_comm::unflatten(simplified, variables);
