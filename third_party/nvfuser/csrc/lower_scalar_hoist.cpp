@@ -236,10 +236,10 @@ Val* CommonScalarMap::hoistScalar(
   if (value == nullptr) {
     return nullptr;
   }
+  value = simplifyExpr(value, getLoopIndices(loops));
   if (isOptionDisabled(DisableOption::IndexHoist)) {
     return value;
   }
-  value = simplifyExpr(value, getLoopIndices(loops));
   std::vector<Val*> seen_subexprs;
   return hoistScalarImpl(
              value,

@@ -226,7 +226,6 @@ void Fusion::addOutput(Val* output) {
   // unfortunately would call addOutput after we marked io_alias_ map.
   // TORCH_CHECK(io_alias_.count(output) == 0,
   //     "can't register aliased output as real output");
-
   assertInContainer(output, "Cannot register output ");
   if (output->getValType().value() == ValType::TensorView) {
     auto tv = output->as<TensorView>();
@@ -686,13 +685,14 @@ void Fusion::aliasOutputToInput(Val* output, Val* input) {
   if (input->getDataType().value() != output->getDataType().value()) {
     output = castOp(input->getDataType().value(), output);
   }
-  // TODO: output should be marked at the end of fusion definition #1488
-  addOutput(output);
 
   TORCH_INTERNAL_ASSERT(
       isAliasCompatible(input, output),
       "The input and output values are not alias-compatible.");
   io_alias_[output] = input;
+
+  // TODO: output should be marked at the end of fusion definition #1488
+  addOutput(output);
 }
 
 Val* Fusion::getOutputAlias(Val* output) {

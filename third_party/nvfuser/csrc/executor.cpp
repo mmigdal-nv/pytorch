@@ -293,7 +293,19 @@ void FusionExecutor::compileFusion(
   }
 
   kernel_code_ = codegen::generateCudaKernel(kernel, kernelName());
-  const auto structured_code = getStructuredCode(kernel_code_);
+
+  auto load_external_code = [](const char* external_code_path) {
+    std::cout << "--------> Compiling external cuda code: "
+              << external_code_path << std::endl;
+    std::ifstream cuda_src(external_code_path);
+    std::stringstream buffer;
+    buffer << cuda_src.rdbuf();
+    return buffer.str();
+  };
+  auto external_code_path = std::getenv("PYTORCH_NVFUSER_EXTERNAL_SRC");
+  const auto structured_code = external_code_path
+      ? load_external_code(external_code_path)
+      : getStructuredCode(kernel_code_);
 
   const auto& kernel_summary = kernel->summary();
 
@@ -349,7 +361,7 @@ void FusionExecutor::compileFusion(
           fusion_id_,
           block_size,
           maxrregcount_high_water_mark,
-          save_compiled_binary_);
+          save_compiled_binary_ || isDebugDumpEnabled(DebugDumpOption::Sass));
   TORCH_INTERNAL_ASSERT(
       fusion_id_ > 0, "failed to assign a fusion_id_ after compilation.");
 
@@ -360,6 +372,10 @@ void FusionExecutor::compileFusion(
       CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
       compiled_kernel_.function));
   maybe_available_dynamic_smem_ = max_dynamic_smem;
+
+  if (isDebugDumpEnabled(DebugDumpOption::Sass)) {
+    std::cout << disassembledKernelSASS() << std::endl;
+  }
 }
 
 namespace {
