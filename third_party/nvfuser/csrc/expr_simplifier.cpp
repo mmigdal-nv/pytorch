@@ -1105,7 +1105,16 @@ bool isPositive(Val* value, const VarInfoMap& var_info) {
     return true;
   }
   if (auto ns = dynamic_cast<NamedScalar*>(value)) {
-    if (ns->getParallelDim().has_value()) {
+    // TODO: currently we are implicitly assuming tensor sizes to be non-zero.
+    // For example, if I have T0[2, 0] and I do T0->merge(0), I get T0[2*0]. And
+    // during indexing, we will generate index like: (i / 0, i % 0). Strictly
+    // speaking, this is wrong, but we are not handling this edge case. We are
+    // just hoping that we will be lucky and this will work. For expression
+    // simplification, I am not considering this edge case either, because all
+    // simplifications involving div and mod requires the divisor to be
+    // non-zero, and I don't want this edge case to block the simplification of
+    // normal cases.
+    if (ns->getParallelDim().has_value() || ns->isTensorSize()) {
       return true;
     }
   }
@@ -1190,6 +1199,8 @@ namespace rules {
 // a % 1 -> 0
 // a / 1 -> a
 // x - x -> 0
+// b && b -> b (assuming no side effect on b)
+// b || b -> b (assuming no side effect on b)
 // ...
 Val* eliminateTrivialComputation(Val* value, const VarInfoMap& var_info) {
   auto folded = foldConstants(value);
@@ -1201,49 +1212,77 @@ Val* eliminateTrivialComputation(Val* value, const VarInfoMap& var_info) {
       return fop->input(0);
     }
     auto op = fop->getOpType();
-    std::vector<Val*> new_inputs;
-    Val* const_term = nullptr;
-    bool changed = false;
-    for (auto inp : fop->inputs()) {
-      if (inp->isConstScalar()) {
-        if (const_term == nullptr) {
-          const_term = inp;
+    { // 0 * a -> 0, 1 * a -> a
+      std::vector<Val*> new_inputs;
+      Val* const_term = nullptr;
+      bool changed = false;
+      for (auto inp : fop->inputs()) {
+        if (inp->isConstScalar()) {
+          if (const_term == nullptr) {
+            const_term = inp;
+          } else {
+            auto out = IrBuilder::newScalar(*const_term->getDataType());
+            IrBuilder::create<BinaryOp>(op, out, const_term, inp);
+            const_term = out;
+            changed = true;
+          }
         } else {
-          auto out = IrBuilder::newScalar(*const_term->getDataType());
-          IrBuilder::create<BinaryOp>(op, out, const_term, inp);
-          const_term = out;
+          new_inputs.emplace_back(inp);
+        }
+      }
+      if (const_term != nullptr) {
+        auto folded_const = foldConstants(const_term);
+        if (folded_const != const_term) {
+          changed = true;
+          const_term = folded_const;
+        }
+        if (assoc_comm::isBlackhole(const_term, op)) {
+          // 0 * a -> 0
+          return const_term;
+        }
+        if (assoc_comm::isIdentity(const_term, op)) {
+          // 1 * a -> a
+          const_term = nullptr;
           changed = true;
         }
-      } else {
-        new_inputs.emplace_back(inp);
+      }
+      if (changed) {
+        if (const_term != nullptr) {
+          new_inputs.emplace_back(const_term);
+        }
+        if (new_inputs.size() == 1) {
+          return new_inputs.at(0);
+        }
+        auto output = IrBuilder::newScalar(*value->getDataType());
+        IrBuilder::create<FOp>(op, output, std::move(new_inputs));
+        return output;
       }
     }
-    if (const_term != nullptr) {
-      auto folded_const = foldConstants(const_term);
-      if (folded_const != const_term) {
-        changed = true;
-        const_term = folded_const;
+    { // b && b -> b, b || b -> b
+      if (op == BinaryOpType::And || op == BinaryOpType::Or) {
+        std::vector<Val*> dedup_input;
+        for (auto v : fop->inputs()) {
+          bool found_dup = false;
+          for (auto v2 : dedup_input) {
+            if (v->sameAs(v2)) {
+              found_dup = true;
+              break;
+            }
+          }
+          if (!found_dup) {
+            dedup_input.emplace_back(v);
+          }
+        }
+        if (dedup_input.size() < fop->inputs().size()) {
+          if (dedup_input.size() == 1) {
+            return dedup_input.at(0);
+          } else {
+            auto output = IrBuilder::newScalar(*value->getDataType());
+            IrBuilder::create<FOp>(op, output, std::move(dedup_input));
+            return output;
+          }
+        }
       }
-      if (assoc_comm::isBlackhole(const_term, op)) {
-        // 0 * a -> 0
-        return const_term;
-      }
-      if (assoc_comm::isIdentity(const_term, op)) {
-        // 1 * a -> a
-        const_term = nullptr;
-        changed = true;
-      }
-    }
-    if (changed) {
-      if (const_term != nullptr) {
-        new_inputs.emplace_back(const_term);
-      }
-      if (new_inputs.size() == 1) {
-        return new_inputs.at(0);
-      }
-      auto output = IrBuilder::newScalar(*value->getDataType());
-      IrBuilder::create<FOp>(op, output, std::move(new_inputs));
-      return output;
     }
   } else if (auto bop = dynamic_cast<BinaryOp*>(value->definition())) {
     if (bop->getBinaryOpType() == BinaryOpType::Mod) {
@@ -1390,7 +1429,8 @@ Val* cancelDivMod(Val* value, const VarInfoMap& var_info) {
   auto lhs = sym_algebra::factorize(divmod->lhs());
   auto rhs = sym_algebra::factorize(divmod->rhs());
   auto gcd = sym_algebra::greatestCommonDivisor({lhs, rhs});
-  if (gcd->isOneInt() || !prove::isNonZero(gcd, var_info)) {
+  if (gcd->isOneInt() || gcd->getDouble() == 1.0 ||
+      !prove::isNonZero(gcd, var_info)) {
     return value;
   }
   auto numerator = sym_algebra::divideFactorized(lhs, gcd);
@@ -1637,6 +1677,141 @@ Val* reducePredicateRegisterUsage(Val* value, const VarInfoMap& var_info) {
   return output;
 }
 
+// Merge values using the fundamental division-with-remainder property:
+// a = a / b * b + a % b
+// This pass do merges of the following patterns:
+// Pattern 1: a / b * b + a % b -> a
+// Pattern 2: a / b * (b*c) + a % b * c -> a * c
+Val* fundamentalDivisionWithRemainderProperty(
+    Val* value,
+    const VarInfoMap& var_info) {
+  auto fadd = toFlattenedAdd(value->definition());
+  if (!fadd) {
+    return value;
+  }
+  // Get all patterns like: (a op b) * c, for example, if I have
+  // (a / b) * (e / f), the this funciton will return:
+  // {(a, b, e/f), (e, f, a/b)}
+  auto get_a_op_b_mul_c = [](BinaryOpType op, Val* x) {
+    std::vector<std::tuple<Val*, Val*, Val*>> result;
+    auto fmul = toFlattenedMul(x->definition());
+    if (fmul == nullptr) {
+      return result;
+    }
+    for (auto j : c10::irange(fmul->inputs().size())) {
+      auto vmul = fmul->input(j);
+      if (!isIntegralType(*vmul->getDataType())) {
+        continue;
+      }
+      auto bop = dynamic_cast<BinaryOp*>(vmul->definition());
+      if (bop == nullptr) {
+        continue;
+      }
+      if (bop->getBinaryOpType() == op) {
+        auto a = bop->lhs();
+        auto b = bop->rhs();
+        std::vector<Val*> other_terms;
+        for (auto k : c10::irange(fmul->inputs().size())) {
+          if (j == k) {
+            continue;
+          }
+          other_terms.emplace_back(fmul->input(k));
+        }
+        Val* c;
+        if (other_terms.size() == 0) {
+          continue;
+        } else if (other_terms.size() == 1) {
+          c = other_terms.at(0);
+        } else {
+          c = IrBuilder::newScalar(*vmul->getDataType());
+          IrBuilder::create<FOp>(BinaryOpType::Mul, c, std::move(other_terms));
+        }
+        if (!isIntegralType(*a->getDataType()) ||
+            !isIntegralType(*b->getDataType()) ||
+            !isIntegralType(*c->getDataType())) {
+          continue;
+        }
+        result.push_back(std::make_tuple(a, b, c));
+      }
+    }
+    return result;
+  };
+  // Find a / b * b or a / b * (b*c)
+  std::vector<std::tuple<size_t, Val*, Val*, Val*>> divmuls;
+  for (auto i : c10::irange(fadd->inputs().size())) {
+    auto vadd = fadd->input(i);
+    if (!isIntegralType(*vadd->getDataType())) {
+      continue;
+    }
+    for (auto& [a, b, bc] : get_a_op_b_mul_c(BinaryOpType::Div, vadd)) {
+      divmuls.push_back(std::make_tuple(i, a, b, bc));
+    }
+  }
+  // Find a % b or a % b * c
+  std::vector<std::tuple<size_t, Val*, Val*, Val*>> modmuls;
+  for (auto i : c10::irange(fadd->inputs().size())) {
+    auto vadd = fadd->input(i);
+    if (!isIntegralType(*vadd->getDataType())) {
+      continue;
+    }
+    auto bop = dynamic_cast<BinaryOp*>(vadd->definition());
+    if (bop != nullptr && bop->getBinaryOpType() == BinaryOpType::Mod) {
+      if (!isIntegralType(*bop->lhs()->getDataType()) ||
+          !isIntegralType(*bop->rhs()->getDataType())) {
+        continue;
+      }
+      modmuls.push_back(std::make_tuple(
+          i,
+          bop->lhs(),
+          bop->rhs(),
+          IrBuilder::newConstant(1, *vadd->getDataType())));
+    }
+    for (auto& [a, b, c] : get_a_op_b_mul_c(BinaryOpType::Mod, vadd)) {
+      modmuls.push_back(std::make_tuple(i, a, b, c));
+    }
+  }
+  // Find matching divmul and modmul
+  for (auto& [i, a1, b1, bc] : divmuls) {
+    for (auto& [j, a2, b2, c] : modmuls) {
+      if (i == j) {
+        continue;
+      }
+      if (!a1->sameAs(a2) || !b1->sameAs(b2)) {
+        continue;
+      }
+      if (!prove::isNonZero(b1, var_info)) {
+        continue;
+      }
+      auto factorized_b = sym_algebra::factorize(b1);
+      auto factorized_bc = sym_algebra::factorize(bc);
+      auto quotient =
+          sym_algebra::divideFactorized(factorized_bc, factorized_b);
+      if (quotient != nullptr && quotient->sameAs(c)) {
+        // Found match!
+        // Simplify [1] + [2] + ... + [i] + ... + [j] + ...
+        // As: [1] + [2] + a * c ... + ...  + ...
+        Val* ac = IrBuilder::newScalar(*value->getDataType());
+        IrBuilder::create<FOp>(BinaryOpType::Mul, ac, std::vector<Val*>{a1, c});
+        std::vector<Val*> terms{ac};
+        for (auto k : c10::irange(fadd->inputs().size())) {
+          if (k == i || k == j) {
+            continue;
+          }
+          terms.emplace_back(fadd->input(k));
+        }
+        if (terms.size() == 1) {
+          return terms.at(0);
+        } else {
+          Val* result = IrBuilder::newScalar(*value->getDataType());
+          IrBuilder::create<FOp>(BinaryOpType::Add, result, terms);
+          return result;
+        }
+      }
+    }
+  }
+  return value;
+}
+
 } // namespace rules
 
 #define RUN_PASS(pass_name)                                      \
@@ -1693,6 +1868,7 @@ Val* simplifyExpr(Val* value, const std::list<VarInfo>& variables) {
     RUN_PASS(eliminateTrivialPredicate);
     RUN_PASS(simplifyDivisibleDivMod);
     RUN_PASS(cancelDivMod);
+    RUN_PASS(fundamentalDivisionWithRemainderProperty);
     PASS_BARRIER;
     RUN_PASS(distributeDivisibleDivMod);
     PASS_BARRIER;

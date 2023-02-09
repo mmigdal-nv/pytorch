@@ -3401,19 +3401,13 @@ kir::TensorIndex* Index::generateAddressTensorIndex(
   return IrBuilder::create<kir::TensorIndex>(address_tv, index);
 }
 
-Val* Index::arange(
+Val* Index::iota(
     TensorView* consumer_tv,
     const std::vector<kir::ForLoop*>& loops,
     Val* start,
     Val* step,
     DataType dtype) {
   auto linear_index = Index::getLinearLogicalIndex(consumer_tv, loops);
-  if (start->getDataType() != dtype) {
-    start = castOp(dtype, start);
-  }
-  if (step->getDataType() != dtype) {
-    step = castOp(dtype, step);
-  }
   auto result = add(start, mul(step, linear_index));
   GpuLower::current()->commonScalarMap().hoistScalar(result, loops);
   return result;

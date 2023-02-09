@@ -256,46 +256,62 @@ void initNvFuserPythonBindings(PyObject* module) {
           py::return_value_policy::reference)
       .def(
           "define_constant",
-          [](nvfuser::FusionDefinition& self, double val) -> nvfuser::Scalar {
+          [](nvfuser::FusionDefinition& self,
+             double val,
+             Nvf::DataType dtype = Nvf::DataType::Double) -> nvfuser::Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (double)");
             nvfuser::Scalar out = self.defineScalar();
             self.defineRecord(new nvfuser::ConstantRecord<Nvf::Double, double>(
-                {self.recordingState(out())}, val));
+                {self.recordingState(out())}, val, dtype));
             return out;
           },
+          py::arg("val"),
+          py::arg("dtype") = Nvf::DataType::Double,
           py::return_value_policy::reference)
       .def(
           "define_constant",
           [](nvfuser::FusionDefinition& self,
-             std::complex<double> val) -> nvfuser::Scalar {
+             std::complex<double> val,
+             Nvf::DataType dtype =
+                 Nvf::DataType::ComplexDouble) -> nvfuser::Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (complex)");
             nvfuser::Scalar out = self.defineScalar();
             self.defineRecord(
                 new nvfuser::
                     ConstantRecord<Nvf::ComplexDouble, std::complex<double>>(
-                        {self.recordingState(out())}, val));
+                        {self.recordingState(out())}, val, dtype));
             return out;
           },
+          py::arg("val"),
+          py::arg("dtype") = Nvf::DataType::ComplexDouble,
           py::return_value_policy::reference)
       .def(
           "define_constant",
-          [](nvfuser::FusionDefinition& self, bool val) -> nvfuser::Scalar {
+          [](nvfuser::FusionDefinition& self,
+             bool val,
+             Nvf::DataType dtype = Nvf::DataType::Bool) -> nvfuser::Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (bool)");
             nvfuser::Scalar out = self.defineScalar();
             self.defineRecord(new nvfuser::ConstantRecord<Nvf::Bool, bool>(
-                {self.recordingState(out())}, val));
+                {self.recordingState(out())}, val, dtype));
             return out;
           },
+          py::arg("val"),
+          py::arg("dtype") = Nvf::DataType::Bool,
           py::return_value_policy::reference)
       .def(
           "define_constant",
-          [](nvfuser::FusionDefinition& self, int64_t val) -> nvfuser::Scalar {
+          [](nvfuser::FusionDefinition& self,
+             int64_t val,
+             Nvf::DataType dtype = Nvf::DataType::Int) -> nvfuser::Scalar {
             FUSER_PERF_SCOPE("FusionDefinition.define_constant (int)");
             nvfuser::Scalar out = self.defineScalar();
             self.defineRecord(new nvfuser::ConstantRecord<Nvf::Int, int64_t>(
-                {self.recordingState(out())}, val));
+                {self.recordingState(out())}, val, dtype));
             return out;
           },
+          py::arg("val"),
+          py::arg("dtype") = Nvf::DataType::Int,
           py::return_value_policy::reference)
       .def(
           "define_scalar",
@@ -1387,7 +1403,7 @@ void initNvFuserPythonBindings(PyObject* module) {
       [](nvfuser::FusionDefinition::Operators& self,
          nvfuser::Tensor arg,
          std::vector<int64_t>& original_shape,
-         int64_t dim) -> nvfuser::Tensor {
+         std::vector<int64_t>& dims) -> nvfuser::Tensor {
         FUSER_PERF_SCOPE("Operators.squeeze");
         nvfuser::FusionDefinition* fd = self.fusion_definition;
         nvfuser::Tensor output = fd->defineTensor(arg.dims - 1);
@@ -1395,12 +1411,12 @@ void initNvFuserPythonBindings(PyObject* module) {
             {fd->recordingState(arg())},
             {fd->recordingState(output())},
             original_shape,
-            dim));
+            dims));
         return output;
       },
       py::arg("arg"),
       py::arg("original_shape"),
-      py::arg("dim"),
+      py::arg("dims"),
       py::return_value_policy::reference);
   nvf_ops.def(
       "tensor_sizes",

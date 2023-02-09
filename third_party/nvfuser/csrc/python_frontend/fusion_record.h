@@ -443,14 +443,14 @@ struct SqueezeOpRecord : RecordFunctor {
       std::vector<State> _args,
       std::vector<State> _outputs,
       std::vector<int64_t>& original_shape,
-      int64_t dim)
+      std::vector<int64_t>& dims)
       : RecordFunctor(
             std::move(_args),
             std::move(_outputs),
             "ops.squeeze",
             RecordType::SqueezeOp),
         original_shape_(std::move(original_shape)),
-        dim_(dim) {}
+        dims_(std::move(dims)) {}
   virtual ~SqueezeOpRecord() = default;
   virtual RecordFunctor* clone() final {
     return new SqueezeOpRecord(*this);
@@ -465,11 +465,13 @@ struct SqueezeOpRecord : RecordFunctor {
     for (auto shape : original_shape_) {
       original_shape_hash ^= static_cast<size_t>(shape);
     }
-    size_t squeeze_dim_hash = static_cast<size_t>(dim_);
-    squeeze_dim_hash = (squeeze_dim_hash & 0xffff) << 16;
-    return result | squeeze_dim_hash | (original_shape_hash & 0xffff);
+    size_t squeeze_dims_hash = 0;
+    for (auto dim : dims_) {
+      squeeze_dims_hash ^= static_cast<size_t>(dim);
+    }
+    squeeze_dims_hash = (squeeze_dims_hash & 0xffff) << 16;
+    return result | squeeze_dims_hash | (original_shape_hash & 0xffff);
   }
-
   virtual bool operator==(const RecordFunctor& other) const final {
     auto result = false;
     if (auto child_ptr = dynamic_cast<const SqueezeOpRecord*>(&other)) {
@@ -477,7 +479,12 @@ struct SqueezeOpRecord : RecordFunctor {
       if (result) {
         result = (original_shape_.size() == child_ptr->original_shape_.size());
         if (result) {
-          result = (dim_ == child_ptr->dim_);
+          for (size_t i = 0; i < dims_.size(); ++i) {
+            if (dims_[i] != child_ptr->dims_[i]) {
+              result = false;
+              break;
+            }
+          }
         }
         if (result) {
           for (size_t i = 0; i < original_shape_.size(); ++i) {
@@ -495,7 +502,7 @@ struct SqueezeOpRecord : RecordFunctor {
   void operator()(FusionDefinition& fd) final {
     auto arg =
         fd.getFusionState(args_.at(0).index)->template as<Nvf::TensorView>();
-    auto output = Nvf::squeeze(arg, original_shape_, dim_);
+    auto output = Nvf::squeeze(arg, original_shape_, dims_);
     fd.setFusionState(outputs_.at(0).index, output);
   }
 
@@ -511,8 +518,17 @@ struct SqueezeOpRecord : RecordFunctor {
       }
       os << shape;
     }
+    os << "], dims=[";
+    first_arg = true;
+    for (auto dim : dims_) {
+      if (first_arg) {
+        first_arg = false;
+      } else {
+        os << ", ";
+      }
+      os << dim;
+    }
     os << "]";
-    os << ", dim=" << dim_;
     if (close_function) {
       os << ")";
     }
@@ -522,7 +538,7 @@ struct SqueezeOpRecord : RecordFunctor {
   //! Represents the tensor dimensions of the input tensor.
   std::vector<int64_t> original_shape_;
   //! Dimension to squeeze.
-  int64_t dim_;
+  std::vector<int64_t> dims_;
 };
 
 //! Specialized Record Functor for the FusionDefinition's broadcast_in_dim op.
@@ -914,13 +930,17 @@ struct CastOpRecord : RecordFunctor {
 
 template <typename ExprType, typename ValueType>
 struct ConstantRecord : RecordFunctor {
-  ConstantRecord(std::vector<State> _outputs, ValueType val)
+  ConstantRecord(
+      std::vector<State> _outputs,
+      ValueType val,
+      Nvf::DataType dtype)
       : RecordFunctor(
             {},
             std::move(_outputs),
             "define_constant",
             RecordType::Constant),
-        value_(val) {}
+        value_(val),
+        dtype_(dtype) {}
   virtual ~ConstantRecord() = default;
   virtual RecordFunctor* clone() final {
     return new ConstantRecord(*this);
@@ -944,7 +964,7 @@ struct ConstantRecord : RecordFunctor {
   }
 
   virtual void operator()(FusionDefinition& fd) final {
-    Nvf::Val* output = Nvf::IrBuilder::create<ExprType>(value_);
+    Nvf::Val* output = Nvf::IrBuilder::create<ExprType>(value_, dtype_);
     fd.setFusionState(outputs_.at(0).index, output);
   }
 
@@ -953,9 +973,16 @@ struct ConstantRecord : RecordFunctor {
     if (std::is_same<ValueType, bool>::value) {
       bool value = torch::jit::fuser::cuda::__toBool(value_);
       os << (value ? "True" : "False");
+    } else if (
+        std::is_same<ValueType, std::complex<float>>::value ||
+        std::is_same<ValueType, std::complex<double>>::value) {
+      os << std::showpoint << std::real(value_) << "+" << std::showpoint
+         << std::imag(value_) << "j";
     } else {
       os << std::showpoint << value_;
     }
+
+    os << ", dtype=" << dtypeToPyString(dtype_);
 
     if (close_function) {
       os << ")";
@@ -965,6 +992,9 @@ struct ConstantRecord : RecordFunctor {
  private:
   //! The constants literal value.
   ValueType value_;
+
+  //! The DataType provided
+  Nvf::DataType dtype_;
 };
 
 //! Specialized Record Functor for recording FusionDefinition End.

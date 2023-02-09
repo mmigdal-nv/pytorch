@@ -60,6 +60,7 @@ void Val::dispatch(T handler, Val* val) {
           // node.
           ptr(handler)->handle(val->as<Int>());
           return;
+        case DataType::ComplexFloat:
         case DataType::ComplexDouble:
           ptr(handler)->handle(val->as<ComplexDouble>());
           return;
@@ -103,8 +104,8 @@ void Expr::dispatch(T handler, Expr* expr) {
     ptr(handler)->handle(expr->as<FullOp>());
     return;
   }
-  if (expr->isStrictlyA<ARangeOp>()) {
-    ptr(handler)->handle(expr->as<ARangeOp>());
+  if (expr->isStrictlyA<IotaOp>()) {
+    ptr(handler)->handle(expr->as<IotaOp>());
     return;
   }
   if (expr->isStrictlyA<EyeOp>()) {
@@ -316,6 +317,7 @@ void Val::constDispatch(T handler, const Val* val) {
           // node.
           ptr(handler)->handle(val->as<Int>());
           return;
+        case DataType::ComplexFloat:
         case DataType::ComplexDouble:
           ptr(handler)->handle(val->as<ComplexDouble>());
           return;
@@ -363,8 +365,8 @@ void Expr::constDispatch(T handler, const Expr* expr) {
     ptr(handler)->handle(expr->as<FullOp>());
     return;
   }
-  if (expr->isStrictlyA<ARangeOp>()) {
-    ptr(handler)->handle(expr->as<ARangeOp>());
+  if (expr->isStrictlyA<IotaOp>()) {
+    ptr(handler)->handle(expr->as<IotaOp>());
     return;
   }
   if (expr->isStrictlyA<EyeOp>()) {
@@ -766,7 +768,7 @@ void OptOutConstDispatch::handle(const kir::TensorIndex* stmt) {
 void OptOutConstDispatch::handle(const FullOp* stmt) {
   unhandled(stmt);
 }
-void OptOutConstDispatch::handle(const ARangeOp* stmt) {
+void OptOutConstDispatch::handle(const IotaOp* stmt) {
   unhandled(stmt);
 }
 void OptOutConstDispatch::handle(const EyeOp* stmt) {
@@ -943,7 +945,7 @@ void OptOutDispatch::handle(kir::TensorIndex* stmt) {
 void OptOutDispatch::handle(FullOp* stmt) {
   unhandled(stmt);
 }
-void OptOutDispatch::handle(ARangeOp* stmt) {
+void OptOutDispatch::handle(IotaOp* stmt) {
   unhandled(stmt);
 }
 void OptOutDispatch::handle(EyeOp* stmt) {
