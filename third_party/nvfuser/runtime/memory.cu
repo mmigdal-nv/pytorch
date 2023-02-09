@@ -156,31 +156,6 @@ DEVICE_INLINE void cpAsync(
       "r"((int)predicate));
 }
 
-// cp.async
-// This is the variant that supports lifted indexing, with predicate inlined.
-template <typename dtype, int len>
-DEVICE_INLINE void cpAsync(
-    unsigned smem_addr,
-    nvfuser_index_t gmem_index,
-    DataPointer& gmem_ptr,
-    bool predicate) {
-  constexpr int byte_size = sizeof(dtype) * len;
-
-  static_assert(
-      byte_size == 4 || byte_size == 8 || byte_size == 16,
-      "cp_async : unsupported byte size");
-
-  asm volatile(
-      "{\n"
-      "  .reg .pred p;\n"
-      "  setp.ne.b32 p, %3, 0;\n"
-      "@p cp.async.ca.shared.global [%0], [%1], %2;\n"
-      "}\n" ::"r"(smem_addr),
-      "l"(gmem_ptr + gmem_index),
-      "n"(byte_size),
-      "r"((int)predicate));
-}
-
 // Global to SMEM load that is asynchronous,
 //  The cache global variant, i.e. skip L1 caching.
 // more details see:
