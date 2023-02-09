@@ -9,20 +9,6 @@ namespace cuda {
 
 namespace {
 
-// std::gcd is c++17, so use a custom implementation for now.
-int gcd(int a, int b) {
-  TORCH_INTERNAL_ASSERT(a != 0 && b != 0, "gcd : illegal input");
-  while (a != 0 && b != 0) {
-    if (a > b) {
-      a = a % b;
-    } else {
-      b = b % a;
-    }
-  }
-
-  return a == 0 ? b : a;
-}
-
 // Returns true if given number is power of 2
 bool isPowOf2(int x) {
   return x > 1 && (x & (x - 1)) == 0;
@@ -147,7 +133,7 @@ void prologSwizzle(TensorView* shared_mem_tv, const MatmulParam& params) {
       // calculate effective row_period = lcm(row_period, repeated_pattern) /
       // repeated_pattern_size which is the same as below
       int row_period = units_per_memory_row /
-          gcd(units_per_memory_row, repeated_pattern_size_in_units);
+          std::gcd(units_per_memory_row, repeated_pattern_size_in_units);
 
       if (row_period < row_unit) {
         TORCH_WARN_ONCE(
