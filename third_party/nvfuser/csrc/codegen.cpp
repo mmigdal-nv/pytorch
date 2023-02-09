@@ -563,8 +563,8 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     std::stringstream ss;
 
     if (ti->hasBaseAddress()) {
-      ss << genTensorAddressIndex(ti, ti->view()->dtype()) << ","
-         << gen(ti->baseAddress());
+      ss << gen(ti->baseAddress()) << " + "
+         << genTensorAddressIndex(ti, ti->view()->dtype());
     } else {
       ss << "&" << gen(ti);
     }
@@ -626,8 +626,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     }
     code_ << " (";
     code_ << "*" << genVectorPointer(ldst->out(), dtype, vector_word_size)
-          << "," << genMaybeHoistedSmemPointer(ldst->in())
-          << ");\n";
+          << "," << genMaybeHoistedSmemPointer(ldst->in()) << ");\n";
   }
 
   void handle(const kir::SMemAddress* sop) final {
