@@ -157,7 +157,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulSASSModifiersCheck_CUDA) {
             using T = std::decay_t<decltype(i)>;
             if constexpr (std::is_same_v<sass::Instruction, T>) {
               if (i.opCode() == "LDGSTS") {
-                const std::vector<std::string> expect = {"E", "BYPASS", "128"};
+                const std::vector<std::string> expect = {"E", "BYPASS", "LTC128B", "128"};
                 TORCH_CHECK(
                     i.modifiers() == expect,
                     "Modifiers for LDGSTS has changed. "
@@ -189,7 +189,7 @@ TEST_F(NVFuserTest, FusionAmpereMatmulSASSModifiersCheck_CUDA) {
                     "Please manually check if the new modifiers makes sense and update this test.");
                 found_HMMA = true;
               } else if (i.opCode() == "BAR") {
-                const std::vector<std::string> expect = {"SYNC"};
+                const std::vector<std::string> expect = {"SYNC", "DEFER_BLOCKING"};
                 TORCH_CHECK(
                     i.modifiers() == expect,
                     "Modifiers for BAR has changed. "
