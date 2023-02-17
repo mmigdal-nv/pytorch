@@ -6,10 +6,7 @@
 
 #include <vector>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 //! Keeps track of loops that will be interleaved, see
 //!  [Loop Interleaving].
@@ -96,7 +93,4 @@ void validateInterleaving(Fusion* fusion);
 std::vector<Expr*> interLeaveDoubleBufferUnrolledLoops(
     const std::vector<Expr*>& exprs);
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

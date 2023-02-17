@@ -6,10 +6,7 @@
 
 #include <vector>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 struct AddressRecordKey;
 
@@ -231,7 +228,4 @@ class AddressComputeInfo {
 //! Kernel IR pass that inserts requested index pre-computations.
 std::vector<Expr*> preComputeLiftedAddress(const std::vector<Expr*>& exprs);
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

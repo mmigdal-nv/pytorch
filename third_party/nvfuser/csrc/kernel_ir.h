@@ -266,12 +266,6 @@ class TORCH_CUDA_CU_API BlockSync final : public Expr {
 
   NVFUSER_DECLARE_CLONE_AND_CREATE
 
-  //! Sets the flag signifying that this block sync is
-  //!  thread aligned.
-  void convertToAligned() {
-    attribute(1)->as<Attribute<bool>>()->value = true;
-  }
-
   std::string toString(int indent_size = 0) const override;
   std::string toInlineString(int indent_size = 0) const override;
 

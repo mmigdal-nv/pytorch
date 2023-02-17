@@ -8,10 +8,7 @@
 
 #include <unordered_set>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 bool PredicatePeeling::supportedPeelingLoop(IterDomain* id) {
   // Not meaningful to peel a parallel loop
@@ -303,7 +300,4 @@ Val* PredicatePeeling::getSplitTileMainOffset(
       tile_factor, PredicatePeeling::getPrologPredicateOffset(id, tile_factor));
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

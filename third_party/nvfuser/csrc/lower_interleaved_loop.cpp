@@ -4,10 +4,7 @@
 #include <lower_interleaved_loop.h>
 #include <lower_utils.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 // Note: [Loop Interleaving]:
 //  This pass is trying to implement a simple yet useful loop structure
@@ -711,7 +708,4 @@ std::vector<Expr*> interLeaveDoubleBufferUnrolledLoops(
   return LoopInterLeaver::run(exprs);
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

@@ -891,10 +891,6 @@ class DoubleBufferInserter : private kir::ExprMutator {
     } else {
       // If a sync has been inserted, wait needs to be placed before the sync.
       main_loop->body().insert_before(*block_sync_it, cp_async_wait);
-      if (need_insert_commit) {
-        main_loop->body().insert_before(
-            *block_sync_it, IrBuilder::create<kir::CpAsyncCommit>());
-      }
     }
   }
 

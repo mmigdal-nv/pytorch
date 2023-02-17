@@ -8,10 +8,7 @@
 
 #include <unordered_set>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 //!   Note: [Predicate Peeling]
 //!   This is a loop transformation that attempts to eliminate predicate
@@ -170,7 +167,4 @@ Val* getSplitTileMainOffset(IterDomain* id, Val* tile_factor);
 
 } // namespace PredicatePeeling
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

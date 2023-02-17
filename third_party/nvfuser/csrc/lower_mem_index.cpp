@@ -6,10 +6,7 @@
 #include <lower_utils.h>
 #include <root_domain_map.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 // [Notes on memory index lifting]:
 // The memory index lifting pass tries re-associate the index math
@@ -1498,7 +1495,4 @@ std::vector<Expr*> preComputeLiftedAddress(const std::vector<Expr*>& exprs) {
   return MemoryAddressComputeInserter::insert(exprs);
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser
