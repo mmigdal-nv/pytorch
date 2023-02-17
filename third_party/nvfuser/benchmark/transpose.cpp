@@ -1,4 +1,3 @@
-#include <arith.h>
 #include <executor.h>
 #include <fusion.h>
 #include <ir_all_nodes.h>
@@ -15,8 +14,6 @@
 
 #define TRANSPOSE_CONFIG \
   { true, false, false, false }
-
-using namespace torch::jit::fuser::cuda;
 
 struct TransposeConfig {
   bool input1_transpose_axes = false;

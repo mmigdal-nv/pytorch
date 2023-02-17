@@ -1,16 +1,13 @@
-#include <arith.h>
 #include <fusion.h>
 #include <ir_builder.h>
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 
 #include <set>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 namespace ir_utils {
 
 std::vector<int64_t> normalizeNew2Old(
@@ -833,7 +830,4 @@ std::string varName(const Val* val) {
 }
 
 } // namespace ir_utils
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

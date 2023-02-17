@@ -1,17 +1,14 @@
 #include <transform_rfactor.h>
 
-#include <arith.h>
 #include <fusion.h>
 #include <instrumentation.h>
 #include <ir_builder.h>
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <iter_visitor.h>
+#include <ops/arith.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 namespace {
 
@@ -472,7 +469,4 @@ std::pair<TensorDomain*, TensorDomain*> TransformRFactor::runReplay(
   return std::make_pair(producer_domain, consumer_domain);
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

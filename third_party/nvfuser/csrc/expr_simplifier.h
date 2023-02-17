@@ -525,10 +525,7 @@
 // = a + 0 (Rule I)
 // = a
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 // Information for a single variable. Possible values that this variable can
 // take is: start, start + step, start + 2 * step, ... (< stop), which is
@@ -549,6 +546,10 @@ struct VarInfo {
   bool is_compile_time_const = false;
 };
 
+// Analyze expression register usage
+enum class RegisterType { GeneralPurpose, Uniform, Immediate, Unknown };
+RegisterType getRegisterType(Val* value);
+
 // Simplify expressions with the given information of variables.
 //
 // The argument `variables` specifies which scalar are considered variable and
@@ -567,7 +568,4 @@ TORCH_CUDA_CU_API Val* simplifyExpr(
     Val* value,
     const std::list<VarInfo>& variables = {});
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

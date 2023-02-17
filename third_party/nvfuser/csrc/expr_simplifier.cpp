@@ -19,10 +19,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 namespace debug_print {
 
@@ -139,6 +136,8 @@ namespace {
 // An ordered mapping of variable -> VarInfo
 class VarInfoMap {
  public:
+  VarInfoMap() = default;
+
   VarInfoMap(const std::list<VarInfo>& variables) {
     var_info_map_.reserve(variables.size());
     var_order_.reserve(variables.size());
@@ -279,15 +278,11 @@ Val* recurseDown(Val* value, std::function<Val*(Val*)> rule) {
   return value;
 }
 
-} // namespace
-
-namespace reg {
-
-enum class RegisterType { GeneralPurpose, Uniform, Immediate, Unknown };
-
 RegisterType getRegisterType(Val* value, const VarInfoMap& var_info) {
   if (auto ns = dynamic_cast<NamedScalar*>(value)) {
-    if (ns->getParallelIndex().has_value()) {
+    if (ns->getParallelIndex() == ParallelType::TIDx ||
+        ns->getParallelIndex() == ParallelType::TIDy ||
+        ns->getParallelIndex() == ParallelType::TIDz) {
       return RegisterType::GeneralPurpose;
     }
   }
@@ -318,7 +313,11 @@ RegisterType getRegisterType(Val* value, const VarInfoMap& var_info) {
   return RegisterType::Uniform;
 }
 
-} // namespace reg
+} // namespace
+
+RegisterType getRegisterType(Val* value) {
+  return getRegisterType(value, {});
+}
 
 namespace assoc_comm {
 
@@ -746,9 +745,17 @@ Val* unflattenRule(Val* value, const VarInfoMap& var_info) {
     while (next < (int64_t)sorted_inputs.size()) {
       auto rhs = unflatten(sorted_inputs.at(next), var_info);
       if (fop->getOpType() == BinaryOpType::Add) {
-        // For binary add op, we need to correctly handle the ptr + int -> ptr
-        // type promotion, so we use IrBuilder::addExpr here.
-        lhs = IrBuilder::addExpr(lhs, rhs);
+        // For binary add/sub op, we need to correctly handle the promotion rule
+        // ptr + int -> ptr and ptr - int -> ptr, so we use IrBuilder::addExpr
+        // and IrBuilder::subExpr here.
+        // Also, convert a + (-b) to a - b here for better readibility on
+        // generated code
+        auto uop = dynamic_cast<UnaryOp*>(rhs->definition());
+        if (uop != nullptr && uop->getUnaryOpType() == UnaryOpType::Neg) {
+          lhs = IrBuilder::subExpr(lhs, uop->in());
+        } else {
+          lhs = IrBuilder::addExpr(lhs, rhs);
+        }
       } else {
         auto output = IrBuilder::newScalar(*value->getDataType());
         IrBuilder::create<BinaryOp>(fop->getOpType(), output, lhs, rhs);
@@ -1201,6 +1208,8 @@ namespace rules {
 // x - x -> 0
 // b && b -> b (assuming no side effect on b)
 // b || b -> b (assuming no side effect on b)
+// -(-x) -> x
+// !(!x) -> x
 // ...
 Val* eliminateTrivialComputation(Val* value, const VarInfoMap& var_info) {
   auto folded = foldConstants(value);
@@ -1308,6 +1317,18 @@ Val* eliminateTrivialComputation(Val* value, const VarInfoMap& var_info) {
       auto rhs = foldConstants(bop->rhs());
       if (lhs->sameAs(rhs)) {
         return IrBuilder::newConstant(0, *value->getDataType());
+      }
+    }
+  } else if (auto uop = dynamic_cast<UnaryOp*>(value->definition())) {
+    // -(-x) -> x, !(!x) -> x
+    auto optype = uop->getUnaryOpType();
+    if (optype == UnaryOpType::Neg || optype == UnaryOpType::Not) {
+      auto uop_in = dynamic_cast<UnaryOp*>(uop->in()->definition());
+      if (uop_in != nullptr) {
+        auto optype_in = uop_in->getUnaryOpType();
+        if (optype == optype_in) {
+          return uop_in->in();
+        }
       }
     }
   }
@@ -1593,14 +1614,14 @@ Val* reducePredicateRegisterUsage(Val* value, const VarInfoMap& var_info) {
       if (prove::isZero(inp)) {
         continue;
       }
-      switch (reg::getRegisterType(inp, var_info)) {
-        case reg::RegisterType::GeneralPurpose:
+      switch (getRegisterType(inp, var_info)) {
+        case RegisterType::GeneralPurpose:
           new_lhs.emplace_back(inp);
           break;
-        case reg::RegisterType::Uniform:
+        case RegisterType::Uniform:
           lhs_uniform.emplace_back(inp);
           break;
-        case reg::RegisterType::Immediate:
+        case RegisterType::Immediate:
           new_rhs.emplace_back(neg(inp));
           break;
         default:
@@ -1615,14 +1636,14 @@ Val* reducePredicateRegisterUsage(Val* value, const VarInfoMap& var_info) {
       if (prove::isZero(inp)) {
         continue;
       }
-      switch (reg::getRegisterType(inp, var_info)) {
-        case reg::RegisterType::GeneralPurpose:
+      switch (getRegisterType(inp, var_info)) {
+        case RegisterType::GeneralPurpose:
           new_lhs.emplace_back(neg(inp));
           break;
-        case reg::RegisterType::Uniform:
+        case RegisterType::Uniform:
           rhs_uniform.emplace_back(inp);
           break;
-        case reg::RegisterType::Immediate:
+        case RegisterType::Immediate:
           new_rhs.emplace_back(inp);
           break;
         default:
@@ -1865,8 +1886,6 @@ Val* simplifyExpr(Val* value, const std::list<VarInfo>& variables) {
     RUN_PASS(eliminateTrivialComputation);
     RUN_PASS(eliminateTrivialPredicate);
     RUN_PASS(simplifyDivisibleDivMod);
-    RUN_PASS(eliminateTrivialPredicate);
-    RUN_PASS(simplifyDivisibleDivMod);
     RUN_PASS(cancelDivMod);
     RUN_PASS(fundamentalDivisionWithRemainderProperty);
     PASS_BARRIER;
@@ -1884,7 +1903,4 @@ Val* simplifyExpr(Val* value, const std::list<VarInfo>& variables) {
 
 #undef RUN_PASS
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

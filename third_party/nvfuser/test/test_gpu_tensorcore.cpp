@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <arith.h>
 #include <codegen.h>
 #include <disjoint_set.h>
 #include <executor.h>
@@ -39,10 +38,8 @@
 #include <algorithm>
 #include <iostream>
 
-// Tests go in torch::jit
-namespace torch::jit {
+namespace nvfuser {
 
-using namespace torch::jit::fuser::cuda;
 using namespace at::indexing;
 
 // MMA unit test for a single instruction tile. VoltaTT
@@ -2999,6 +2996,192 @@ TEST_F(NVFuserTest, FusionTuringMatmulLargeLoad_CUDA) {
   }
 }
 
+// Tile layout check for symmetric 4-warp recipes
+TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck4warp_CUDA) {
+  REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
+  // Keep multiples of 8 to keep vectorizable.
+  int M = 504, N = 136, K = 248;
+  for (auto layout : kAllSupportedMatmulLayout) {
+    // Symmetric tile with 16x16x16 macro,
+    //  supports mn_size of multiple of 32,
+    //  and k size multiple of 16.
+    for (int mn_size : {32, 64, 96, 128, 160, 192}) {
+      for (int k_size : {32, 48, 64}) {
+        Fusion fusion;
+        FusionGuard fg(&fusion);
+        auto tv0 = makeContigTensor(2, DataType::Half);
+        auto tv1 = makeContigTensor(2, DataType::Half);
+
+        fusion.addInput(tv0);
+        fusion.addInput(tv1);
+
+        auto tv2 = matmul(tv0, tv1, layout);
+
+        fusion.addOutput(tv2);
+
+        MatMulTileOptions gemm_tile;
+        gemm_tile.cta_tile = GemmTile(mn_size, mn_size, k_size);
+        gemm_tile.warp_tile = GemmTile(mn_size / 2, mn_size / 2, k_size);
+        gemm_tile.instruction_tile = GemmTile(16, 16, 16);
+
+        auto mma_builder =
+            MmaBuilder(MmaOptions::MacroType::Ampere_16_16_16, gemm_tile)
+                .layout(layout);
+
+        MatmulParam params(mma_builder);
+        params.tile_sizes = gemm_tile;
+        params.async_gmem_load_operands = true;
+        params.double_buffer_options.double_buffer_smem_write = true;
+        scheduleMatmul(tv2, tv0, tv1, params);
+
+        at::manual_seed(0);
+        auto inputs = fp16MatmulAtInput(M, N, K, layout);
+
+        FusionExecutor fe;
+        NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
+            8,
+            0,
+            fe.compileFusion(
+                &fusion,
+                {inputs.first, inputs.second},
+                LaunchParams(),
+                matmul_cparams));
+        auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
+        auto tref = atMatmul(
+            inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
+        TORCH_CHECK(
+            cg_outputs[0].allclose(tref, 0.0001, 0.0001),
+            "error :",
+            (cg_outputs[0] - tref).abs().max(),
+            "tile dim:",
+            mn_size,
+            " ",
+            k_size);
+      }
+    }
+  }
+}
+
+TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck8warp_CUDA) {
+  REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
+  // Keep multiples of 8 to keep vectorizable.
+  int M = 504, N = 136, K = 248;
+  for (auto layout : kAllSupportedMatmulLayout) {
+    // ASymmetric tile with 16x16x16 macro,
+    for (int m_size : {256}) {
+      for (int n_size : {32, 64, 96, 128}) {
+        for (int k_size : {32, 48, 64}) {
+          Fusion fusion;
+          FusionGuard fg(&fusion);
+          auto tv0 = makeContigTensor(2, DataType::Half);
+          auto tv1 = makeContigTensor(2, DataType::Half);
+
+          fusion.addInput(tv0);
+          fusion.addInput(tv1);
+
+          auto tv2 = matmul(tv0, tv1, layout);
+
+          fusion.addOutput(tv2);
+
+          MatMulTileOptions gemm_tile;
+          gemm_tile.cta_tile = GemmTile(m_size, n_size, k_size);
+          gemm_tile.warp_tile = GemmTile(m_size / 4, n_size / 2, k_size);
+          gemm_tile.instruction_tile = GemmTile(16, 16, 16);
+
+          auto mma_builder =
+              MmaBuilder(MmaOptions::MacroType::Ampere_16_16_16, gemm_tile)
+                  .layout(layout);
+
+          MatmulParam params(mma_builder);
+          params.tile_sizes = gemm_tile;
+          params.async_gmem_load_operands = true;
+          params.double_buffer_options.double_buffer_smem_write = true;
+          params.double_buffer_options.double_buffer_smem_read = true;
+          params.double_buffer_options.smem_double_buffer_stage = 2;
+
+          scheduleMatmul(tv2, tv0, tv1, params);
+
+          at::manual_seed(0);
+          auto inputs = fp16MatmulAtInput(M, N, K, layout);
+
+          FusionExecutor fe;
+          NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
+              8,
+              0,
+              fe.compileFusion(
+                  &fusion,
+                  {inputs.first, inputs.second},
+                  LaunchParams(),
+                  matmul_cparams));
+          auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
+          auto tref = atMatmul(
+              inputs.first.to(at::kFloat),
+              inputs.second.to(at::kFloat),
+              layout);
+          TORCH_CHECK(cg_outputs[0].allclose(tref, 0.0001, 0.0001));
+        }
+      }
+    }
+  }
+}
+
+TEST_F(NVFuserTest, FusionAmpereMatmulTileCheck6warp_CUDA) {
+  REQUIRE_DEVICE_SMEM_SIZE(98384, 0);
+  // Keep multiples of 8 to keep vectorizable.
+  int M = 504, N = 136, K = 248;
+  for (auto layout : kAllSupportedMatmulLayout) {
+    for (int k_size : {32, 48, 64}) {
+      Fusion fusion;
+      FusionGuard fg(&fusion);
+      auto tv0 = makeContigTensor(2, DataType::Half);
+      auto tv1 = makeContigTensor(2, DataType::Half);
+
+      fusion.addInput(tv0);
+      fusion.addInput(tv1);
+
+      auto tv2 = matmul(tv0, tv1, layout);
+
+      fusion.addOutput(tv2);
+
+      MatMulTileOptions gemm_tile;
+      // 2 warp by 3 warp
+      gemm_tile.cta_tile = GemmTile(192, 128, k_size);
+      gemm_tile.warp_tile = GemmTile(64, 64, k_size);
+      gemm_tile.instruction_tile = GemmTile(16, 16, 16);
+
+      auto mma_builder =
+          MmaBuilder(MmaOptions::MacroType::Ampere_16_16_16, gemm_tile)
+              .layout(layout);
+
+      MatmulParam params(mma_builder);
+      params.tile_sizes = gemm_tile;
+      params.async_gmem_load_operands = true;
+      params.double_buffer_options.double_buffer_smem_write = true;
+      params.double_buffer_options.double_buffer_smem_read = true;
+      params.double_buffer_options.smem_double_buffer_stage = 2;
+
+      scheduleMatmul(tv2, tv0, tv1, params);
+
+      at::manual_seed(0);
+      auto inputs = fp16MatmulAtInput(M, N, K, layout);
+
+      FusionExecutor fe;
+      NVFUSER_TEST_CUDA_ARCH_COMPILE_CHECK(
+          8,
+          0,
+          fe.compileFusion(
+              &fusion,
+              {inputs.first, inputs.second},
+              LaunchParams(),
+              matmul_cparams));
+      auto cg_outputs = fe.runFusion({inputs.first, inputs.second});
+      auto tref = atMatmul(
+          inputs.first.to(at::kFloat), inputs.second.to(at::kFloat), layout);
+      TORCH_CHECK(cg_outputs[0].allclose(tref, 0.0001, 0.0001));
+    }
+  }
+}
+
 // Matmul test on Ampere using ldmatrix.x4 to load operands
 TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoadLargeK_CUDA) {
   // Keep multiples of 8 to keep vectorizable.
@@ -3052,36 +3235,6 @@ TEST_F(NVFuserTest, FusionAmpereMatmulLargeLoadLargeK_CUDA) {
   }
 }
 
-// Small repro for the replay fix needed for non-affine
-//  swizzle support.
-TEST_F(NVFuserTest, FusionSwizzleReplayFixRepro_CUDA) {
-  Fusion fusion;
-  FusionGuard fg(&fusion);
-  auto tv0 = makeConcreteTensor({32, 32});
-
-  fusion.addInput(tv0);
-  auto tv1 = set(tv0);
-  auto tv2 = set(tv1);
-  fusion.addOutput(tv2);
-
-  tv1->swizzle(Swizzle2DType::XOR, 0, 1);
-  tv2->split(0, 16);
-
-  auto replayed_domain = TransformReplay::replayPasC(tv1, tv2, -1).first;
-
-  auto id_ops = DependencyCheck::getAllExprsBetween(
-      {replayed_domain->getRootDomain().begin(),
-       replayed_domain->getRootDomain().end()},
-      {replayed_domain->domain().begin(), replayed_domain->domain().end()});
-
-  TORCH_INTERNAL_ASSERT(
-      std::none_of(
-          id_ops.begin(),
-          id_ops.end(),
-          [](Expr* expr) { return expr->isA<Swizzle2D>(); }),
-      "Swizzle op should be removed by backward replay.");
-}
-
 #undef NVFUSER_TEST_CUDA_ARCH_GUARD
 
-} // namespace torch::jit
+} // namespace nvfuser

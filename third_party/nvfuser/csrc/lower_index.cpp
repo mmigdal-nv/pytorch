@@ -1,17 +1,14 @@
-#include <arith.h>
 #include <index_compute.h>
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <lower2device.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 #include <predicate_compute.h>
 
 #include <lower_index.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 Val* IndexLowering::lowerSrcIndex(
     Val* src,
@@ -1445,7 +1442,4 @@ void IndexLowering::allocateUniqueFusedReduction(
   insertAtTopLevel(fused_reduction_alloc_reduction);
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

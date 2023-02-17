@@ -32,10 +32,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 // TODO: we frequently use pairwise root mapping from consumers to producers.
 // This information is implicitly in the computeAtMaps, but there's no isolated
@@ -268,7 +265,4 @@ class TORCH_CUDA_CU_API GpuLower : public NonCopyable {
   Fusion* fusion_ = nullptr;
 };
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

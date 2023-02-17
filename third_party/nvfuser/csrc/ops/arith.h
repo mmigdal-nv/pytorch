@@ -15,10 +15,7 @@ class Val;
  * nodes, and return a resulting TensorView of correctly tracked shapes.
  */
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 // Insertion of casting op to dtype, returns new resulting val
 TORCH_CUDA_CU_API Val* castOp(DataType dtype, Val* v1);
@@ -289,6 +286,9 @@ TORCH_CUDA_CU_API TensorView* log2(TensorView*);
 // neg
 TORCH_CUDA_CU_API Val* neg(Val*);
 TORCH_CUDA_CU_API TensorView* neg(TensorView*);
+// notOp
+TORCH_CUDA_CU_API Val* notOp(Val*);
+TORCH_CUDA_CU_API TensorView* notOp(TensorView*);
 // real
 TORCH_CUDA_CU_API Val* real(Val*);
 TORCH_CUDA_CU_API TensorView* real(TensorView*);
@@ -763,7 +763,4 @@ TORCH_CUDA_CU_API TensorView* fusedMultiplySum(
     const std::vector<int>& axes,
     Val* init = nullptr);
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

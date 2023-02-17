@@ -1,9 +1,10 @@
 #pragma once
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+#include <utils.h>
+
+#include <iostream>
+
+namespace nvfuser {
 
 namespace scheduler_debug_utils {
 
@@ -26,9 +27,29 @@ void canScheduleRejectReason(HeuristicType heuristic, const Args&... args) {
       "Scheduler _", heuristic, "_ ***rejected*** because : ", args...);
 }
 
+// Based on
+// https://learn.microsoft.com/en-us/cpp/cpp/ellipses-and-variadic-templates?view=msvc-170#example
+inline void log() {
+  if (isDebugDumpEnabled(DebugDumpOption::SchedulerVerbose)) {
+    std::cerr << std::endl;
+  }
+}
+
+template <typename T>
+void log(const T& t) {
+  if (isDebugDumpEnabled(DebugDumpOption::SchedulerVerbose)) {
+    std::cerr << t << std::endl;
+  }
+}
+
+template <typename First, typename... Rest>
+void log(const First& first, const Rest&... rest) {
+  if (isDebugDumpEnabled(DebugDumpOption::SchedulerVerbose)) {
+    std::cerr << first;
+    log(rest...);
+  }
+}
+
 } // namespace scheduler_debug_utils
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

@@ -12,10 +12,7 @@
 
 #include <algorithm>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 namespace scheduler_utils {
 
 // Returns number of "valid" dimensions. e.g. if tv has
@@ -624,7 +621,7 @@ namespace {
 std::unique_ptr<HeuristicCompileTime::ScopedPersistenceBufferMap>
 getScopePersistenceFactors(
     Fusion* fusion,
-    PersistentBufferInfo& persistent_buffer_info) {
+    const PersistentBufferInfo& persistent_buffer_info) {
   auto new_persistent_factor_map_ptr =
       std::make_unique<HeuristicCompileTime::ScopedPersistenceBufferMap>();
   auto& new_persistent_factor_map = *new_persistent_factor_map_ptr;
@@ -744,7 +741,7 @@ getScopePersistenceFactors(
 PersistentBufferSizeReturn persistentBufferSize(
     Fusion* fusion,
     SchedulerRuntimeInfo& runtime_info,
-    PersistentBufferInfo& persistent_buffer_info,
+    const PersistentBufferInfo& persistent_buffer_info,
     HeuristicSummary* data_cache) {
   FUSER_PERF_SCOPE("scheduler_utils::persistentBufferSize");
 
@@ -2329,7 +2326,4 @@ bool isFastestDimReduction(TensorView* tv) {
 
 } // namespace scheduler_utils
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

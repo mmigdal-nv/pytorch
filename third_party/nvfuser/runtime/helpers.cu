@@ -11,6 +11,10 @@
     nvfuser_zero <<= 1;           \
   } while (0);
 
+#ifdef __NVCC__
+#include <assert.h>
+#endif // __NVCC__
+
 __device__ constexpr int ceilDiv(int a, int b) {
   return (a + b - 1) / b;
 }
@@ -271,50 +275,12 @@ __device__ float threshold(float x, double t, double v) {
   return x <= t ? v : x;
 }
 
-__device__ std::complex<double> where(
-    bool c,
-    std::complex<double> a,
-    std::complex<double> b) {
-  return c ? a : b;
-}
-
-__device__ std::complex<float> where(
-    bool c,
-    std::complex<float> a,
-    std::complex<float> b) {
-  return c ? a : b;
-}
-
 __device__ int threshold(int x, int64_t t, int64_t v) {
   return x <= t ? v : x;
 }
 
 __device__ int64_t threshold(int64_t x, int64_t t, int64_t v) {
   return x <= t ? v : x;
-}
-
-__device__ double where(bool c, double a, double b) {
-  return c ? a : b;
-}
-
-__device__ float where(bool c, float a, float b) {
-  return c ? a : b;
-}
-
-__device__ int64_t where(bool c, int64_t a, int64_t b) {
-  return c ? a : b;
-}
-
-__device__ int where(bool c, int a, int b) {
-  return c ? a : b;
-}
-
-__device__ int64_t where(bool c, int64_t a, int b) {
-  return c ? a : b;
-}
-
-__device__ int64_t where(bool c, int a, int64_t b) {
-  return c ? a : b;
 }
 
 __device__ constexpr int64_t remainder(int64_t a, int64_t b) {
@@ -406,6 +372,67 @@ __device__ int64_t pow(int64_t a, int b) {
 
 __device__ int64_t pow(int a, int64_t b) {
   return pow((int64_t)a, b);
+}
+
+// The reciprocal of a complex number z is
+//    1/z = conj(z)/|z|^2.
+// The principal square root of a complex number z can be obtained by [1]
+//    sqrt(z) = sqrt(|z|) (z + |z|) / |z + |z||.
+// Combining these formulas we have
+//    1/sqrt(z) = (conj(z) + |z|) / (sqrt(|z|) |z + |z||).
+// [1] https://math.stackexchange.com/a/44500
+__device__ std::complex<float> rsqrt(std::complex<float> z) {
+  auto a = std::real(z);
+  auto b = std::imag(z);
+  auto absa = ::fabsf(a);
+  auto absb = ::fabsf(b);
+  // scale to avoid precision loss due to underflow/overflow
+  auto scale = fmax(absa, absb);
+  a /= scale;
+  b /= scale;
+  auto a_sq = a * a;
+  auto b_sq = b * b;
+  auto modz_sq = a_sq + b_sq;
+  auto modz = ::sqrtf(modz_sq);
+  auto a_plus_modz = a + modz;
+  auto mod_zplusmodz_sq = a_plus_modz * a_plus_modz + b_sq;
+  auto fac = ::rsqrtf(scale * modz * mod_zplusmodz_sq);
+  return std::complex<float>(a_plus_modz * fac, -b * fac);
+}
+
+__device__ std::complex<double> rsqrt(std::complex<double> z) {
+  auto a = std::real(z);
+  auto b = std::imag(z);
+  auto absa = ::abs(a);
+  auto absb = ::abs(b);
+  // scale to avoid precision loss due to underflow/overflow
+  auto scale = fmax(absa, absb);
+  a /= scale;
+  b /= scale;
+  auto a_sq = a * a;
+  auto b_sq = b * b;
+  auto modz_sq = a_sq + b_sq;
+  auto modz = ::sqrt(modz_sq);
+  auto a_plus_modz = a + modz;
+  auto mod_zplusmodz_sq = a_plus_modz * a_plus_modz + b_sq;
+  auto fac = ::rsqrt(scale * modz * mod_zplusmodz_sq);
+  return std::complex<double>(a_plus_modz * fac, -b * fac);
+}
+
+__device__ double rsqrt(double z) {
+  return ::rsqrt(z);
+}
+
+__device__ float rsqrt(float z) {
+  return ::rsqrtf(z);
+}
+
+__device__ int rsqrt(int z) {
+  return ::rsqrtf((float)z);
+}
+
+__device__ int64_t rsqrt(int64_t z) {
+  return ::rsqrt((double)z);
 }
 
 template <int size, int align = size>

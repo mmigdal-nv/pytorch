@@ -1,17 +1,14 @@
 #include <lower_vectorize_welford.h>
 
-#include <arith.h>
 #include <dispatch.h>
 #include <instrumentation.h>
 #include <ir_utils.h>
 #include <kernel_ir_dispatch.h>
 #include <lower2device.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 namespace {
 
@@ -564,7 +561,4 @@ std::vector<Expr*> vectorizeWelford(const std::vector<Expr*>& exprs) {
   return WelfordVectorizer::vectorize(exprs);
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

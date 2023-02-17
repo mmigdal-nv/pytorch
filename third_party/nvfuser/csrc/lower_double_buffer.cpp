@@ -4,10 +4,11 @@
 
 #include <lower_double_buffer.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+#include <algorithm>
+#include <iterator>
+#include <vector>
+
+namespace nvfuser {
 
 unsigned int getDoubleBufferAxisPosition(const TensorView* tv) {
   // Double-buffering prefetches the next subregion of the tensor by
@@ -342,14 +343,6 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
       }
     }
 
-    // Need to insert commits for multi-stage circular buffering
-    //  on the prologs, but do not need to wait for them until
-    //  the main loop.
-    if (stage_depth > 2 && loop_type_ == DoubleBufferLoopStage::Prolog) {
-      cloned_top_level_loop_->body().push_back(
-          IrBuilder::create<kir::CpAsyncCommit>());
-    }
-
     // Hoist the address increment in the double buffer main
     // loop, see also [Gmem Increment Hoisting]
     if (loop_type_ == DoubleBufferLoopStage::Main &&
@@ -554,6 +547,45 @@ class DoubleBufferLoopCloner : public kir::IrVisitor {
 
 using InsertionInfo = std::unordered_map<kir::ForLoop*, std::vector<Expr*>>;
 
+class IsDoubleBufferLoadLoop : public kir::IrVisitor {
+ public:
+  static bool check(
+      Expr* expr,
+      const std::vector<Expr*>& double_buffer_load_exprs) {
+    IsDoubleBufferLoadLoop checker(double_buffer_load_exprs);
+    return checker.check(expr);
+  }
+
+ private:
+  IsDoubleBufferLoadLoop(const std::vector<Expr*>& double_buffer_load_exprs)
+      : double_buffer_load_exprs_(double_buffer_load_exprs) {}
+
+  using kir::IrVisitor::handle;
+
+  bool check(Expr* expr) {
+    handle(expr);
+    return result_;
+  }
+
+  void handle(Expr* expr) final {
+    if (result_) {
+      return;
+    }
+    if (std::find(
+            double_buffer_load_exprs_.begin(),
+            double_buffer_load_exprs_.end(),
+            expr) != double_buffer_load_exprs_.end()) {
+      result_ = true;
+      return;
+    }
+    IrVisitor::handle(expr);
+  }
+
+ private:
+  const std::vector<Expr*>& double_buffer_load_exprs_;
+  bool result_ = false;
+};
+
 // Traverse lowered loop-nests and find all double buffer loops and
 // associated load expressions.
 class DoubleBufferLoopNestInspector : private kir::IrVisitor {
@@ -736,7 +768,7 @@ class DoubleBufferInserter : private kir::ExprMutator {
 
     // RAW sync is not inserted for double buffered tensors. The only
     // exception is the prologue load.
-    bool insert_cpasync_wait = false;
+    bool has_cpasync = false;
     if (write_to_smem) {
       // Here the initial sync before entering double buffer loop is
       //  inserted.
@@ -750,8 +782,10 @@ class DoubleBufferInserter : private kir::ExprMutator {
                 double_buffer_loop->iter_domain());
         auto cp_async_wait =
             IrBuilder::create<kir::CpAsyncWait>(stage_depth - 2);
+        prologue_loop->body().push_back(
+            IrBuilder::create<kir::CpAsyncCommit>());
         registerInsertBefore(double_buffer_loop, cp_async_wait);
-        insert_cpasync_wait = true;
+        has_cpasync = true;
       }
 
       // Insert the initial block sync before entering main loop.
@@ -803,8 +837,8 @@ class DoubleBufferInserter : private kir::ExprMutator {
     //  We are currently not actively exploring opportunities
     //   with this property of "double buffer sync" so this
     //   is more conceptual at the moment, aka low priority.
-    if (insert_cpasync_wait) {
-      insertCpAsyncWaitInMainLoop(main_loop);
+    if (has_cpasync) {
+      insertCpAsyncCommitWaitInMainLoop(main_loop, loads);
     }
 
     if (requireEpilogue(loads)) {
@@ -816,41 +850,46 @@ class DoubleBufferInserter : private kir::ExprMutator {
 
   // Simple conservative rule for inserting async copy wait
   //  primitive in the double buffer loop:
-  void insertCpAsyncWaitInMainLoop(kir::ForLoop* main_loop) {
+  void insertCpAsyncCommitWaitInMainLoop(
+      kir::ForLoop* main_loop,
+      const std::vector<Expr*>& loads) {
     TORCH_INTERNAL_ASSERT(
         !main_loop->body().empty(),
         "Double buffer sync insertion: empty main loop.");
+    auto& exprs = main_loop->body().exprs();
     // Note: This pass explicitly assumes that WAR sync has been
     //  inserted so would need to be updated if we re-order the
     //  passes. Cleanups suggested in [Double Buffer Sync]
     //  would resolve this dependency on pass ordering.
-    auto end_of_loop_expr = main_loop->body().exprs().back();
     auto stage_depth = GpuLower::current()->doubleBufferInfo().getStageDepthFor(
         main_loop->iter_domain());
+    auto cp_async_commit = IrBuilder::create<kir::CpAsyncCommit>();
     auto cp_async_wait = IrBuilder::create<kir::CpAsyncWait>(stage_depth - 2);
 
-    // Make sure the commit is inserted right before the
-    //  cp.async.wait in circular buffering.
-    bool need_insert_commit = stage_depth > 2;
+    // Find the last double buffer load in the main loop, and insert
+    // cp.async.commit after it.
+    std::vector<Expr*>::const_iterator last_double_buffer_load = exprs.end();
+    for (auto it = exprs.begin(); it != exprs.end(); ++it) {
+      if (IsDoubleBufferLoadLoop::check(*it, loads)) {
+        last_double_buffer_load = it;
+      }
+    }
+    TORCH_INTERNAL_ASSERT(last_double_buffer_load != exprs.end());
+    std::vector<Expr*>::const_iterator commit_it =
+        main_loop->body().insert(last_double_buffer_load + 1, cp_async_commit);
 
     // Check if a sync has been inserted by WAR sync pass.
     auto block_sync_it = std::find_if(
-        main_loop->body().exprs().rbegin(),
-        main_loop->body().exprs().rend(),
+        exprs.rbegin(),
+        std::make_reverse_iterator(commit_it),
         [](const Expr* expr) { return expr->isA<kir::BlockSync>(); });
-    if (block_sync_it == main_loop->body().exprs().rend()) {
-      // If there's no sync, i.e. no tensor needs cross
-      //  thread communication. We still need a wait but
-      //  it can just be anywhere in the loop. Chose to
-      //  place at the end arbitrarily.
-      main_loop->body().insert_after(end_of_loop_expr, cp_async_wait);
-      if (need_insert_commit) {
-        main_loop->body().insert_after(
-            end_of_loop_expr, IrBuilder::create<kir::CpAsyncCommit>());
-      }
+    if (block_sync_it == exprs.rend()) {
+      // If there's no sync, i.e. no tensor needs cross thread communication. We
+      // still need a wait but it can just be anywhere after the cp.async.commit
+      // in the loop. Chose to place at the end arbitrarily.
+      main_loop->body().insert_after(exprs.back(), cp_async_wait);
     } else {
-      // If a sync has been inserted, wait needs to be placed
-      //  before the sync.
+      // If a sync has been inserted, wait needs to be placed before the sync.
       main_loop->body().insert_before(*block_sync_it, cp_async_wait);
       if (need_insert_commit) {
         main_loop->body().insert_before(
@@ -1420,7 +1459,4 @@ std::vector<Expr*> DoubleBufferPass::run(const std::vector<Expr*>& exprs) {
   return SkewDoubleBufferLoop::run(double_buffer_inserted);
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

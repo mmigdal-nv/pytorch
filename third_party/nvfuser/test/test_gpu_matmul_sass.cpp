@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include <arith.h>
+#include <ops/arith.h>
 #include <scheduler/matmul.h>
 #include <test/test_utils.h>
 
@@ -9,6 +9,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+
+namespace nvfuser {
 
 // For SASS instruction definitions, see:
 // https://docs.nvidia.com/cuda/cuda-binary-utilities/index.html#instruction-set-reference
@@ -20,9 +22,6 @@
 // - HMMA: Matrix Multiply and Accumulate
 // - BAR: Barrier Synchronization
 // - DEPBAR: Dependency Barrier
-
-// Tests go in torch::jit
-namespace torch::jit {
 
 namespace {
 
@@ -289,4 +288,4 @@ TEST_F(NVFuserTest, FusionAmpereMatmulSASSRegisterUsageLDSM_CUDA) {
   }
 }
 
-} // namespace torch::jit
+} // namespace nvfuser

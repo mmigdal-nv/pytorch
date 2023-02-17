@@ -1,22 +1,19 @@
 #include <lower_loops.h>
 
-#include <arith.h>
 #include <expr_evaluator.h>
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <iter_visitor.h>
 #include <lower2device.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 #include <transform_replay.h>
 
 #include <algorithm>
 #include <deque>
 #include <numeric>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 std::vector<Expr*> LoopNestGenerator::loweredExprs(
     const std::vector<Expr*>& exprs) {
@@ -263,7 +260,4 @@ void LoopNestGenerator::generate(const std::vector<Expr*>& exprs) {
   }
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

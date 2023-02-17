@@ -27,7 +27,6 @@ set(TORCH_INSTALL_LIB_DIR ${TORCH_ROOT}/torch/lib)
 set(NVFUSER_SRCS)
 set(NVFUSER_CODEGEN ${PROJECT_NAME}_codegen)
 list(APPEND NVFUSER_SRCS
-    ${NVFUSER_SRCS_DIR}/arith.cpp
     ${NVFUSER_SRCS_DIR}/compute_at.cpp
     ${NVFUSER_SRCS_DIR}/inlining.cpp
     ${NVFUSER_SRCS_DIR}/compute_at_map.cpp
@@ -98,8 +97,10 @@ list(APPEND NVFUSER_SRCS
     ${NVFUSER_SRCS_DIR}/mutator.cpp
     ${NVFUSER_SRCS_DIR}/non_divisible_split.cpp
     ${NVFUSER_SRCS_DIR}/ops/alias.cpp
+    ${NVFUSER_SRCS_DIR}/ops/arith.cpp
     ${NVFUSER_SRCS_DIR}/ops/composite.cpp
     ${NVFUSER_SRCS_DIR}/ops/normalization.cpp
+    ${NVFUSER_SRCS_DIR}/ops/utils.cpp
     ${NVFUSER_SRCS_DIR}/parallel_dimension_map.cpp
     ${NVFUSER_SRCS_DIR}/parallel_type_bitmap.cpp
     ${NVFUSER_SRCS_DIR}/parser.cpp
@@ -114,6 +115,7 @@ list(APPEND NVFUSER_SRCS
     ${NVFUSER_SRCS_DIR}/scheduler/pointwise_utils.cpp
     ${NVFUSER_SRCS_DIR}/scheduler/transpose.cpp
     ${NVFUSER_SRCS_DIR}/scheduler/normalization.cpp
+    ${NVFUSER_SRCS_DIR}/scheduler/normalization_utils.cpp
     ${NVFUSER_SRCS_DIR}/scheduler/reduction.cpp
     ${NVFUSER_SRCS_DIR}/scheduler/matmul.cpp
     ${NVFUSER_SRCS_DIR}/scheduler/reduction_utils.cpp
@@ -267,13 +269,10 @@ endif()
 # The list of NVFUSER runtime files
 list(APPEND NVFUSER_RUNTIME_FILES
   ${NVFUSER_ROOT}/runtime/array.cu
-  ${NVFUSER_ROOT}/runtime/array_rocm.cu
   ${NVFUSER_ROOT}/runtime/bf16_support.cu
-  ${NVFUSER_ROOT}/runtime/bf16_support_rocm.cu
   ${NVFUSER_ROOT}/runtime/block_reduction.cu
   ${NVFUSER_ROOT}/runtime/block_sync_atomic.cu
   ${NVFUSER_ROOT}/runtime/block_sync_default.cu
-  ${NVFUSER_ROOT}/runtime/block_sync_default_rocm.cu
   ${NVFUSER_ROOT}/runtime/block_welford_outer.cu
   ${NVFUSER_ROOT}/runtime/broadcast.cu
   ${NVFUSER_ROOT}/runtime/fp16_support.cu
@@ -293,20 +292,10 @@ list(APPEND NVFUSER_RUNTIME_FILES
   ${NVFUSER_ROOT}/runtime/tuple.cu
   ${NVFUSER_ROOT}/runtime/type_traits.cu
   ${NVFUSER_ROOT}/runtime/warp.cu
-  ${NVFUSER_ROOT}/runtime/warp_rocm.cu
   ${NVFUSER_ROOT}/runtime/welford.cu
   ${TORCH_ROOT}/aten/src/ATen/cuda/detail/PhiloxCudaStateRaw.cuh
   ${TORCH_ROOT}/aten/src/ATen/cuda/detail/UnpackRaw.cuh
 )
-
-if(USE_ROCM)
-list(APPEND NVFUSER_RUNTIME_FILES
-  ${NVFUSER_ROOT}/runtime/array_rocm.cu
-  ${NVFUSER_ROOT}/runtime/bf16_support_rocm.cu
-  ${NVFUSER_ROOT}/runtime/block_sync_default_rocm.cu
-  ${NVFUSER_ROOT}/runtime/warp_rocm.cu
-)
-endif()
 
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include/nvfuser_resources")
 

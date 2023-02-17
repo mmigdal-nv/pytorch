@@ -15,10 +15,7 @@
 #include <typeinfo>
 #include <vector>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 namespace codegen {
 
 namespace {
@@ -1091,17 +1088,22 @@ class CudaKernelGenerator : private OptOutConstDispatch {
       code_ << " = ";
     }
 
-    code_ << top->getTernaryOpType() << "(" << gen(top->in1()) << ", ";
-
-    // Make sure the two operands of where has the same
-    // type. Note that compiling "where(0.0f, 0.0)" fails because of
-    // the overloading ambiguity.
+    // Don't use a runtime device function for where as the second and
+    // third aguments should not be evaluated unless picked by the
+    // condition. If a device function is implemnted as pass-by-value,
+    // both arguments would be evaluated. Could be worked around by
+    // pass-by-reference, but it's just simpler to use the C++ ? operator.
     if (top->getTernaryOpType() == TernaryOpType::Where) {
+      code_ << gen(top->in1()) << " ? ";
+      // Make sure the two operands of where has the same
+      // type. Note that compiling "where(0.0f, 0.0)" fails because of
+      // the overloading ambiguity.
       auto cast = scalarCast(top->in2(), top->in3());
-      code_ << (top->in2()->isScalar() ? cast : "") << gen(top->in2()) << ", "
-            << (top->in3()->isScalar() ? cast : "") << gen(top->in3()) << ")";
+      code_ << (top->in2()->isScalar() ? cast : "") << gen(top->in2()) << " : "
+            << (top->in3()->isScalar() ? cast : "") << gen(top->in3());
     } else {
-      code_ << gen(top->in2()) << ", " << gen(top->in3()) << ")";
+      code_ << top->getTernaryOpType() << "(" << gen(top->in1()) << ", "
+            << gen(top->in2()) << ", " << gen(top->in3()) << ")";
     }
 
     if (!print_inline_) {
@@ -2964,7 +2966,4 @@ std::string generateCudaKernel(
 }
 
 } // namespace codegen
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

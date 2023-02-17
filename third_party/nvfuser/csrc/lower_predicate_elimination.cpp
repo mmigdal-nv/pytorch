@@ -1,20 +1,17 @@
 #include <lower_predicate_elimination.h>
 
-#include <arith.h>
 #include <instrumentation.h>
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <lower2device.h>
 #include <lower_shift.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 #include <predicate_compute.h>
 #include <transform_iter.h>
 #include <transform_replay.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 namespace {
 
@@ -1020,7 +1017,4 @@ std::string PredicateElimination::toString() const {
   return ss.str();
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

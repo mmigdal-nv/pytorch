@@ -4,7 +4,7 @@
 
 #include <sstream>
 
-using namespace torch::jit::fuser::cuda;
+using namespace nvfuser;
 
 std::string toString(const ReductionParams& rparams) {
   std::stringstream ss;
@@ -29,7 +29,10 @@ std::string toString(const ReductionParams& rparams) {
   ss << " // Iteration Domain: "
      << (rparams.multiple_reds_per_blk ? "multiple reductions per block / "
                                        : "")
-     << (rparams.split_grid_dim_iter_dom ? "split grid dimension / " : "")
+     << ((rparams.split_grid_dim_iter_dom_inner ||
+          rparams.split_grid_dim_iter_dom_outer)
+             ? "split grid dimension / "
+             : "")
      << (rparams.vectorize_iter_dom ? "vectorize / " : "")
      << (rparams.unroll_factor_iter_dom > 1 && !rparams.vectorize_iter_dom
              ? "unroll / "

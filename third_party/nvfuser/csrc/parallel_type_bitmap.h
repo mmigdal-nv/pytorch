@@ -8,10 +8,7 @@
 #include <map>
 #include <unordered_map>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 constexpr int getParallelTypeBitMapOffset(ParallelType pt) {
   switch (pt) {
@@ -152,27 +149,45 @@ class ParallelTypeBitmap {
   }
 
   //! Set all of the TID flags
-  void setAllTID() {
+  ParallelTypeBitmap& setAllTID() {
     *this |= ParallelTypeBitmap(kTIDBits);
+    return *this;
   }
 
   //! Set all of the BID flags
-  void setAllBID() {
+  ParallelTypeBitmap& setAllBID() {
     *this |= ParallelTypeBitmap(kBIDBits);
+    return *this;
+  }
+
+  //! Set all flags
+  ParallelTypeBitmap& setAll() {
+    setAllTID();
+    setAllBID();
+    return *this;
   }
 
   //! Clear all of the TID flags
-  void clearAllTID() {
+  ParallelTypeBitmap& clearAllTID() {
     auto tid_bits = ParallelTypeBitmap(kTIDBits);
     auto not_tid_bits = ~tid_bits;
     *this &= not_tid_bits;
+    return *this;
   }
 
   //! Clear all of the BID flags
-  void clearAllBID() {
+  ParallelTypeBitmap& clearAllBID() {
     auto bid_bits = ParallelTypeBitmap(kBIDBits);
     auto not_bid_bits = ~bid_bits;
     *this &= not_bid_bits;
+    return *this;
+  }
+
+  //! Clear all flags
+  ParallelTypeBitmap& clearAll() {
+    clearAllTID();
+    clearAllBID();
+    return *this;
   }
 
   //! Get an iterator to traverse set types
@@ -336,7 +351,4 @@ class ParallelTypeMap {
   std::array<T, ParallelTypeBitmap::kNumParallelTypes> map_;
 };
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

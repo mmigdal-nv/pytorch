@@ -1,14 +1,11 @@
-#include <arith.h>
 #include <ir_builder.h>
 #include <ir_utils.h>
 #include <ops/alias.h>
+#include <ops/arith.h>
 #include <transform_view.h>
 #include <type_promotion.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 namespace {
 
@@ -374,7 +371,4 @@ TensorView* transpose(TensorView* x) {
   return transpose(x, 0, 1);
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

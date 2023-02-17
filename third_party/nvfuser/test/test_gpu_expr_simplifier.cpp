@@ -1,17 +1,11 @@
 #include <gtest/gtest.h>
 
-#include <arith.h>
 #include <expr_simplifier.h>
 #include <ops/all_ops.h>
 #include <test/test_gpu_validator.h>
 #include <test/test_utils.h>
 
-// Tests go in torch::jit
-namespace torch {
-namespace jit {
-
-using namespace torch::jit::fuser::cuda;
-
+namespace nvfuser {
 namespace {
 
 // check if x and y are equivalent expressions by checking that x == y
@@ -186,6 +180,11 @@ TEST_F(NVFuserTest, FusionEliminateTrivialComputation_CUDA) {
   TORCH_CHECK(simplifyExpr(cpp_div(i0, tdimx))->sameAs(i0));
   // a % 1 -> 0
   TORCH_CHECK(simplifyExpr(mod(i, i1))->sameAs(i0));
+
+  // -(-a) -> a
+  TORCH_CHECK(simplifyExpr(neg(neg(i)))->sameAs(i));
+  TORCH_CHECK(simplifyExpr(notOp(notOp(i)))->sameAs(i));
+  TORCH_CHECK(simplifyExpr(notOp(notOp(b)))->sameAs(b));
 
   // Test constant folding
   TORCH_CHECK(simplifyExpr(add(add(i1, i), i1))->sameAs(add(i, i2)));
@@ -485,5 +484,4 @@ TEST_F(NVFuserTest, FusionFundamentalDivisionWithRemainderProperty_CUDA) {
       add(mul(a, d), b)));
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

@@ -1,9 +1,9 @@
-#include <arith.h>
 #include <executor.h>
 #include <fusion.h>
 #include <ir_all_nodes.h>
 #include <ir_utils.h>
 #include <lower2device.h>
+#include <ops/arith.h>
 #include <scheduler/all_schedulers.h>
 
 #include <benchmark/benchmark.h>
@@ -13,8 +13,6 @@
 #include <sstream>
 
 #include <benchmark/utils.h>
-
-using namespace torch::jit::fuser::cuda;
 
 // Return broadcast tensor view and output of broadcast
 static void setupBroadcast(Fusion* fusion, DataType dtype, int bcast_axis) {

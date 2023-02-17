@@ -1,6 +1,7 @@
 #include <lower2device.h>
 
 #include <ATen/cuda/CUDAContext.h>
+#include <expr_simplifier.h>
 #include <fusion.h>
 #include <instrumentation.h>
 #include <ir_iostream.h>
@@ -32,10 +33,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 thread_local GpuLower* active_gpu_lower = nullptr; // NOLINT
 namespace {
@@ -134,6 +132,7 @@ class KIRCleaner : public OptOutDispatch {
   bool is_nop_ = false;
 };
 
+// Convert bar sync to __syncthreads()
 class ConvertAlignedBlockSync : kir::IrVisitor {
  public:
   static std::vector<Expr*> run(std::vector<Expr*> exprs) {
@@ -148,16 +147,20 @@ class ConvertAlignedBlockSync : kir::IrVisitor {
   void handle(kir::BlockSync* sync) final {
     // Inspect all the scope expressions
     for (auto expr : scope_exprs_) {
-      // All predicates we have today are thread
-      //  dependent so avoid this in general.
-      if (expr->isA<kir::IfThenElse>()) {
+      // If predicates are thread dependent, can not use aligned sync.
+      if (auto ite = dynamic_cast<kir::IfThenElse*>(expr)) {
+        if (ite->predicate()->hasValue() &&
+            getRegisterType(ite->predicate()->value()) ==
+                RegisterType::GeneralPurpose) {
+          return;
+        }
         return;
       } else if (auto fl = dynamic_cast<kir::ForLoop*>(expr)) {
         // If the start, stop, step are not thread dependent
         //  then this for loop should be thread independent.
-        if (lower_utils::dependsOnThreadNamedScalars(fl->start()) ||
-            lower_utils::dependsOnThreadNamedScalars(fl->stop()) ||
-            lower_utils::dependsOnThreadNamedScalars(fl->step())) {
+        if (getRegisterType(fl->start()) == RegisterType::GeneralPurpose ||
+            getRegisterType(fl->stop()) == RegisterType::GeneralPurpose ||
+            getRegisterType(fl->step()) == RegisterType::GeneralPurpose) {
           return;
         }
       }
@@ -517,6 +520,7 @@ void GpuLower::lower(Fusion* fusion) {
   dumpExprsIfEnabled(exprs_instrumented, "instrumentKernel");
 
   const auto exprs_sync_aligned = convertAlignedBlockSync(exprs_instrumented);
+  dumpExprsIfEnabled(exprs_sync_aligned, "convertAlignedBlockSync");
 
   // We now have the lowered expressions, finalize the kernel IR. This function
   // will also copy over some relevant information for code generation from
@@ -576,7 +580,4 @@ bool GpuLower::resolveComputeWith(Fusion* fusion) {
   return updated;
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

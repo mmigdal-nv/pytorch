@@ -1,4 +1,3 @@
-#include <arith.h>
 #include <expr_evaluator.h>
 #include <index_compute.h>
 #include <instrumentation.h>
@@ -9,13 +8,11 @@
 #include <lower_index_compute.h>
 #include <lower_shift.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 
 #include <functional>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 Expr* ShiftPredicateInserter::insert(
     Expr* expr,
@@ -863,7 +860,4 @@ std::unordered_map<IterDomain*, Val*> HaloInfo::buildConcreteHaloExtentMap(
   return local_halo_info.extent_map_;
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

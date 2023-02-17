@@ -1,4 +1,3 @@
-#include <arith.h>
 #include <executor.h>
 #include <fusion.h>
 #include <ir_all_nodes.h>
@@ -16,8 +15,6 @@
 #include <sstream>
 
 #include <benchmark/utils.h>
-
-using namespace torch::jit::fuser::cuda;
 
 // Return reduction tensor view and output of reduction
 static void setupDivMaxSoftmaxDropoutForward(Fusion* fusion, DataType dtype) {

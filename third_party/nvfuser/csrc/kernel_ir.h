@@ -14,10 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 class IrBuilderPasskey;
 
@@ -287,6 +284,12 @@ class TORCH_CUDA_CU_API BlockSync final : public Expr {
   //!  the same block are guaranteed to reach this sync.
   //!  more details on aligned sync see :
   //! https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#parallel-synchronization-and-communication-instructions-bar
+  void convertToAligned() {
+    attribute(1)->as<Attribute<bool>>()->value = true;
+  }
+
+  //! Sets the flag signifying that this block sync is
+  //!  thread aligned.
   bool isAligned() const {
     return attribute(1)->as<Attribute<bool>>()->value;
   }
@@ -617,13 +620,13 @@ class TORCH_CUDA_CU_API Scope {
   }
 
   // Insert expr before expression at pos
-  void insert(size_t pos, Expr* expr);
+  std::vector<Expr*>::iterator insert(size_t pos, Expr* expr);
 
   // Insert expr before ref
-  void insert_before(Expr* ref, Expr* expr);
+  std::vector<Expr*>::iterator insert_before(Expr* ref, Expr* expr);
 
   // Insert expr after ref
-  void insert_after(Expr* ref, Expr* expr);
+  std::vector<Expr*>::iterator insert_after(Expr* ref, Expr* expr);
 
   void push_back(Expr* e) {
     exprs_.push_back(e);
@@ -647,10 +650,12 @@ class TORCH_CUDA_CU_API Scope {
     TORCH_INTERNAL_ASSERT(false, "Should not reach here");
   }
 
- private:
   // Insert expr before pos
-  void insert(std::vector<Expr*>::const_iterator pos, Expr* expr);
+  std::vector<Expr*>::iterator insert(
+      std::vector<Expr*>::const_iterator pos,
+      Expr* expr);
 
+ private:
   // Erase expr at pos
   void erase(std::vector<Expr*>::const_iterator pos);
 
@@ -1361,7 +1366,4 @@ TORCH_CUDA_CU_API std::ostream& operator<<(
     std::ostream&,
     const kir::LoopTransformInfo);
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

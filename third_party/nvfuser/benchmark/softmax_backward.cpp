@@ -1,4 +1,3 @@
-#include <arith.h>
 #include <executor.h>
 #include <fusion.h>
 #include <ir_all_nodes.h>
@@ -12,8 +11,6 @@
 #include <cuda_runtime.h>
 
 #include <benchmark/utils.h>
-
-using namespace torch::jit::fuser::cuda;
 
 //------------------------------------------------------------------------------
 

@@ -1,6 +1,5 @@
 #include <transform_replay.h>
 
-#include <arith.h>
 #include <disjoint_set.h>
 #include <fusion.h>
 #include <instrumentation.h>
@@ -9,15 +8,13 @@
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <maxinfo_propagator.h>
+#include <ops/arith.h>
 #include <root_domain_map.h>
 #include <transform_iter.h>
 
 #include <deque>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 using id_map = std::unordered_map<IterDomain*, IterDomain*>;
 
@@ -1119,7 +1116,4 @@ void MostInlinedTransformPropagator::propagateSibling(
   }
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

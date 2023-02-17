@@ -1,4 +1,3 @@
-#include <arith.h>
 #include <executor.h>
 #include <fusion.h>
 #include <ir_builder.h>
@@ -11,8 +10,6 @@
 #include <cuda_runtime.h>
 
 #include <benchmark/utils.h>
-
-using namespace torch::jit::fuser::cuda;
 
 static void setupInstanceNorm(
     Fusion* fusion,

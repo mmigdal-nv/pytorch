@@ -1,18 +1,15 @@
 #include <lower_thread_predicate.h>
 
-#include <arith.h>
 #include <instrumentation.h>
 #include <ir_iostream.h>
 #include <ir_utils.h>
 #include <lower2device.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 
 #include <c10/util/irange.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 namespace {
 
@@ -202,6 +199,17 @@ void ThreadPredicateMap::updateBitSet(const Expr* expr) {
   // Which dims are reductions in inputs
   ParallelTypeBitmap input_reductions;
 
+  // Parallel types used by the output tensor
+  ParallelTypeBitmap output_ptypes;
+  std::for_each(
+      ir_utils::getTvOutput(expr)->domain()->domain().begin(),
+      ir_utils::getTvOutput(expr)->domain()->domain().end(),
+      [&](auto out_tv_id) {
+        if (out_tv_id->isThread()) {
+          output_ptypes.set(out_tv_id->getParallelType());
+        }
+      });
+
   // Run through inputs and update bitsets
   for (const auto* inp : expr->inputs()) {
     if (!ir_utils::isTV(inp))
@@ -263,6 +271,21 @@ void ThreadPredicateMap::updateBitSet(const Expr* expr) {
     auto this_input_preds = pred_info.limited_types;
     const auto bcast_reset_mask = ~(this_input_preds & id_bcasts);
     this_input_preds &= bcast_reset_mask;
+
+    // If the input is on shared or global memory and is predicated,
+    // and the output is parallelized by the predicate type, a RAW
+    // sync is automatically inserted, so the predication can be
+    // cleared.
+    if (tv_inp->getMemoryType() == MemoryType::Shared ||
+        tv_inp->getMemoryType() == MemoryType::Global) {
+      auto raw_sync_reset_mask = (this_input_preds & output_ptypes);
+      // If it's on shared memory, only TID predicates can be
+      // cleared.
+      if (tv_inp->getMemoryType() == MemoryType::Shared) {
+        raw_sync_reset_mask &= ParallelTypeBitmap().setAllTID();
+      }
+      this_input_preds &= ~raw_sync_reset_mask;
+    }
 
     input_preds |= this_input_preds;
 
@@ -619,7 +642,4 @@ void ThreadPredicateMap::print() const {
   std::cout << "--------------------------------\n\n";
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser

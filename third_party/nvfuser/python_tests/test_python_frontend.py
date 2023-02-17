@@ -11,10 +11,10 @@ from torch.testing._internal.common_utils import run_tests, TEST_WITH_ROCM, Test
 from torch.testing._internal.jit_utils import RUN_CUDA
 import torch._refs as refs
 import torch._prims as prims
-
 # Will only create the nvfuser module if CUDA is available
 try:
     from nvfuser import FusionCache, FusionDefinition, DataType, version
+    from nvfuser.pytorch_utils import torch_dtype_to_nvfuser_dtype
 except ImportError:
     pass
 
@@ -723,7 +723,7 @@ class TestNvFuserFrontend(TestCase):
         self.assertEqual(eager_out, nvf_out[0])
 
     def test_python_version_API(self):
-        from packaging.version import Version
+        from nvfuser.nvfuser_version import Version
         self.assertTrue(version() > '0.0.0')
         self.assertTrue(version() > Version('0.0.0'))
 
@@ -825,6 +825,73 @@ class TestNvFuserFrontend(TestCase):
         self.assertEqual(eager_out, n)
         assert n.dtype == torch.complex64
 
+    def test_where_op(self):
+        def nvfuser_where(pred, a, b):
+            with FusionDefinition() as fd:
+                nv_pred = fd.define_tensor(sizes=pred.shape, strides=pred.stride(), dtype=DataType.Bool)
+                nv_a = fd.define_tensor(sizes=a.shape, strides=a.stride(), dtype=torch_dtype_to_nvfuser_dtype(a.dtype))
+                nv_b = fd.define_tensor(sizes=b.shape, strides=b.stride(), dtype=torch_dtype_to_nvfuser_dtype(b.dtype))
+                result = fd.ops.where(nv_pred, nv_a, nv_b)
+                fd.add_output(result)
+            return fd.execute((pred, a, b))[0]
+        pred = torch.testing.make_tensor((5,), device='cuda', dtype=torch.bool)
+        list_of_dtype = [torch.float16, torch.bfloat16, torch.float32]
+        for atype in list_of_dtype:
+            for btype in list_of_dtype:
+                a = torch.randn((5,), device='cuda', dtype=atype)
+                b = torch.randn((5,), device='cuda', dtype=btype)
+                nv_result = nvfuser_where(pred, a, b)
+                torch_result = torch.where(pred, a, b)
+                self.assertEqual(nv_result, torch_result)
 
-if __name__ == "__main__":
+    def test_iota(self):
+        inputs = [
+            (2, 0, 2, DataType.Int),
+            (3, 100, 1, DataType.Int32),
+            # TODO: How do I that that? I am getting the following error:
+            # NameError: name 'None0' is not defined
+            # (4, None, None, DataType.Int),
+        ]
+
+        def fusion_func(fd: FusionDefinition):
+            for input in inputs:
+                c0 = fd.define_constant(input[0])
+                c1 = None if input[1] is None else fd.define_constant(input[1])
+                c2 = None if input[2] is None else fd.define_constant(input[2])
+                dt = input[3]
+                t3 = fd.ops.iota(c0, c1, c2, dt)
+                fd.add_output(t3)
+
+        nvf_out, _ = self.exec_nvfuser(fusion_func, [])
+
+        eager_out1 = torch.tensor([0, 2], dtype=torch.long, device="cuda")
+        eager_out2 = torch.tensor([100, 101, 102], dtype=torch.int, device="cuda")
+        eager_out3 = torch.tensor([0, 1, 2, 3], dtype=torch.long, device="cuda")
+        self.assertEqual(eager_out1, nvf_out[0])
+        self.assertEqual(eager_out2, nvf_out[1])
+        # self.assertEqual(eager_out3, nvf_out[2])
+
+    def test_complex_rsqrt(self):
+        inputs = [
+            torch.randn(4, device="cuda", dtype=torch.complex64),
+            torch.randn(4, device="cuda", dtype=torch.complex128),
+        ]
+
+        def fusion_func(fd: FusionDefinition):
+            t0 = fd.from_pytorch(inputs[0])
+            t1 = fd.from_pytorch(inputs[1])
+            t2 = fd.ops.rsqrt(t0)
+            fd.add_output(t2)
+            t3 = fd.ops.rsqrt(t1)
+            fd.add_output(t3)
+
+        (rfloat, rdouble), _ = self.exec_nvfuser(fusion_func, inputs)
+
+        at_rfloat = inputs[0].rsqrt()
+        at_rdouble = inputs[1].rsqrt()
+
+        self.assertEqual(at_rfloat, rfloat)
+        self.assertEqual(at_rdouble, rdouble)
+
+if __name__ == '__main__':
     run_tests()

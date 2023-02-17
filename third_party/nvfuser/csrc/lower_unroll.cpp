@@ -1,6 +1,5 @@
 #include <lower_unroll.h>
 
-#include <arith.h>
 #include <expr_evaluator.h>
 #include <index_compute.h>
 #include <instrumentation.h>
@@ -9,12 +8,10 @@
 #include <lower2device.h>
 #include <lower_misaligned_vectorization.h>
 #include <lower_utils.h>
+#include <ops/arith.h>
 #include <predicate_compute.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace cuda {
+namespace nvfuser {
 
 namespace {
 
@@ -298,7 +295,4 @@ std::vector<Expr*> UnrollPass::runPass(
   return unroll_pass.exprs_;
 }
 
-} // namespace cuda
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace nvfuser
