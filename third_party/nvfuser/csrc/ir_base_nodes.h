@@ -302,7 +302,9 @@ class TORCH_CUDA_CU_API Val : public Statement {
     return false;
   }
 
+  bool isZero() const;
   bool isZeroInt() const;
+  bool isOne() const;
   bool isOneInt() const;
 
   // Check zero supporting both int or double.

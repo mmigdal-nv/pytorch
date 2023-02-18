@@ -54,8 +54,9 @@ std::string disassembleBinary(
     TORCH_INTERNAL_ASSERT(written == cubin.size(), err);
     fclose(cubin_fp);
 
-    // read disassembly result
     int ch;
+
+    // read disassembly result
     std::string result;
     result.reserve(cubin.size());
     while ((ch = fgetc(disasm_fp)) != EOF) {
