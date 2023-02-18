@@ -7341,7 +7341,7 @@ TEST_F(NVFuserTest, FusionPredicatePeeling2_CUDA) {
   auto tv1 = sum(tv0, {1});
   fusion.addOutput(tv1);
 
-  auto tv2 = tv0->cacheAfter(LoadStoreOpType::CpAsync);
+  auto tv2 = tv0->cacheAfter(LoadStoreOpType::CpAsyncCa);
 
   tv1->split(1, 16);
   tv1->split(0, 16);
