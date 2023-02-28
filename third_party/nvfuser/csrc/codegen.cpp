@@ -159,7 +159,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     // The type of an integer literal is automatically picked from
     // int, long int, and long long int, so no suffix should be
     // required. https://en.cppreference.com/w/cpp/language/integer_literal
-    switch (dtype) {
+    switch (std::get<PrimDataType>(dtype.type)) {
       case DataType::Float:
         return "f";
       default:
@@ -1130,7 +1130,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
     if (sop->getScatterOpType() == ScatterOpType::Set) {
       // When value of index_tv are not unique, the behavior of Set is
       // non-deterministic
-      indent() << gen(sop->output(0)) << " = " << gen(sop->srcTv()) << ";\n";
+      indent() << gen(sop->output(0)) << " = " << gen(sop->input(2)) << ";\n";
     } else {
       TORCH_INTERNAL_ASSERT(false, "unkown scatterOp");
     }

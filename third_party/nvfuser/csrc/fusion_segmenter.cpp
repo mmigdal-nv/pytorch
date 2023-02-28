@@ -272,9 +272,11 @@ std::unique_ptr<SegmentedFusion> SegmentedFusion::fromCompleteFusion(
     const KernelArgumentHolder& runtime_inputs) {
   auto fusion = fusion_ptr.get();
 
-  // convert Welford to two-pass
+  // convert Welford to two-pass if option is enabled and the original heuristic
+  // is persistent
   SegmentCandidateFinderOptions scfo;
-  if (scfo.run_translate_welford) {
+  if (scfo.run_translate_welford &&
+      heuristic == ScheduleHeuristic::Persistent) {
     SegmentCandidateFinder::translateWelfordInFusion(fusion, runtime_inputs);
   }
 
