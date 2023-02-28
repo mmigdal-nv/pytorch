@@ -2030,10 +2030,6 @@ std::vector<Val*> Index::getGlobalConsumerStridedIndices(
   auto root_inds = getRootIndices(consumer_tv, loops, index_from_id_graph);
   auto root_dom = consumer_tv->getMaybeRFactorDomain();
 
-  // Indices should now be mapped onto IterDomains in consumer, so just grab
-  // and use them.
-  auto root_dom = consumer_tv->getMaybeRFactorDomain();
-
   // Global striding
   auto vectorize_shift =
       loops.empty() ? nullptr : loops.back()->vectorize_shift();

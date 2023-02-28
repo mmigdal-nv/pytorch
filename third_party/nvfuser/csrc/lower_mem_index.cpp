@@ -1088,7 +1088,7 @@ TensorView* AddressComputeInfo::makeAddressTv(
   //  for i in ... // main loop
   //    cp.async [smem_addres+123], ...
   if (is_cpasync_write) {
-    dtype = DataType::SmemAddress;
+    dtype = DataType::SMemAddress;
   }
   return IrBuilder::create<TensorView>(
       IrBuilder::create<TensorDomain>(

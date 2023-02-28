@@ -2890,7 +2890,7 @@ class CudaKernelGenerator : private OptOutConstDispatch {
               << gen(address_compute->dataTv()->as<kir::TensorIndex>())
               << ";\n";
       } else if (
-          address_compute->addressTv()->dtype() == DataType::SmemAddress) {
+          address_compute->addressTv()->dtype() == DataType::SMemAddress) {
         code_ << " = toSmem(&"
               << gen(address_compute->dataTv()->as<kir::TensorIndex>())
               << ");\n";

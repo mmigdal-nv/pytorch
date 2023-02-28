@@ -112,6 +112,7 @@ struct DataType {
   static constexpr PrimDataType BFloat16 = PrimDataType::BFloat16;
   static constexpr PrimDataType ComplexFloat = PrimDataType::ComplexFloat;
   static constexpr PrimDataType ComplexDouble = PrimDataType::ComplexDouble;
+  static constexpr PrimDataType Pointer = PrimDataType::Pointer;
   static constexpr PrimDataType SMemAddress = PrimDataType::SMemAddress;
   static constexpr PrimDataType Null = PrimDataType::Null;
 };
